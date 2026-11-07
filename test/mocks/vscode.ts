@@ -177,7 +177,9 @@ export const window = {
   showErrorMessage: vi.fn(),
   showInputBox: vi.fn(),
   showQuickPick: vi.fn(),
-  createStatusBarItem: vi.fn(() => ({
+  createStatusBarItem: vi.fn((alignment?: StatusBarAlignment, priority?: number) => ({
+    alignment,
+    priority,
     text: '',
     tooltip: '',
     command: undefined as string | undefined,
@@ -224,4 +226,8 @@ export const commands = {
 
 export const extensions = {
   getExtension: vi.fn(),
+};
+
+export const env = {
+  openExternal: vi.fn(async (_target: Uri) => true),
 };

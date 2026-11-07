@@ -18,6 +18,43 @@
     "onStartupFinished"
   ],
   "contributes": {
+    "commands": [
+      {
+        "command": "zuul.setGhePat",
+        "title": "Set GitHub Enterprise PAT",
+        "category": "Zuul"
+      },
+      {
+        "command": "zuul.clearGhePat",
+        "title": "Clear GitHub Enterprise PAT",
+        "category": "Zuul"
+      },
+      {
+        "command": "zuul.refresh",
+        "title": "Refresh",
+        "category": "Zuul",
+        "icon": "$(refresh)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "zuul.refresh",
+          "when": "view == zuul.gateReadiness",
+          "group": "navigation"
+        },
+        {
+          "command": "zuul.refresh",
+          "when": "view == zuul.dependencies",
+          "group": "navigation"
+        },
+        {
+          "command": "zuul.refresh",
+          "when": "view == zuul.builds",
+          "group": "navigation"
+        }
+      ]
+    },
     "viewsContainers": {
       "activitybar": [
         {
@@ -47,6 +84,10 @@
       {
         "view": "zuul.gateReadiness",
         "contents": "No pull request found for the current branch."
+      },
+      {
+        "view": "zuul.builds",
+        "contents": "No Zuul builds for this pull request yet."
       }
     ],
     "configuration": {

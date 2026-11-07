@@ -1,0 +1,35 @@
+[
+  {
+    "uuid": "b1111111-2222-3333-4444-555555555555",
+    "job_name": "zuul-tox-linters",
+    "result": "SUCCESS",
+    "pipeline": "check",
+    "log_url": "https://logs.example.com/42/9f8e7d6c5b4a3210/check/zuul-tox-linters/b111111/",
+    "start_time": "2026-11-07T18:00:00",
+    "end_time": "2026-11-07T18:01:30",
+    "project": "acme/service",
+    "change": 42,
+    "patchset": "9f8e7d6c5b4a3210",
+    "artifacts": [
+      {
+        "name": "Coverage Report",
+        "url": "https://logs.example.com/42/9f8e7d6c5b4a3210/check/zuul-tox-linters/b111111/coverage/index.html"
+      }
+    ]
+  },
+  {
+    "uuid": "b2222222-3333-4444-5555-666666666666",
+    "job_name": "zuul-tox-py311",
+    "result": "FAILURE",
+    "pipeline": "check",
+    "log_url": "https://logs.example.com/42/9f8e7d6c5b4a3210/check/zuul-tox-py311/b222222/",
+    "start_time": "2026-11-07T18:00:05",
+    "end_time": "2026-11-07T18:04:10",
+    "ref": {
+      "project": "acme/service",
+      "change": 42,
+      "patchset": "9f8e7d6c5b4a3210"
+    },
+    "artifacts": []
+  }
+]

@@ -1,0 +1,457 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { type GheClient } from '../../src/clients/gheClient';
+import { type PullRequest } from '../../src/clients/gheTypes';
+import { type ZuulClient } from '../../src/clients/zuulClient';
+import { type Build, type ChangeStatus } from '../../src/clients/zuulTypes';
+import { type ResolvedContext } from '../../src/context/zuulContext';
+import {
+  type FocusEvents,
+  type PrSnapshot,
+  PrTracker,
+  type ZuulContextSource,
+} from '../../src/services/prTracker';
+import { type Logger } from '../../src/util/logger';
+import { EventEmitter } from '../mocks/vscode';
+
+function createFakeLogger(): Logger & { errors: { msg: string; err: unknown }[] } {
+  const errors: { msg: string; err: unknown }[] = [];
+  return {
+    errors,
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn((msg: string, err?: unknown) => {
+      errors.push({ msg, err });
+    }),
+  };
+}
+
+function makePr(overrides: Partial<PullRequest> = {}): PullRequest {
+  return {
+    number: 42,
+    html_url: 'https://ghe.example.com/acme/service/pull/42',
+    title: 'Add feature X',
+    state: 'open',
+    draft: false,
+    merged: false,
+    body: 'PR description',
+    head: {
+      sha: 'pr-head-sha-1',
+      ref: 'feat/x',
+      repo: { full_name: 'acme/service' },
+    },
+    base: {
+      ref: 'main',
+      repo: { full_name: 'acme/service' },
+    },
+    user: { login: 'alice' },
+    labels: [],
+    ...overrides,
+  };
+}
+
+function makeStatus(overrides: Partial<ChangeStatus> = {}): ChangeStatus {
+  return {
+    pipeline: 'check',
+    queue: 'shared',
+    live: true,
+    enqueueTime: 1_700_000_000_000,
+    remainingTimeMs: 60_000,
+    jobs: [{ name: 'unit-tests', running: true }],
+    itemsAhead: [],
+    ...overrides,
+  };
+}
+
+function makeBuild(overrides: Partial<Build> = {}): Build {
+  return {
+    uuid: 'build-1',
+    jobName: 'unit-tests',
+    result: 'SUCCESS',
+    pipeline: 'check',
+    logUrl: 'https://logs.example.com/1/',
+    artifacts: [],
+    ...overrides,
+  };
+}
+
+function createFakeContextSource(initial?: ResolvedContext): {
+  source: ZuulContextSource;
+  setContext: (ctx: ResolvedContext | undefined) => void;
+} {
+  let current = initial;
+  const emitter = new EventEmitter<ResolvedContext | undefined>();
+  return {
+    source: {
+      get current() {
+        return current;
+      },
+      onDidChange: emitter.event,
+    },
+    setContext: (ctx) => {
+      current = ctx;
+      emitter.fire(ctx);
+    },
+  };
+}
+
+function createFakeFocusEvents(initialFocused = true): {
+  focusEvents: FocusEvents;
+  setFocused: (focused: boolean) => void;
+} {
+  const state = { focused: initialFocused };
+  const emitter = new EventEmitter<{ readonly focused: boolean }>();
+  return {
+    focusEvents: {
+      state,
+      onDidChangeWindowState: emitter.event,
+    },
+    setFocused: (focused: boolean) => {
+      state.focused = focused;
+      emitter.fire({ focused });
+    },
+  };
+}
+
+function createMockClients() {
+  const findOpenPrForBranch = vi.fn<GheClient['findOpenPrForBranch']>();
+  const getChangeStatus = vi.fn<ZuulClient['getChangeStatus']>();
+  const listBuilds = vi.fn<ZuulClient['listBuilds']>();
+
+  const ghe = {
+    findOpenPrForBranch,
+  } as unknown as GheClient;
+
+  const zuul = {
+    getChangeStatus,
+    listBuilds,
+  } as unknown as ZuulClient;
+
+  const makeResolvedContext = (overrides: Partial<ResolvedContext> = {}): ResolvedContext => ({
+    repoRoot: '/workspace/service',
+    host: 'ghe.example.com',
+    owner: 'acme',
+    repo: 'service',
+    branch: 'feat/x',
+    headSha: 'local-head-sha-ignored',
+    zuulUrl: 'https://zuul.example.com',
+    tenant: 'main',
+    project: 'acme/service',
+    ghe,
+    zuul,
+    ...overrides,
+  });
+
+  return {
+    findOpenPrForBranch,
+    getChangeStatus,
+    listBuilds,
+    ghe,
+    zuul,
+    makeResolvedContext,
+  };
+}
+
+describe('PrTracker', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000_000);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('uses PR head SHA from GHE (not local HEAD) and polls every 15s when ChangeStatus exists', async () => {
+    const { findOpenPrForBranch, getChangeStatus, listBuilds, makeResolvedContext } =
+      createMockClients();
+    const pr = makePr({
+      head: {
+        sha: 'remote-ghe-sha-999',
+        ref: 'feat/x',
+        repo: { full_name: 'acme/service' },
+      },
+    });
+    const status = makeStatus();
+
+    findOpenPrForBranch.mockResolvedValue(pr);
+    getChangeStatus.mockResolvedValue([status]);
+    listBuilds.mockResolvedValue([]);
+
+    const ctx = makeResolvedContext({ headSha: 'local-unpushed-sha-000' });
+    const { source } = createFakeContextSource(ctx);
+    const { focusEvents } = createFakeFocusEvents(true);
+    const logger = createFakeLogger();
+    const snapshots: (PrSnapshot | undefined)[] = [];
+
+    const tracker = new PrTracker(source, logger, setTimeout, Date.now, focusEvents);
+    tracker.onDidChange((s) => snapshots.push(s));
+
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(findOpenPrForBranch).toHaveBeenCalledTimes(1);
+    expect(findOpenPrForBranch).toHaveBeenCalledWith('acme', 'service', 'feat/x');
+    expect(getChangeStatus).toHaveBeenCalledTimes(1);
+    expect(getChangeStatus).toHaveBeenCalledWith('main', 42, 'remote-ghe-sha-999');
+    expect(listBuilds).not.toHaveBeenCalled();
+    expect(tracker.snapshot).toEqual({
+      pr,
+      statuses: [status],
+      builds: [],
+      fetchedAt: 1_000_000,
+    });
+    expect(snapshots).toHaveLength(1);
+
+    // Should not poll at 14.9s, should poll at 15s
+    await vi.advanceTimersByTimeAsync(14_900);
+    expect(getChangeStatus).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(100);
+    expect(getChangeStatus).toHaveBeenCalledTimes(2);
+    expect(findOpenPrForBranch).toHaveBeenCalledTimes(1);
+
+    tracker.dispose();
+  });
+
+  it('falls back to listBuilds when getChangeStatus returns empty and polls every 60s', async () => {
+    const { findOpenPrForBranch, getChangeStatus, listBuilds, makeResolvedContext } =
+      createMockClients();
+    const pr = makePr();
+    const build = makeBuild();
+
+    findOpenPrForBranch.mockResolvedValue(pr);
+    getChangeStatus.mockResolvedValue([]);
+    listBuilds.mockResolvedValue([build]);
+
+    const { source } = createFakeContextSource(makeResolvedContext());
+    const { focusEvents } = createFakeFocusEvents(true);
+    const logger = createFakeLogger();
+
+    const tracker = new PrTracker(source, logger, setTimeout, Date.now, focusEvents);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(getChangeStatus).toHaveBeenCalledTimes(1);
+    expect(listBuilds).toHaveBeenCalledTimes(1);
+    expect(listBuilds).toHaveBeenCalledWith('main', {
+      project: 'acme/service',
+      change: 42,
+      patchset: 'pr-head-sha-1',
+    });
+    expect(tracker.snapshot).toEqual({
+      pr,
+      statuses: [],
+      builds: [build],
+      fetchedAt: 1_000_000,
+    });
+
+    // Should not poll at 15s (idle cadence is 60s)
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(getChangeStatus).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(45_000);
+    expect(getChangeStatus).toHaveBeenCalledTimes(2);
+    expect(listBuilds).toHaveBeenCalledTimes(2);
+
+    tracker.dispose();
+  });
+
+  it('switches to 3s cadence during watchFor(ms) and returns to normal cadence afterwards', async () => {
+    const { findOpenPrForBranch, getChangeStatus, listBuilds, makeResolvedContext } =
+      createMockClients();
+    const pr = makePr();
+
+    findOpenPrForBranch.mockResolvedValue(pr);
+    getChangeStatus.mockResolvedValue([]);
+    listBuilds.mockResolvedValue([]);
+
+    const { source } = createFakeContextSource(makeResolvedContext());
+    const { focusEvents } = createFakeFocusEvents(true);
+    const logger = createFakeLogger();
+
+    const tracker = new PrTracker(source, logger, setTimeout, Date.now, focusEvents);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(getChangeStatus).toHaveBeenCalledTimes(1);
+
+    // Start fast watch for 7000ms (should reschedule the 60s timer to 3s)
+    tracker.watchFor(7_000);
+
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(getChangeStatus).toHaveBeenCalledTimes(2);
+
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(getChangeStatus).toHaveBeenCalledTimes(3);
+
+    // At t + 6000ms, fastUntil (t + 7000ms) is still in the future -> one more 3s poll
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(getChangeStatus).toHaveBeenCalledTimes(4);
+
+    // Now at t + 9000ms, fastUntil has expired -> cadence is 60s
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(getChangeStatus).toHaveBeenCalledTimes(4);
+
+    await vi.advanceTimersByTimeAsync(57_000);
+    expect(getChangeStatus).toHaveBeenCalledTimes(5);
+
+    tracker.dispose();
+  });
+
+  it('re-fetches the PR itself every 4th tick to detect new pushes', async () => {
+    const { findOpenPrForBranch, getChangeStatus, listBuilds, makeResolvedContext } =
+      createMockClients();
+    const prV1 = makePr({
+      head: { sha: 'sha-v1', ref: 'feat/x', repo: { full_name: 'acme/service' } },
+    });
+    const prV2 = makePr({
+      head: { sha: 'sha-v2', ref: 'feat/x', repo: { full_name: 'acme/service' } },
+    });
+
+    findOpenPrForBranch.mockResolvedValueOnce(prV1).mockResolvedValueOnce(prV2);
+    getChangeStatus.mockResolvedValue([makeStatus()]);
+    listBuilds.mockResolvedValue([]);
+
+    const { source } = createFakeContextSource(makeResolvedContext());
+    const { focusEvents } = createFakeFocusEvents(true);
+    const logger = createFakeLogger();
+
+    const tracker = new PrTracker(source, logger, setTimeout, Date.now, focusEvents);
+
+    // Tick 0 (initial): fetches PR (sha-v1) + status
+    await vi.advanceTimersByTimeAsync(0);
+    expect(findOpenPrForBranch).toHaveBeenCalledTimes(1);
+    expect(getChangeStatus).toHaveBeenLastCalledWith('main', 42, 'sha-v1');
+
+    // Tick 1: status only
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(findOpenPrForBranch).toHaveBeenCalledTimes(1);
+    expect(getChangeStatus).toHaveBeenCalledTimes(2);
+
+    // Tick 2: status only
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(findOpenPrForBranch).toHaveBeenCalledTimes(1);
+    expect(getChangeStatus).toHaveBeenCalledTimes(3);
+
+    // Tick 3: status only
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(findOpenPrForBranch).toHaveBeenCalledTimes(1);
+    expect(getChangeStatus).toHaveBeenCalledTimes(4);
+
+    // Tick 4 (4th tick): re-fetches PR (sha-v2) and uses new SHA for status
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(findOpenPrForBranch).toHaveBeenCalledTimes(2);
+    expect(getChangeStatus).toHaveBeenCalledTimes(5);
+    expect(getChangeStatus).toHaveBeenLastCalledWith('main', 42, 'sha-v2');
+    expect(tracker.snapshot?.pr.head.sha).toBe('sha-v2');
+
+    tracker.dispose();
+  });
+
+  it('logs errors with [Poll] and retries at normal delay without throwing out of loop', async () => {
+    const { findOpenPrForBranch, getChangeStatus, listBuilds, makeResolvedContext } =
+      createMockClients();
+    const pr = makePr();
+    const status = makeStatus();
+
+    findOpenPrForBranch.mockResolvedValue(pr);
+    getChangeStatus
+      .mockResolvedValueOnce([status])
+      .mockRejectedValueOnce(new Error('Zuul 502 Bad Gateway'))
+      .mockResolvedValueOnce([status]);
+    listBuilds.mockResolvedValue([]);
+
+    const { source } = createFakeContextSource(makeResolvedContext());
+    const { focusEvents } = createFakeFocusEvents(true);
+    const logger = createFakeLogger();
+
+    const tracker = new PrTracker(source, logger, setTimeout, Date.now, focusEvents);
+
+    // Initial tick succeeds
+    await vi.advanceTimersByTimeAsync(0);
+    expect(logger.errors).toHaveLength(0);
+
+    // Next tick (15s) fails -> logged with [Poll], loop continues
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(logger.errors).toHaveLength(1);
+    expect(logger.errors[0].msg).toContain('[Poll]');
+
+    // Next tick (another 15s) succeeds
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(getChangeStatus).toHaveBeenCalledTimes(3);
+    expect(logger.errors).toHaveLength(1);
+
+    tracker.dispose();
+  });
+
+  it('pauses polling while unfocused and resumes + refreshes on focus', async () => {
+    const { findOpenPrForBranch, getChangeStatus, listBuilds, makeResolvedContext } =
+      createMockClients();
+    const pr = makePr();
+
+    findOpenPrForBranch.mockResolvedValue(pr);
+    getChangeStatus.mockResolvedValue([makeStatus()]);
+    listBuilds.mockResolvedValue([]);
+
+    const { source } = createFakeContextSource(makeResolvedContext());
+    const { focusEvents, setFocused } = createFakeFocusEvents(true);
+    const logger = createFakeLogger();
+
+    const tracker = new PrTracker(source, logger, setTimeout, Date.now, focusEvents);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(getChangeStatus).toHaveBeenCalledTimes(1);
+
+    // Blur window -> polling pauses
+    setFocused(false);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(getChangeStatus).toHaveBeenCalledTimes(1);
+
+    // Focus window -> immediately refreshes and resumes polling
+    setFocused(true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(findOpenPrForBranch).toHaveBeenCalledTimes(2);
+    expect(getChangeStatus).toHaveBeenCalledTimes(2);
+
+    // Next 15s tick runs as normal
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(getChangeStatus).toHaveBeenCalledTimes(3);
+
+    tracker.dispose();
+  });
+
+  it('handles context changes, missing PRs, manual refresh(), and disposal', async () => {
+    const { findOpenPrForBranch, getChangeStatus, listBuilds, makeResolvedContext } =
+      createMockClients();
+    const pr = makePr();
+
+    findOpenPrForBranch.mockResolvedValueOnce(undefined).mockResolvedValue(pr);
+    getChangeStatus.mockResolvedValue([]);
+    listBuilds.mockResolvedValue([]);
+
+    const { source, setContext } = createFakeContextSource(undefined);
+    const { focusEvents } = createFakeFocusEvents(true);
+    const logger = createFakeLogger();
+    const snapshots: (PrSnapshot | undefined)[] = [];
+
+    const tracker = new PrTracker(source, logger, setTimeout, Date.now, focusEvents);
+    tracker.onDidChange((s) => snapshots.push(s));
+
+    // Context becomes valid, first check finds no open PR
+    setContext(makeResolvedContext());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(tracker.snapshot).toBeUndefined();
+    expect(snapshots).toEqual([undefined]);
+
+    // Manual refresh() finds the newly created PR
+    await tracker.refresh();
+    expect(tracker.snapshot?.pr).toEqual(pr);
+    expect(snapshots).toHaveLength(2);
+
+    // Context switches to detached HEAD (no branch) -> clears snapshot
+    setContext(makeResolvedContext({ branch: undefined }));
+    expect(tracker.snapshot).toBeUndefined();
+    expect(snapshots).toHaveLength(3);
+    expect(snapshots[2]).toBeUndefined();
+
+    // Dispose stops any further activity
+    tracker.dispose();
+    await tracker.refresh();
+    expect(findOpenPrForBranch).toHaveBeenCalledTimes(2);
+  });
+});

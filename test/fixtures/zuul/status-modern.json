@@ -1,0 +1,34 @@
+[
+  {
+    "pipeline": "check",
+    "queue": "shared",
+    "live": true,
+    "enqueue_time": 1700000000000,
+    "remaining_time": 120000,
+    "refs": [
+      {
+        "project": "ghe.example.com/acme/service",
+        "change": 42,
+        "patchset": "9f8e7d6c5b4a3210",
+        "ref_url": "https://ghe.example.com/acme/service/pull/42"
+      },
+      {
+        "project": "ghe.example.com/acme/common-lib",
+        "change": 89,
+        "patchset": "1122334455667788",
+        "ref_url": "https://ghe.example.com/acme/common-lib/pull/89"
+      }
+    ],
+    "jobs": [
+      {
+        "name": "zuul-tox-linters",
+        "uuid": "11111111-2222-3333-4444-555555555555",
+        "result": "FAILURE",
+        "elapsed_time": 52000,
+        "remaining_time": 0,
+        "url": null,
+        "report_url": "https://logs.example.com/42/9f8e7d6c5b4a3210/check/zuul-tox-linters/1111111/"
+      }
+    ]
+  }
+]

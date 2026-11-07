@@ -236,7 +236,7 @@ in-editor, and provides `.zuul.yaml` authoring help, with OAuth as default GHE l
 
 - **Tier:** sonnet
 - **Risk:** medium
-- **Status:** todo
+- **Status:** done
 - **Files:** `src/clients/zuulClient.ts` (new), `src/clients/zuulTypes.ts` (new),
   `test/unit/zuulClient.test.ts` (new), `test/fixtures/zuul/*.json` (new)
 - **Do:**
@@ -275,7 +275,7 @@ in-editor, and provides `.zuul.yaml` authoring help, with OAuth as default GHE l
 
 - **Tier:** sonnet
 - **Risk:** medium
-- **Status:** todo
+- **Status:** done
 - **Files:** `src/auth/types.ts`, `src/auth/authService.ts`, `src/auth/patAuthProvider.ts`,
   `src/auth/ghCliAuthProvider.ts`, `test/unit/authService.test.ts`,
   `test/unit/patAuthProvider.test.ts`, `test/unit/ghCliAuthProvider.test.ts` (all new);
@@ -306,7 +306,7 @@ in-editor, and provides `.zuul.yaml` authoring help, with OAuth as default GHE l
 
 - **Tier:** sonnet
 - **Risk:** medium
-- **Status:** todo
+- **Status:** done
 - **Files:** `src/context/tenantResolver.ts`, `src/context/zuulContext.ts`,
   `test/unit/tenantResolver.test.ts`, `test/unit/zuulContext.test.ts` (all new); `src/extension.ts` (edit)
 - **Do:**
@@ -333,7 +333,7 @@ in-editor, and provides `.zuul.yaml` authoring help, with OAuth as default GHE l
 
 - **Tier:** sonnet
 - **Risk:** medium
-- **Status:** todo
+- **Status:** done
 - **Files:** `src/services/prTracker.ts`, `src/services/pollSchedule.ts`,
   `test/unit/prTracker.test.ts`, `test/unit/pollSchedule.test.ts` (all new); `package.json`, `src/extension.ts` (edit)
 - **Do:**
@@ -361,7 +361,7 @@ in-editor, and provides `.zuul.yaml` authoring help, with OAuth as default GHE l
 
 - **Tier:** haiku
 - **Risk:** low
-- **Status:** todo
+- **Status:** done
 - **Files:** `src/services/statusBarText.ts` (new), `src/views/statusBar.ts` (new),
   `test/unit/statusBarText.test.ts` (new), `src/extension.ts` (edit)
 - **Do:**
@@ -389,7 +389,7 @@ in-editor, and provides `.zuul.yaml` authoring help, with OAuth as default GHE l
 
 - **Tier:** sonnet
 - **Risk:** low
-- **Status:** todo
+- **Status:** done
 - **Files:** `src/views/buildsTreeView.ts` (new), `src/services/buildsModel.ts` (new),
   `test/unit/buildsModel.test.ts` (new), `src/extension.ts`, `package.json` (edit)
 - **Do:**
