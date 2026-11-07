@@ -10,7 +10,160 @@
     "vscode": "^1.100.0"
   },
   "main": "./dist/extension.js",
-  "activationEvents": [],
+  "activationEvents": [
+    "workspaceContains:.zuul.yaml",
+    "workspaceContains:zuul.yaml",
+    "workspaceContains:zuul.d/**",
+    "workspaceContains:.zuul.d/**",
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "zuul-explorer",
+          "title": "Zuul",
+          "icon": "resources/icons/zuul.svg"
+        }
+      ]
+    },
+    "views": {
+      "zuul-explorer": [
+        {
+          "id": "zuul.gateReadiness",
+          "name": "Gate Readiness"
+        },
+        {
+          "id": "zuul.dependencies",
+          "name": "Dependencies"
+        },
+        {
+          "id": "zuul.builds",
+          "name": "Builds"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "zuul.gateReadiness",
+        "contents": "No pull request found for the current branch."
+      }
+    ],
+    "configuration": {
+      "title": "Zuul",
+      "properties": {
+        "zuul.url": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Base URL of Zuul Web, e.g. `https://zuul.example.com`."
+        },
+        "zuul.tenant": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Zuul tenant name. Auto-detected if empty."
+        },
+        "zuul.ghe.host": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "GitHub Enterprise hostname. Auto-detected from git remote if empty."
+        },
+        "zuul.auth.method": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "oauth",
+            "gh-cli",
+            "pat"
+          ],
+          "default": "pat",
+          "markdownDescription": "Authentication method for GitHub Enterprise (`auto`, `oauth`, `gh-cli`, or `pat`)."
+        },
+        "zuul.ghe.oauthClientId": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "OAuth App client ID for GitHub Enterprise Device Flow."
+        },
+        "zuul.triggerComments": {
+          "type": "array",
+          "default": [
+            {
+              "label": "Recheck",
+              "comment": "recheck",
+              "icon": "refresh"
+            }
+          ],
+          "markdownDescription": "Preset trigger comments offered when posting a comment on a pull request.",
+          "items": {
+            "type": "object",
+            "required": [
+              "label",
+              "comment"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "label": {
+                "type": "string",
+                "description": "Display label shown in the QuickPick."
+              },
+              "comment": {
+                "type": "string",
+                "description": "Comment body posted to the pull request."
+              },
+              "icon": {
+                "type": "string",
+                "description": "Optional VS Code codicon name."
+              }
+            }
+          }
+        },
+        "zuul.pinnedArtifacts": {
+          "type": "array",
+          "default": [
+            "job-output.txt"
+          ],
+          "markdownDescription": "Glob patterns of build log files pinned at the top of each build.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "zuul.gate.requiredApprovals": {
+          "type": "number",
+          "default": 1,
+          "markdownDescription": "Fallback number of required approvals when not auto-detected from GitHub."
+        },
+        "zuul.gate.requiredStatusChecks": {
+          "type": "object",
+          "default": {},
+          "markdownDescription": "Additional required status check contexts keyed by `*` or `org/repo`.",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "zuul.gate.requiredLabels": {
+          "type": "array",
+          "default": [],
+          "markdownDescription": "Labels that must be present on a pull request for gate readiness.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "zuul.gate.blockingLabels": {
+          "type": "array",
+          "default": [
+            "do-not-merge",
+            "wip"
+          ],
+          "markdownDescription": "Labels that block a pull request from entering the gate.",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
   "scripts": {
     "build": "node esbuild.mjs --production",
     "watch": "node esbuild.mjs --watch",

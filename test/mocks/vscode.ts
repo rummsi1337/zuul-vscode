@@ -163,12 +163,18 @@ export const window = {
   onDidChangeWindowState: vi.fn(() => new Disposable()),
 };
 
+export interface ConfigurationChangeEvent {
+  affectsConfiguration(section: string): boolean;
+}
+
 export const workspace = {
-  getConfiguration: vi.fn(() => ({
-    get: vi.fn(),
+  getConfiguration: vi.fn((_section?: string) => ({
+    get: vi.fn((_key: string, defaultValue?: unknown) => defaultValue),
     update: vi.fn(),
   })),
-  onDidChangeConfiguration: vi.fn(() => new Disposable()),
+  onDidChangeConfiguration: vi.fn(
+    (_listener: Listener<ConfigurationChangeEvent>) => new Disposable(),
+  ),
   workspaceFolders: undefined as { uri: Uri; name: string; index: number }[] | undefined,
   findFiles: vi.fn(async () => []),
   createFileSystemWatcher: vi.fn(() => ({

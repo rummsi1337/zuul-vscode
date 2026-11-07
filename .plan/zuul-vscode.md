@@ -124,7 +124,7 @@ in-editor, and provides `.zuul.yaml` authoring help, with OAuth as default GHE l
 
 - **Tier:** sonnet
 - **Risk:** low
-- **Status:** todo
+- **Status:** done
 - **Files:** `package.json` (edit), `resources/icons/zuul.svg` (new), `src/config/settings.ts` (new),
   `test/unit/settings.test.ts` (new), `test/mocks/vscode.ts` (edit)
 - **Do:**
