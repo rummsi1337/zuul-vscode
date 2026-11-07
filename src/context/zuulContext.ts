@@ -297,6 +297,11 @@ export class ZuulContextService implements vscode.Disposable {
     const seq = ++this.recomputeSeq;
     const gitCtx = this.gitContext.current;
     if (!gitCtx) {
+      if (this._problem !== 'no-repo') {
+        this.logger.info(
+          '[Zuul] No git repository with a GitHub remote found in workspace (waiting for repository)',
+        );
+      }
       this.updateState(undefined, 'no-repo');
       return;
     }
@@ -304,6 +309,9 @@ export class ZuulContextService implements vscode.Disposable {
     const settings = this.getSettings();
     const zuulUrl = settings.url.trim().replace(/\/+$/, '');
     if (!zuulUrl) {
+      if (this._problem !== 'no-zuul-url') {
+        this.logger.info('[Zuul] Setting "zuul.url" is not configured');
+      }
       this.updateState(undefined, 'no-zuul-url');
       return;
     }

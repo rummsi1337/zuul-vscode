@@ -72,6 +72,11 @@ export function activate(context: vscode.ExtensionContext): void {
 
   let promptedNoZuulUrl = false;
   const checkZuulContextProblem = (): void => {
+    void vscode.commands.executeCommand(
+      'setContext',
+      'zuul.contextProblem',
+      zuulContext.problem ?? 'none',
+    );
     if (!promptedNoZuulUrl && zuulContext.problem === 'no-zuul-url') {
       promptedNoZuulUrl = true;
       void Promise.resolve(
@@ -92,6 +97,10 @@ export function activate(context: vscode.ExtensionContext): void {
     statusBar,
     buildsTree,
     dependsOnTree,
+    vscode.window.registerTreeDataProvider('zuul.gateReadiness', {
+      getTreeItem: (e: vscode.TreeItem) => e,
+      getChildren: () => [],
+    }),
     vscode.window.registerTreeDataProvider('zuul.builds', buildsTree),
     vscode.window.registerTreeDataProvider('zuul.dependencies', dependsOnTree),
     vscode.commands.registerCommand(OPEN_BUILD_LOG_COMMAND, async (target?: string | JobNode) => {
@@ -166,6 +175,9 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 
   checkZuulContextProblem();
+  void zuulContext.ready.then(() => {
+    checkZuulContextProblem();
+  });
 }
 
 export function deactivate(): void {

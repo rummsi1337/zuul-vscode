@@ -162,6 +162,31 @@
     "viewsWelcome": [
       {
         "view": "zuul.gateReadiness",
+        "when": "workbenchState == 'empty'",
+        "contents": "No folder is open in this window.\n[Open Folder](command:vscode.openFolder)"
+      },
+      {
+        "view": "zuul.gateReadiness",
+        "when": "workbenchState != 'empty' && (!zuul.contextProblem || zuul.contextProblem == 'no-repo')",
+        "contents": "No GitHub or GitHub Enterprise git remote found in this folder.\n[Open Another Folder](command:vscode.openFolder)"
+      },
+      {
+        "view": "zuul.gateReadiness",
+        "when": "workbenchState != 'empty' && zuul.contextProblem == 'no-zuul-url'",
+        "contents": "Set `zuul.url` in settings to connect to Zuul CI.\n[Configure Zuul URL](command:workbench.action.openSettings?%5B%22zuul.url%22%5D)"
+      },
+      {
+        "view": "zuul.gateReadiness",
+        "when": "workbenchState != 'empty' && zuul.contextProblem == 'no-tenant'",
+        "contents": "Could not resolve a Zuul tenant for this repository.\n[Configure Zuul Settings](command:workbench.action.openSettings?%5B%22zuul%22%5D)"
+      },
+      {
+        "view": "zuul.gateReadiness",
+        "when": "workbenchState != 'empty' && zuul.contextProblem == 'none'",
+        "contents": "No pull request found for the current branch.\n[Set GitHub Enterprise PAT](command:zuul.setGhePat)"
+      },
+      {
+        "view": "zuul.dependencies",
         "contents": "No pull request found for the current branch."
       },
       {

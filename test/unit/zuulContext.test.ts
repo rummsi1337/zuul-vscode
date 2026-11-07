@@ -76,6 +76,9 @@ describe('ZuulContextService', () => {
 
     expect(service.current).toBeUndefined();
     expect(service.problem).toBe('no-repo');
+    expect(
+      logger.messages.some((m) => m.includes('No git repository with a GitHub remote found')),
+    ).toBe(true);
     service.dispose();
   });
 
@@ -100,6 +103,9 @@ describe('ZuulContextService', () => {
 
     expect(service.current).toBeUndefined();
     expect(service.problem).toBe('no-zuul-url');
+    expect(logger.messages.some((m) => m.includes('Setting "zuul.url" is not configured'))).toBe(
+      true,
+    );
     expect(events).toEqual([undefined]);
     service.dispose();
   });
