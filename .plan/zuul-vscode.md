@@ -170,7 +170,7 @@ in-editor, and provides `.zuul.yaml` authoring help, with OAuth as default GHE l
 
 - **Tier:** sonnet
 - **Risk:** low
-- **Status:** todo
+- **Status:** done
 - **Files:** `src/git/remoteUrl.ts` (new), `src/git/gitApi.ts` (new), `src/git/gitContext.ts` (new),
   `test/unit/remoteUrl.test.ts` (new), `test/unit/gitContext.test.ts` (new)
 - **Do:**

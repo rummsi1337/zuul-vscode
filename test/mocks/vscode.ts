@@ -21,6 +21,7 @@ export class Disposable {
 }
 
 export type Listener<T> = (e: T) => unknown;
+export type Event<T> = (listener: Listener<T>) => Disposable;
 
 export class EventEmitter<T> {
   private readonly listeners = new Set<Listener<T>>();
@@ -91,11 +92,38 @@ export class Uri {
     );
   }
 
+  with(change: {
+    scheme?: string;
+    authority?: string;
+    path?: string;
+    query?: string;
+    fragment?: string;
+  }): Uri {
+    return new Uri(
+      change.scheme ?? this.scheme,
+      change.authority ?? this.authority,
+      change.path ?? this.path,
+      change.query ?? this.query,
+      change.fragment ?? this.fragment,
+    );
+  }
+
   toString(): string {
     const auth = this.authority ? `//${this.authority}` : '';
     const q = this.query ? `?${this.query}` : '';
     const f = this.fragment ? `#${this.fragment}` : '';
     return `${this.scheme}:${auth}${this.path}${q}${f}`;
+  }
+
+  toJSON(): unknown {
+    return {
+      scheme: this.scheme,
+      authority: this.authority,
+      path: this.path,
+      query: this.query,
+      fragment: this.fragment,
+      fsPath: this.fsPath,
+    };
   }
 }
 
@@ -192,4 +220,8 @@ export const commands = {
     (_command: string, _callback: (...args: unknown[]) => unknown) => new Disposable(),
   ),
   executeCommand: vi.fn(),
+};
+
+export const extensions = {
+  getExtension: vi.fn(),
 };
