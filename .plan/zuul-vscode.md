@@ -541,7 +541,7 @@ Good points to build, install, and manually test the extension:
 
 - **Tier:** sonnet
 - **Risk:** medium
-- **Status:** todo
+- **Status:** done
 - **Files:** `src/services/gateReadiness.ts`, `test/unit/gateReadiness.test.ts` (new)
 - **Do:**
   - Pure module. Types:
