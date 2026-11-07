@@ -7,8 +7,16 @@ import { ZuulContextService } from './context/zuulContext';
 import { GitContextService } from './git/gitContext';
 import { type JobNode } from './services/buildsModel';
 import { PrTracker } from './services/prTracker';
+import { HAS_PR_CONTEXT_KEY, TriggerService } from './services/triggerService';
 import { createOutputLogger } from './util/logger';
+import { pickAndAddDependsOn } from './views/addDependsOnPick';
 import { BuildsTreeDataProvider, OPEN_BUILD_LOG_COMMAND } from './views/buildsTreeView';
+import {
+  DependsOnTreeDataProvider,
+  type DownstreamDepNode,
+  OPEN_DEPENDENCY_PR_COMMAND,
+  type UpstreamDepNode,
+} from './views/dependsOnTreeView';
 import { ZuulStatusBar } from './views/statusBar';
 
 async function resolveTargetHost(
@@ -51,8 +59,16 @@ export function activate(context: vscode.ExtensionContext): void {
     cache: context.workspaceState,
   });
   const prTracker = new PrTracker(zuulContext, logger);
-  const statusBar = new ZuulStatusBar(prTracker);
+  const triggerService = new TriggerService(zuulContext, prTracker, logger);
+  const statusBar = new ZuulStatusBar(prTracker, triggerService);
   const buildsTree = new BuildsTreeDataProvider(prTracker);
+  const dependsOnTree = new DependsOnTreeDataProvider(zuulContext, prTracker, logger);
+
+  void vscode.commands.executeCommand(
+    'setContext',
+    HAS_PR_CONTEXT_KEY,
+    prTracker.snapshot !== undefined,
+  );
 
   let promptedNoZuulUrl = false;
   const checkZuulContextProblem = (): void => {
@@ -72,11 +88,23 @@ export function activate(context: vscode.ExtensionContext): void {
     gitContext,
     zuulContext,
     prTracker,
+    triggerService,
     statusBar,
     buildsTree,
+    dependsOnTree,
     vscode.window.registerTreeDataProvider('zuul.builds', buildsTree),
+    vscode.window.registerTreeDataProvider('zuul.dependencies', dependsOnTree),
     vscode.commands.registerCommand(OPEN_BUILD_LOG_COMMAND, async (target?: string | JobNode) => {
       await buildsTree.openJobLog(target);
+    }),
+    vscode.commands.registerCommand(
+      OPEN_DEPENDENCY_PR_COMMAND,
+      async (target?: string | UpstreamDepNode | DownstreamDepNode) => {
+        await dependsOnTree.openPr(target);
+      },
+    ),
+    prTracker.onDidChange((snapshot) => {
+      void vscode.commands.executeCommand('setContext', HAS_PR_CONTEXT_KEY, snapshot !== undefined);
     }),
     gitContext.onDidChange((ctx) => {
       if (ctx) {
@@ -107,7 +135,33 @@ export function activate(context: vscode.ExtensionContext): void {
       logger.info(`[Auth] Cleared PAT for ${host}`);
     }),
     vscode.commands.registerCommand('zuul.refresh', async () => {
+      dependsOnTree.invalidateCache();
       await prTracker.refresh();
+    }),
+    vscode.commands.registerCommand('zuul.postTrigger', async (commentArg?: unknown) => {
+      if (typeof commentArg === 'string' && commentArg.trim().length > 0) {
+        await triggerService.post(commentArg.trim());
+        return;
+      }
+      await triggerService.pickAndPostTrigger(readWorkspaceSettings().triggerComments);
+    }),
+    vscode.commands.registerCommand('zuul.postCustomTrigger', async () => {
+      await triggerService.promptAndPostCustomTrigger();
+    }),
+    vscode.commands.registerCommand('zuul.addDependsOn', async (targetArg?: unknown) => {
+      await pickAndAddDependsOn({
+        ctx: zuulContext,
+        tracker: prTracker,
+        logger,
+        onUpdated: () => dependsOnTree.invalidateCache(),
+        targetArg,
+      });
+    }),
+    vscode.commands.registerCommand('zuul.removeDependsOn', async (target?: unknown) => {
+      await dependsOnTree.removeDependsOn(target);
+    }),
+    vscode.commands.registerCommand('zuul.syncViaRecheck', async () => {
+      await triggerService.post('recheck');
     }),
   );
 

@@ -34,9 +34,61 @@
         "title": "Refresh",
         "category": "Zuul",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "zuul.postTrigger",
+        "title": "Post Trigger Comment",
+        "category": "Zuul",
+        "icon": "$(comment)"
+      },
+      {
+        "command": "zuul.postCustomTrigger",
+        "title": "Post Custom Trigger Comment...",
+        "category": "Zuul",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "zuul.addDependsOn",
+        "title": "Add Depends-On...",
+        "category": "Zuul",
+        "icon": "$(add)"
+      },
+      {
+        "command": "zuul.removeDependsOn",
+        "title": "Remove Depends-On",
+        "category": "Zuul",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "zuul.syncViaRecheck",
+        "title": "Sync via Recheck",
+        "category": "Zuul",
+        "icon": "$(sync)"
       }
     ],
     "menus": {
+      "commandPalette": [
+        {
+          "command": "zuul.postTrigger",
+          "when": "zuul.hasPr"
+        },
+        {
+          "command": "zuul.postCustomTrigger",
+          "when": "zuul.hasPr"
+        },
+        {
+          "command": "zuul.addDependsOn",
+          "when": "zuul.hasPr"
+        },
+        {
+          "command": "zuul.removeDependsOn",
+          "when": "zuul.hasPr"
+        },
+        {
+          "command": "zuul.syncViaRecheck",
+          "when": "zuul.hasPr"
+        }
+      ],
       "view/title": [
         {
           "command": "zuul.refresh",
@@ -49,9 +101,36 @@
           "group": "navigation"
         },
         {
+          "command": "zuul.addDependsOn",
+          "when": "view == zuul.dependencies",
+          "group": "navigation"
+        },
+        {
           "command": "zuul.refresh",
           "when": "view == zuul.builds",
           "group": "navigation"
+        },
+        {
+          "command": "zuul.postTrigger",
+          "when": "view == zuul.builds",
+          "group": "navigation"
+        },
+        {
+          "command": "zuul.postCustomTrigger",
+          "when": "view == zuul.builds",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "zuul.removeDependsOn",
+          "when": "view == zuul.dependencies && viewItem == zuulUpstreamDep",
+          "group": "inline"
+        },
+        {
+          "command": "zuul.syncViaRecheck",
+          "when": "view == zuul.dependencies && viewItem == zuulOutOfSync",
+          "group": "inline"
         }
       ]
     },

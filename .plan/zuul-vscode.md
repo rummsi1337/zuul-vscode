@@ -69,6 +69,22 @@ in-editor, and provides `.zuul.yaml` authoring help, with OAuth as default GHE l
   `zuul.dependencies`, `zuul.builds`; output channel `Zuul`; publisher `zuul-vscode-dev`
   (placeholder until the user picks one); extension name `zuul-vscode`.
 
+## Testing Checkpoints
+
+Good points to build, install, and manually test the extension:
+
+| Checkpoint | After Step | What works |
+|---|---|---|
+| **1 — PR Status & Dependencies** | Step 14 | PAT / `gh` CLI auth, tenant auto-discovery, status bar, **Builds** tree, trigger comments (`recheck`), and **Dependencies** (`Depends-On` / `Needed-By`). **Gate Readiness** is still blank. |
+| **2 — Full Sidebar (recommended first install)** | Step 17 | All 3 sidebar views live: adds **Gate Readiness** checklist and blocker explanations across the PR and its upstream `Depends-On` chain. |
+| **3 — In-Editor Log Inspection** | Step 21 | Failed Ansible task view, pinned artifacts, full log manifest browser, clickable stack traces (`File "...", line N` / `path:line`), and live WebSocket console streaming. |
+| **4 — `.zuul.yaml` Authoring** | Step 28 | JSON schema validation, autocomplete, hover, go-to-definition, effective job preview CodeLens, `files` / `irrelevant-files` diff simulator, and RSA-OAEP secret encryption. |
+| **5 — OAuth Sign-In** | Step 31 | One-click GitHub Enterprise OAuth login (VS Code built-in provider + OAuth Device Flow) as the default auth method. |
+
+**How to test at any checkpoint:**
+- **Extension Development Host (no install):** open this repo in VS Code and press `F5`.
+- **Package & install `.vsix`:** `npm run package && code --install-extension zuul-vscode-0.0.1.vsix`, then set `zuul.url` in VS Code settings and run `Zuul: Set GitHub Enterprise PAT` (or `Zuul: Sign In` from Step 29+).
+
 ## Steps
 
 ### Step 1: Scaffold the TypeScript extension toolchain
@@ -411,7 +427,7 @@ in-editor, and provides `.zuul.yaml` authoring help, with OAuth as default GHE l
 
 - **Tier:** sonnet
 - **Risk:** medium
-- **Status:** todo
+- **Status:** done
 - **Files:** `src/services/triggerService.ts`, `test/unit/triggerService.test.ts` (new);
   `src/extension.ts`, `package.json` (edit)
 - **Do:**
@@ -438,7 +454,7 @@ in-editor, and provides `.zuul.yaml` authoring help, with OAuth as default GHE l
 
 - **Tier:** sonnet
 - **Risk:** low
-- **Status:** todo
+- **Status:** done
 - **Files:** `src/services/dependsOnParser.ts`, `test/unit/dependsOnParser.test.ts` (new)
 - **Do:**
   - Pure module, no I/O.
@@ -464,7 +480,7 @@ in-editor, and provides `.zuul.yaml` authoring help, with OAuth as default GHE l
 
 - **Tier:** sonnet
 - **Risk:** medium
-- **Status:** todo
+- **Status:** done
 - **Files:** `src/services/dependsOnService.ts`, `test/unit/dependsOnService.test.ts` (new)
 - **Do:**
   - `DependsOnService(ghe: GheClient, zuul: ZuulClient, tenant: string, tenantProjects: () => Promise<Set<string>>)`.
@@ -490,7 +506,7 @@ in-editor, and provides `.zuul.yaml` authoring help, with OAuth as default GHE l
 
 - **Tier:** sonnet
 - **Risk:** medium
-- **Status:** todo
+- **Status:** done
 - **Files:** `src/views/dependsOnTreeView.ts`, `src/views/addDependsOnPick.ts` (new);
   `src/extension.ts`, `package.json` (edit)
 - **Do:**
@@ -518,6 +534,8 @@ in-editor, and provides `.zuul.yaml` authoring help, with OAuth as default GHE l
 - **Done when:**
   - `npm run check` passes
   - Manual: in the Extension Development Host, the view renders with a mocked/real PR (note in report if not possible)
+
+> **Checkpoint 1 (PR Status & Dependencies):** Status bar, **Builds** view, trigger comments, and **Dependencies** (`Depends-On` / `Needed-By`) are ready to test with a PAT or `gh` CLI.
 
 ### Step 15: Implement the pure gate-readiness evaluator
 
@@ -603,6 +621,8 @@ in-editor, and provides `.zuul.yaml` authoring help, with OAuth as default GHE l
 - **Don't:** duplicate blocker logic in the view; delegate to `collectGateFacts` + `evaluateGate`.
 - **Done when:**
   - `npm run check` passes
+
+> **Checkpoint 2 (Full Sidebar — recommended first install):** All three sidebar views (**Gate Readiness**, **Dependencies**, **Builds**) are live. Run `npm run package && code --install-extension zuul-vscode-0.0.1.vsix` to test the full PR workflow.
 
 ### Step 18: Parse job output and manifests (ArtifactService)
 
@@ -700,6 +720,8 @@ in-editor, and provides `.zuul.yaml` authoring help, with OAuth as default GHE l
 - **Done when:**
   - `npm run check` passes
   - Tests use a fake socket to cover URL building, initial message, messages, close
+
+> **Checkpoint 3 (In-Editor Log Inspection):** Failed Ansible tasks, pinned artifacts, full log manifest browsing, clickable stack-trace links, and live console streaming are ready to test.
 
 ### Step 22: Bundle a JSON schema for Zuul YAML files
 
@@ -886,6 +908,8 @@ in-editor, and provides `.zuul.yaml` authoring help, with OAuth as default GHE l
 - **Done when:**
   - `npm run check` passes
 
+> **Checkpoint 4 (`.zuul.yaml` Authoring):** Schema validation, autocomplete, hover, go-to-definition, effective job preview CodeLens, file matcher simulator, and secret encryption are ready to test on repos with `.zuul.yaml` / `zuul.d/`.
+
 ### Step 29: Add GHE OAuth via VS Code's built-in `github-enterprise` provider
 
 - **Tier:** sonnet
@@ -967,6 +991,8 @@ in-editor, and provides `.zuul.yaml` authoring help, with OAuth as default GHE l
 - **Done when:**
   - `npm run check` passes
   - Tests cover the new order, the fallback QuickPick choice routing, and the default
+
+> **Checkpoint 5 (OAuth Sign-In):** Default OAuth sign-in (VS Code built-in `github-enterprise` / `github` provider + Device Flow) is ready to test via `Zuul: Sign In`.
 
 ### Step 32: Support a Zuul bearer token and privileged actions
 
