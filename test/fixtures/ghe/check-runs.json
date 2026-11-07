@@ -1,0 +1,19 @@
+{
+  "total_count": 2,
+  "check_runs": [
+    {
+      "id": 5001,
+      "name": "sonarqube",
+      "status": "completed",
+      "conclusion": "success",
+      "html_url": "https://ghe.example.com/acme/service/runs/5001"
+    },
+    {
+      "id": 5002,
+      "name": "security-scan",
+      "status": "in_progress",
+      "conclusion": null,
+      "html_url": "https://ghe.example.com/acme/service/runs/5002"
+    }
+  ]
+}

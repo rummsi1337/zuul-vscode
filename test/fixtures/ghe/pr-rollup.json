@@ -1,0 +1,48 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "id": "PR_kwDOAA001",
+        "isDraft": false,
+        "mergeable": "MERGEABLE",
+        "reviewDecision": "APPROVED",
+        "labels": {
+          "nodes": [
+            {
+              "name": "ready-for-review"
+            }
+          ]
+        },
+        "commits": {
+          "nodes": [
+            {
+              "commit": {
+                "oid": "9f8e7d6c5b4a3210",
+                "statusCheckRollup": {
+                  "state": "SUCCESS",
+                  "contexts": {
+                    "nodes": [
+                      {
+                        "__typename": "StatusContext",
+                        "context": "acme-tenant/check",
+                        "state": "SUCCESS",
+                        "isRequired": true
+                      },
+                      {
+                        "__typename": "CheckRun",
+                        "name": "sonarqube",
+                        "conclusion": "SUCCESS",
+                        "status": "COMPLETED",
+                        "isRequired": true
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "number": 42,
+  "html_url": "https://ghe.example.com/acme/service/pull/42",
+  "title": "Add Zuul check pipeline",
+  "state": "open",
+  "draft": false,
+  "merged": false,
+  "mergeable_state": "clean",
+  "body": "Implements pipeline config\n\nDepends-On: https://ghe.example.com/acme/common/pull/89",
+  "updated_at": "2026-11-07T18:00:00Z",
+  "head": {
+    "sha": "9f8e7d6c5b4a3210",
+    "ref": "feat/zuul-pipeline",
+    "repo": {
+      "full_name": "acme/service"
+    }
+  },
+  "base": {
+    "ref": "main",
+    "repo": {
+      "full_name": "acme/service"
+    }
+  },
+  "user": {
+    "login": "alice"
+  },
+  "labels": [
+    {
+      "name": "ready-for-review"
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+[
+  {
+    "id": 101,
+    "user": {
+      "login": "bob"
+    },
+    "state": "COMMENTED",
+    "submitted_at": "2026-11-07T10:00:00Z"
+  },
+  {
+    "id": 102,
+    "user": {
+      "login": "bob"
+    },
+    "state": "APPROVED",
+    "submitted_at": "2026-11-07T11:00:00Z"
+  }
+]

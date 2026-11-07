@@ -1,0 +1,14 @@
+{
+  "strict": true,
+  "contexts": ["acme-tenant/check", "sonarqube"],
+  "checks": [
+    {
+      "context": "acme-tenant/check",
+      "app_id": null
+    },
+    {
+      "context": "sonarqube",
+      "app_id": 12
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "total_count": 1,
+  "incomplete_results": false,
+  "items": [
+    {
+      "number": 99,
+      "title": "Consume new service endpoint",
+      "html_url": "https://ghe.example.com/acme/frontend/pull/99",
+      "state": "open",
+      "draft": false,
+      "body": "Depends-On: https://ghe.example.com/acme/service/pull/42",
+      "user": {
+        "login": "dave"
+      },
+      "repository_url": "https://ghe.example.com/api/v3/repos/acme/frontend",
+      "pull_request": {
+        "url": "https://ghe.example.com/api/v3/repos/acme/frontend/pulls/99",
+        "html_url": "https://ghe.example.com/acme/frontend/pull/99",
+        "merged_at": null
+      },
+      "labels": []
+    }
+  ]
+}

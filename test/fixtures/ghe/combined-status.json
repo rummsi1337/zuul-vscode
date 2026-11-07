@@ -1,0 +1,17 @@
+{
+  "state": "success",
+  "statuses": [
+    {
+      "context": "acme-tenant/check",
+      "state": "success",
+      "description": "Build succeeded",
+      "target_url": "https://zuul.example.com/t/acme-tenant/buildset/123"
+    },
+    {
+      "context": "cla/enterprise",
+      "state": "success",
+      "description": "CLA signed",
+      "target_url": null
+    }
+  ]
+}

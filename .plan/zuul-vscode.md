@@ -199,7 +199,7 @@ in-editor, and provides `.zuul.yaml` authoring help, with OAuth as default GHE l
 
 - **Tier:** sonnet
 - **Risk:** medium
-- **Status:** todo
+- **Status:** done
 - **Files:** `src/clients/http.ts` (new), `src/clients/gheClient.ts` (new), `src/clients/gheTypes.ts` (new),
   `test/unit/http.test.ts` (new), `test/unit/gheClient.test.ts` (new), `test/fixtures/ghe/*.json` (new)
 - **Do:**

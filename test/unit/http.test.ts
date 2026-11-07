@@ -1,0 +1,188 @@
+import { gzipSync } from 'node:zlib';
+import { describe, expect, it, vi } from 'vitest';
+import { HttpClient, HttpError } from '../../src/clients/http';
+
+function jsonResponse(data: unknown, status = 200, headers?: Record<string, string>): Response {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { 'Content-Type': 'application/json', ...headers },
+  });
+}
+
+describe('HttpClient', () => {
+  it('resolves relative paths, strips trailing base slash, and uses http(s) URLs as-is', async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => jsonResponse({ ok: true }));
+    const client = new HttpClient({
+      baseUrl: 'https://zuul.example.com/api///',
+      fetchFn,
+    });
+
+    await client.getJson('/tenants');
+    expect(fetchFn).toHaveBeenLastCalledWith(
+      'https://zuul.example.com/api/tenants',
+      expect.objectContaining({
+        method: 'GET',
+        headers: {
+          'User-Agent': 'zuul-vscode',
+          Accept: 'application/json',
+        },
+      }),
+    );
+
+    await client.getJson('status', { change: 42, live: true, ignored: undefined });
+    expect(fetchFn).toHaveBeenLastCalledWith(
+      'https://zuul.example.com/api/status?change=42&live=true',
+      expect.anything(),
+    );
+
+    await client.getJson('https://other.example.com/v1/items?existing=1', { page: 2 });
+    expect(fetchFn).toHaveBeenLastCalledWith(
+      'https://other.example.com/v1/items?existing=1&page=2',
+      expect.anything(),
+    );
+  });
+
+  it('includes Authorization header when getAuthHeader returns a value and supports custom userAgent', async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => jsonResponse({ user: 'alice' }));
+    let token: string | undefined = 'Bearer secret-token';
+    const client = new HttpClient({
+      baseUrl: 'https://ghe.example.com/api/v3',
+      getAuthHeader: async () => token,
+      fetchFn,
+      userAgent: 'custom-agent/1.0',
+    });
+
+    await client.getJson('/user');
+    expect(fetchFn).toHaveBeenLastCalledWith(
+      'https://ghe.example.com/api/v3/user',
+      expect.objectContaining({
+        headers: {
+          'User-Agent': 'custom-agent/1.0',
+          Accept: 'application/json',
+          Authorization: 'Bearer secret-token',
+        },
+        signal: expect.any(AbortSignal),
+      }),
+    );
+
+    token = undefined;
+    await client.getJson('/user');
+    const lastInit = fetchFn.mock.calls.at(-1)?.[1] as { headers: Record<string, string> };
+    expect(lastInit.headers.Authorization).toBeUndefined();
+  });
+
+  it('sends JSON bodies for postJson and patchJson and handles empty responses', async () => {
+    const fetchFn = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ id: 1 }, 201))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+      .mockResolvedValueOnce(jsonResponse({ updated: true }, 200))
+      .mockResolvedValueOnce(new Response('', { status: 200 }));
+
+    const client = new HttpClient({
+      baseUrl: 'https://ghe.example.com/api/v3',
+      fetchFn,
+    });
+
+    const created = await client.postJson<{ id: number }>('/comments', { body: 'recheck' });
+    expect(created).toEqual({ id: 1 });
+    expect(fetchFn).toHaveBeenNthCalledWith(
+      1,
+      'https://ghe.example.com/api/v3/comments',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ body: 'recheck' }),
+      }),
+    );
+
+    const emptyPost = await client.postJson('/noop');
+    expect(emptyPost).toBeUndefined();
+
+    const patched = await client.patchJson<{ updated: boolean }>('/pulls/1', { body: 'new' });
+    expect(patched).toEqual({ updated: true });
+    expect(fetchFn).toHaveBeenNthCalledWith(
+      3,
+      'https://ghe.example.com/api/v3/pulls/1',
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({ body: 'new' }),
+      }),
+    );
+
+    const emptyPatch = await client.patchJson('/pulls/1');
+    expect(emptyPatch).toBeUndefined();
+  });
+
+  it('throws HttpError with status and body on non-2xx responses', async () => {
+    const fetchFn = vi.fn<typeof fetch>(
+      async () => new Response('{"message":"Not Found"}', { status: 404 }),
+    );
+    const client = new HttpClient({
+      baseUrl: 'https://ghe.example.com/api/v3',
+      fetchFn,
+    });
+
+    await expect(client.getJson('/repos/acme/missing')).rejects.toThrowError(HttpError);
+    try {
+      await client.getJson('/repos/acme/missing');
+    } catch (err) {
+      expect(err).toBeInstanceOf(HttpError);
+      const httpErr = err as HttpError;
+      expect(httpErr.status).toBe(404);
+      expect(httpErr.body).toBe('{"message":"Not Found"}');
+      expect(httpErr.name).toBe('HttpError');
+    }
+  });
+
+  it('executes GraphQL queries and throws on GraphQL errors or missing data', async () => {
+    const fetchFn = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ data: { viewer: { login: 'alice' } } }))
+      .mockResolvedValueOnce(jsonResponse({ errors: [{ message: 'Field does not exist' }, {}] }))
+      .mockResolvedValueOnce(jsonResponse({}));
+
+    const client = new HttpClient({
+      baseUrl: 'https://ghe.example.com/api/v3',
+      fetchFn,
+    });
+
+    const data = await client.graphql<{ viewer: { login: string } }>(
+      'https://ghe.example.com/api/graphql',
+      'query { viewer { login } }',
+      { id: 1 },
+    );
+    expect(data).toEqual({ viewer: { login: 'alice' } });
+
+    await expect(
+      client.graphql('https://ghe.example.com/api/graphql', 'query { bad }'),
+    ).rejects.toThrow('Field does not exist; Unknown GraphQL error');
+
+    await expect(
+      client.graphql('https://ghe.example.com/api/graphql', 'query { empty }'),
+    ).rejects.toThrow('GraphQL response missing data');
+  });
+
+  it('fetches plain and gzip-compressed bytes and text via getBytes and getText', async () => {
+    const plainText = '2026-11-07 18:00:00 INFO Job started\n';
+    const gzippedBytes = gzipSync(Buffer.from(plainText, 'utf-8'));
+    expect(gzippedBytes[0]).toBe(0x1f);
+    expect(gzippedBytes[1]).toBe(0x8b);
+
+    const fetchFn = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(plainText, { status: 200 }))
+      .mockResolvedValueOnce(new Response(gzippedBytes, { status: 200 }))
+      .mockResolvedValueOnce(new Response(gzippedBytes, { status: 200 }));
+
+    const client = new HttpClient({
+      baseUrl: 'https://zuul.example.com',
+      fetchFn,
+    });
+
+    expect(await client.getText('https://logs.example.com/42/job-output.txt')).toBe(plainText);
+    expect(await client.getText('https://logs.example.com/42/job-output.txt.gz')).toBe(plainText);
+
+    const rawUnzipped = await client.getBytes('https://logs.example.com/42/job-output.txt.gz');
+    expect(new TextDecoder().decode(rawUnzipped)).toBe(plainText);
+  });
+});
