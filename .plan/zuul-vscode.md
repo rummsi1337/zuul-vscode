@@ -580,7 +580,7 @@ Good points to build, install, and manually test the extension:
 
 - **Tier:** sonnet
 - **Risk:** medium
-- **Status:** todo
+- **Status:** done
 - **Files:** `src/services/gateFacts.ts`, `test/unit/gateFacts.test.ts` (new)
 - **Do:**
   - `collectGateFacts(ghe, zuul, tenant, pr: PullRequest): Promise<PrGateFacts>`:
