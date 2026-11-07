@@ -1,0 +1,45 @@
+{
+  "name": "zuul-vscode",
+  "displayName": "Zuul CI",
+  "description": "Zuul CI integration for VS Code",
+  "publisher": "zuul-vscode-dev",
+  "version": "0.0.1",
+  "private": true,
+  "license": "UNLICENSED",
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "main": "./dist/extension.js",
+  "activationEvents": [],
+  "scripts": {
+    "build": "node esbuild.mjs --production",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint . && prettier --check .",
+    "format": "prettier --write .",
+    "test": "vitest run --coverage",
+    "check": "npm run lint && npm run typecheck && npm test && npm run build",
+    "package": "vsce package --no-dependencies"
+  },
+  "dependencies": {
+    "picomatch": "^4.0.7",
+    "yaml": "^2.9.1"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^22.20.5",
+    "@types/picomatch": "^4.0.3",
+    "@types/vscode": "~1.100.0",
+    "@vitest/coverage-v8": "^5.1.0",
+    "@vscode/test-cli": "^0.0.15",
+    "@vscode/test-electron": "^3.1.0",
+    "@vscode/vsce": "^4.1.0",
+    "esbuild": "^0.28.2",
+    "eslint": "^10.14.0",
+    "mocha": "^12.0.3",
+    "prettier": "^3.9.10",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.72.1",
+    "vitest": "^5.1.0"
+  }
+}

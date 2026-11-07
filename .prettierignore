@@ -1,0 +1,8 @@
+node_modules/
+dist/
+coverage/
+*.vsix
+.vscode-test/
+package-lock.json
+.plan/
+IMPLEMENTATION_PLAN.md
