@@ -5,8 +5,9 @@
 - Source: this plan rewrites `IMPLEMENTATION_PLAN.md` (repo root) into self-contained steps. That
   file stays as the product vision (architecture diagram, feature descriptions). Implementers do
   **not** need to read it; everything required is in this file.
-- Repo state (checked 2026-11-07): `git init` done, branch `main`, **no commits**, only
-  `IMPLEMENTATION_PLAN.md`. Greenfield.
+- Repo state (checked 2026-11-08): Steps 1–17 are implemented and committed. The repo is on GitHub
+  (`rummsi1337/zuul-vscode`) with CI in `.github/workflows/ci.yml`. Fixes from the code review are
+  tracked in `.plan/zuul-vscode-review.md`; "review Step N" below means a step of that plan.
 - Local toolchain (checked 2026-11-07): Node `v26.13.0`, npm `11.20.0`, VS Code `1.145.2`,
   `pre-commit` installed, `gh` CLI **not** installed (code must handle its absence).
 - Target users: teams running Zuul CI with GitHub Enterprise (GHE). github.com must also work.
@@ -16,13 +17,21 @@
 1. **Needed-By (downstream PRs)** comes from a GHE search for open PRs whose body contains this
    PR's URL, not from Zuul. Zuul's status API has no `needed_by` field.
 2. **"Zuul sees these dependencies"** = the non-live items queued ahead of the change in the same
-   Zuul queue entry (Zuul enqueues `Depends-On` targets as non-live items). There is no
-   `dependencies` field in Zuul's status API.
+   Zuul queue (Zuul enqueues `Depends-On` targets as non-live items). There is no `dependencies`
+   field in Zuul's status API. In `/status/change/{id}`, `item_ahead` is only a UUID or `null`, so
+   those items have to be read from `GET /status` (`pipelines[].change_queues[].heads[][]`,
+   following `item_ahead`). Review Step 6 implements this.
 3. **`org/repo#123` shorthand**: parsed and shown, but flagged "Zuul ignores this form". Zuul's
    GitHub driver only resolves full URLs. The extension always writes full URLs.
 4. **GHE OAuth Path B**: Device Flow only. Authorization Code + PKCE is out of scope.
 5. **Zuul auth**: paste a Zuul bearer token (SecretStorage) instead of a full OIDC browser flow.
 6. **Whitelabeled Zuul tenants** (API without `/api/tenant/{t}`) are out of scope.
+7. **Vision items built later or differently** (from `IMPLEMENTATION_PLAN.md`):
+   - Review status on each upstream PR in the Dependencies view: review Step 13.
+   - Completion for roles: Step 24. Hover help for variables: Step 26.
+   - The trigger toolbar in the sidebar: VS Code menus are static, so there is one toolbar button
+     that opens a QuickPick (Step 11) and one row per trigger in Gate Readiness (review Step 14).
+   - Detecting the required approval count from branch protection: see Future work.
 
 ## Goal
 
@@ -37,7 +46,7 @@ in-editor, and provides `.zuul.yaml` authoring help, with OAuth as default GHE l
 - **Acceptance command for every step:** `npm run check`
   (= `lint` + `typecheck` + `test` with coverage + `build`; defined in Step 1). Plus the step's
   own **Done when** items.
-- **Install all npm packages once in Step 1** so Steps 2–32 run completely offline inside the
+- **Install all npm packages once in Step 1** so Steps 2–34 run completely offline inside the
   sandbox without network prompts. Pin added deps with `^` ranges as npm writes them.
 - **No git state changes** (no commit, add, stash, checkout, branch, push). Leave changes in the
   working tree.
@@ -45,8 +54,10 @@ in-editor, and provides `.zuul.yaml` authoring help, with OAuth as default GHE l
   `dist/extension.js`. Prettier (`printWidth: 100`, `singleQuote: true`, `trailingComma: all`).
   ESLint flat config with `typescript-eslint` recommended.
 - **Testability rule:** logic lives in modules that do **not** import `vscode` (parsers,
-  evaluators, clients, services). Only `src/extension.ts`, `src/views/**`, `src/language/*Provider.ts`
-  and thin adapters import `vscode`. Tests that need `vscode` use the alias mock
+  evaluators, clients). Only `src/extension.ts`, `src/views/**`, `src/language/*Provider.ts`,
+  `src/language/*Lens.ts` and thin adapters import `vscode`. A service may import `vscode` only as a
+  thin adapter (events, `Disposable`, prompts, `setContext`), as `prTracker.ts` and
+  `triggerService.ts` do. Tests that need `vscode` use the alias mock
   `test/mocks/vscode.ts` (extend it as needed; never import the real module in unit tests).
 - **Dependency injection:** clients and services receive collaborators via constructor
   (`fetchFn`, `getToken`, `execFile`, clock `now()`), so tests pass fakes. No module-level
@@ -57,12 +68,15 @@ in-editor, and provides `.zuul.yaml` authoring help, with OAuth as default GHE l
 - **Allowed runtime deps:** `yaml` (eemeli/yaml), `picomatch`. Anything else → report `BLOCKED`.
 - **Tests:** vitest, files in `test/unit/<module>.test.ts`; fixtures in `test/fixtures/`.
   Every new module gets tests. Coverage threshold 80 % lines/branches on `src/**` excluding
-  `src/extension.ts` and `src/views/**`.
+  `src/extension.ts`, `src/views/**`, `src/language/*Provider.ts` and `src/language/*Lens.ts`.
+  Step 24 adds the two `src/language` globs to `vitest.config.mts`.
 - **Logging:** one `OutputChannel` named `Zuul` (created in `extension.ts`, passed as a
-  `Logger { info, warn, error }` interface). Prefix messages with tags: `[Auth]`, `[GHE]`,
+  `Logger { info, warn, error }` interface). Prefix messages with tags: `[Auth]`, `[Git]`, `[GHE]`,
   `[Zuul]`, `[Poll]`, `[DependsOn]`, `[Gate]`, `[Logs]`, `[YAML]`. Never log tokens.
-- **Errors to users:** `vscode.window.showErrorMessage` with a short human message; HTTP 401/403
-  → offer "Sign in" action that runs `zuul.signIn` (until Step 31 that command is `zuul.setGhePat`).
+- **Errors to users:** `vscode.window.showErrorMessage` with a short human message. A 401 offers a
+  "Sign in" action that runs `zuul.signIn` (until Step 31 that command is `zuul.setGhePat`). A 403
+  offers "Sign in" only on user-started commands and never for rate limits. Neither deletes a
+  stored token.
 - **Commands** are added to `package.json` `contributes.commands` in the step that implements
   them, with `"category": "Zuul"`. IDs listed per step are final.
 - **Ids that never change:** view container `zuul-explorer`; views `zuul.gateReadiness`,
@@ -75,7 +89,7 @@ Good points to build, install, and manually test the extension:
 
 | Checkpoint | After Step | What works |
 |---|---|---|
-| **1 — PR Status & Dependencies** | Step 14 | PAT / `gh` CLI auth, tenant auto-discovery, status bar, **Builds** tree, trigger comments (`recheck`), and **Dependencies** (`Depends-On` / `Needed-By`). **Gate Readiness** is still blank. |
+| **1 — PR Status & Dependencies** | Step 14 | PAT / `gh` CLI auth (`zuul.auth.method` defaults to `auto`: `pat`, then `gh-cli`), tenant auto-discovery, status bar, **Builds** tree, trigger comments (`recheck`), and **Dependencies** (`Depends-On` / `Needed-By`). **Gate Readiness** is still blank. |
 | **2 — Full Sidebar (recommended first install)** | Step 17 | All 3 sidebar views live: adds **Gate Readiness** checklist and blocker explanations across the PR and its upstream `Depends-On` chain. |
 | **3 — In-Editor Log Inspection** | Step 21 | Failed Ansible task view, pinned artifacts, full log manifest browser, clickable stack traces (`File "...", line N` / `path:line`), and live WebSocket console streaming. |
 | **4 — `.zuul.yaml` Authoring** | Step 28 | JSON schema validation, autocomplete, hover, go-to-definition, effective job preview CodeLens, `files` / `irrelevant-files` diff simulator, and RSA-OAEP secret encryption. |
@@ -98,10 +112,10 @@ Good points to build, install, and manually test the extension:
   `test/unit/logger.test.ts`, `.vscode/launch.json`, `.vscode/tasks.json` (all new)
 - **Do:**
   - `package.json`: `name: zuul-vscode`, `displayName: "Zuul CI"`, `publisher: zuul-vscode-dev`,
-    `version: 0.0.1`, `engines.vscode: ^1.100.0`, `main: ./dist/extension.js`,
+    `version: 0.0.1`, `engines.vscode: ^1.101.0`, `main: ./dist/extension.js`,
     `activationEvents: []` (filled in Step 2), `license: "UNLICENSED"`, `private: true`.
   - dependencies: `yaml`, `picomatch` (installed now so later steps never need `npm install`).
-  - devDependencies: `typescript`, `esbuild`, `vitest`, `@vitest/coverage-v8`, `@types/vscode@~1.100.0`,
+  - devDependencies: `typescript`, `esbuild`, `vitest`, `@vitest/coverage-v8`, `@types/vscode@~1.101.0`,
     `@types/node@^22`, `@types/picomatch`, `eslint`, `typescript-eslint`, `prettier`, `@vscode/vsce`,
     `@vscode/test-cli`, `@vscode/test-electron`, `mocha`, `@types/mocha`.
   - Scripts: `build` (`node esbuild.mjs --production`), `watch` (`node esbuild.mjs --watch`),
@@ -110,7 +124,7 @@ Good points to build, install, and manually test the extension:
     `check` (`npm run lint && npm run typecheck && npm test && npm run build`),
     `package` (`vsce package --no-dependencies`).
   - `esbuild.mjs`: entry `src/extension.ts`, `bundle`, `platform: node`, `format: cjs`,
-    `target: node20`, `external: ['vscode']`, `outfile: dist/extension.js`, sourcemap unless
+    `target: node22`, `external: ['vscode']`, `outfile: dist/extension.js`, sourcemap unless
     `--production`, minify with `--production`, `--watch` support.
   - `tsconfig.json`: `strict`, `target ES2022`, `module commonjs`, `lib ["ES2022", "DOM"]`
     (DOM for `fetch`/`WebSocket` types), `types ["node", "vscode"]`, include `src`, `test`,
@@ -159,7 +173,7 @@ Good points to build, install, and manually test the extension:
     | `zuul.url` | string | `""` | Base URL of Zuul Web, e.g. `https://zuul.example.com` |
     | `zuul.tenant` | string | `""` | Auto-detected if empty |
     | `zuul.ghe.host` | string | `""` | Auto-detected from git remote if empty |
-    | `zuul.auth.method` | enum `auto`,`oauth`,`gh-cli`,`pat` | `"pat"` | Changed to `auto` in Step 31 |
+    | `zuul.auth.method` | enum `auto`,`gh-cli`,`pat` | `"auto"` | Default is `auto` from review Step 11: `pat`, then `gh-cli`. Step 29 adds `oauth` to the enum and Step 31 changes the order |
     | `zuul.ghe.oauthClientId` | string | `""` | OAuth App client ID for Device Flow |
     | `zuul.triggerComments` | array of `{label: string, comment: string, icon?: string}` | `[{"label":"Recheck","comment":"recheck","icon":"refresh"}]` | |
     | `zuul.pinnedArtifacts` | array of string | `["job-output.txt"]` | Glob patterns |
@@ -167,12 +181,13 @@ Good points to build, install, and manually test the extension:
     | `zuul.gate.requiredStatusChecks` | object (string → string[]) | `{}` | Keys `*` or `org/repo` |
     | `zuul.gate.requiredLabels` | array of string | `[]` | |
     | `zuul.gate.blockingLabels` | array of string | `["do-not-merge","wip"]` | |
+    | `zuul.gate.gateStatusChecks` | array of string | `["{tenant}/gate"]` | Added in review Step 7. Status checks that only report once a pull request enters Zuul's gate. `{tenant}` is replaced by the tenant; names match case-insensitively |
 
     Give every setting a `markdownDescription`; `zuul.triggerComments` gets a full JSON schema
     for its items (`required: ["label","comment"]`).
   - `src/config/settings.ts`: `interface ZuulSettings` mirroring the table (camelCase:
     `url, tenant, gheHost, authMethod, oauthClientId, triggerComments, pinnedArtifacts,
-    gate: { requiredApprovals, requiredStatusChecks, requiredLabels, blockingLabels }`).
+    gate: { requiredApprovals, requiredStatusChecks, requiredLabels, blockingLabels, gateStatusChecks }`).
     `readSettings(get: (key: string) => unknown): ZuulSettings` — pure, validates types, falls
     back to defaults on wrong types, strips a trailing `/` from `url`. Plus
     `readWorkspaceSettings()` adapter using `vscode.workspace.getConfiguration('zuul')`, and
@@ -276,11 +291,35 @@ Good points to build, install, and manually test the extension:
     interface Build { uuid: string; jobName: string; result?: string; pipeline: string; logUrl?: string;
       startTime?: string; endTime?: string; change?: number; patchset?: string; artifacts: { name: string; url: string }[] }
     ```
-    `getChangeStatus` returns `ChangeStatus[]` (one per pipeline the change is in). Map both
-    Zuul `/status/change/{pr},{sha}` array element shapes and put one fixture per format in
-    `test/fixtures/zuul/`:
-    - **Legacy item**: `{ pipeline?: string, queue_name?: string, id: "42,sha", project: "org/repo", live: true, enqueue_time: 1700000000000, remaining_time: 120000, item_ahead?: { id: "89,sha2", project: "org/dep", live: false, url: "..." }, items_ahead?: [...], jobs: [{ name, uuid, result, elapsed_time, remaining_time, url, report_url }] }`
-    - **Modern item (`refs[]`)**: `{ pipeline: "check", queue: "shared", live: true, enqueue_time: 1700000000000, remaining_time: 120000, refs: [{ project: "ghe/org/repo", change: 42, patchset: "sha", ref_url: "..." }, { project: "ghe/org/dep", change: 89, ref_url: "..." }], jobs: [...] }` (extra `refs` entries beyond the target change become `itemsAhead` with `live: false`).
+    `getChangeStatus` returns `ChangeStatus[]` (one per pipeline the change is in). Real shape of
+    one `/status/change/{pr},{sha}` array element, read from `zuul.opendev.org` (Zuul
+    14.3.1.dev134). OpenDev uses Gerrit, so re-check once against a GHE-backed Zuul:
+    ```jsonc
+    {
+      "id": "e709c0c15708408390fe5331f5ca9680", // a UUID, not "42,sha"
+      "active": true, "live": false,            // non-live items have "jobs": []
+      "enqueue_time": 1700000000000, "remaining_time": 120000,
+      "failing_reasons": [], "zuul_ref": "Z...",
+      "item_ahead": "95f947a1b9cf4eafb3226ca1c3a99060", // UUID string or null, never an object
+      "items_behind": ["634d7ad3af2d4cc6b62a48f8404b7615"],
+      "refs": [{ "id": "990923,36", "owner": "x", "project": "openstack/cinder",
+                 "project_canonical": "opendev.org/openstack/cinder",
+                 "ref": "refs/changes/23/990923/36",
+                 "url": "https://review.opendev.org/c/openstack/cinder/+/990923" }],
+      "jobs": [{ "name": "j", "uuid": "731f...", "result": "SUCCESS", "voting": true,
+                 "pipeline": "check",
+                 "url": "stream/731f...?logfile=console.log",  // relative
+                 "report_url": "https://zuul.opendev.org/t/openstack/build/731f...", // a web page
+                 "elapsed_time": 1, "remaining_time": 0, "canceled": false, "paused": false,
+                 "queued": false }]
+    }
+    ```
+    - There is no item-level `pipeline` or `queue`. Those live on the enclosing objects in
+      `GET /status`: `pipelines[].name`, `pipelines[].change_queues[].name`,
+      `change_queues[].heads[][]`. `ChangeStatus.pipeline` comes from `jobs[].pipeline`.
+    - A `refs[]` entry other than the target is a bundle member, not an item ahead.
+    - `test/fixtures/zuul/status-modern.json` holds this shape (review Step 5). `status-legacy.json`
+      holds an older assumed form that was never confirmed against a real server.
     `listBuilds` maps both flat fields (`project`, `change`, `patchset`, `job_name`, `log_url`, `start_time`, `end_time`, `artifacts`) and the newer nested `ref: { project, change, patchset }` object.
 - **Don't:** poll, resolve tenants, or touch `vscode`.
 - **Done when:**
@@ -308,9 +347,10 @@ Good points to build, install, and manually test the extension:
     trimmed stdout; `ENOENT`, non-zero exit or empty output → `undefined`. Caches per host 5 min.
   - `AuthService(providers: TokenProvider[], getMethod: () => 'auto' | AuthMethodId, logger)`:
     `getToken(host, { interactive })`. Method `pat` / `gh-cli` / `oauth` → only that provider.
-    `auto` → try providers in this order: `['pat', 'gh-cli']` (Step 31 changes it). Logs which
-    method produced a token, never the token. `reportUnauthorized(host)` → calls the provider's
-    `invalidate` and clears the gh cache.
+    `auto` (the default from review Step 11) → try providers in this order: `['pat', 'gh-cli']`
+    (Step 31 changes it). Logs which method produced a token, never the token.
+    `reportUnauthorized(host)` → clears the gh cache. It never deletes a stored token (review
+    Step 8).
   - Commands: `zuul.setGhePat` ("Set GitHub Enterprise PAT"), `zuul.clearGhePat`
     ("Clear GitHub Enterprise PAT"). Host = current `GitContext.host`; if none, ask via input box.
 - **Don't:** build OAuth. Don't read `GITHUB_TOKEN` env vars.
@@ -336,8 +376,10 @@ Good points to build, install, and manually test the extension:
     `class ZuulContextService` recomputes on git-context or settings change; exposes
     `current: ResolvedContext | undefined`, `onDidChange`, and `problem?: 'no-repo' | 'no-zuul-url' | 'no-tenant'`.
     GheClient's `getToken` = `() => auth.getToken(host, { interactive: false })`.
-    On `HttpError` 401 from GHE: `auth.reportUnauthorized(host)` and show the "Sign in" error
-    (see Conventions).
+    On `HttpError` 401 from GHE: `auth.reportUnauthorized(host)` and show the "Sign in" error. A
+    403 follows the rule in Conventions. Neither deletes a stored token.
+  - `extension.ts` copies `problem` into the context key `zuul.contextProblem` (`no-repo`,
+    `no-zuul-url`, `no-tenant`, or `none`). The `viewsWelcome` clauses read that key.
   - `extension.ts`: when `problem === 'no-zuul-url'`, show a one-time info message
     "Set `zuul.url` to enable Zuul CI" with action "Open Settings" (`workbench.action.openSettings`, `zuul.url`).
 - **Don't:** fetch PRs or statuses here.
@@ -417,7 +459,8 @@ Good points to build, install, and manually test the extension:
   - `buildsTreeView.ts`: `TreeDataProvider` for `zuul.builds`. Pipeline items expanded;
     job items with `ThemeIcon` (`error`, `sync~spin`, `clock`, `pass`, `circle-slash`), description
     = result or elapsed time, `contextValue` = `zuulJob.<state>`. Clicking a job with `logUrl`
-    opens it externally (`vscode.env.openExternal`) — replaced by the in-editor viewer in Step 19.
+    runs `zuul.openBuildLog`, an internal command not declared in `package.json`, which opens it
+    externally (`vscode.env.openExternal`) — replaced by the in-editor viewer in Step 20.
   - Update `viewsWelcome` for `zuul.builds`: "No Zuul builds for this pull request yet."
 - **Don't:** fetch logs or artifacts.
 - **Done when:**
@@ -513,7 +556,8 @@ Good points to build, install, and manually test the extension:
   - Tree `zuul.dependencies`: two root nodes "Depends On (<n>)" and "Needed By (<n>)". Upstream
     items: label `owner/repo#n`, description `<state> · <zuul pipeline result or "not in Zuul">`,
     icon by state (`git-pull-request`, `git-merge`, `git-pull-request-closed`, `warning`),
-    tooltip includes `warning`. Click → open PR URL externally. When `syncState.inSync` is
+    tooltip includes `warning`. Click → `zuul.openDependencyPr`, an internal command not declared
+    in `package.json`, opens the PR URL externally. When `syncState.inSync` is
     false, a first root item `$(warning) Out of sync with Zuul` with child lines for missing/extra
     and `contextValue: zuulOutOfSync`.
   - Commands:
@@ -550,8 +594,8 @@ Good points to build, install, and manually test the extension:
       mergeableState?: string; labels: string[]; reviewDecision?: 'APPROVED'|'CHANGES_REQUESTED'|'REVIEW_REQUIRED';
       approvals: number; changesRequested: number;
       checks: { name: string; state: 'success'|'pending'|'failure'|'error'|'missing'; required: boolean }[];
-      zuulCheck?: 'success'|'failure'|'running'|'none' }
-    interface GateRules { requiredApprovals: number; requiredStatusChecks: Record<string,string[]>; requiredLabels: string[]; blockingLabels: string[] }
+      zuulCheck?: 'success'|'failure'|'running'|'none'; requiredChecksKnown: boolean /* review Step 7 */ }
+    interface GateRules { requiredApprovals: number; requiredStatusChecks: Record<string,string[]>; requiredLabels: string[]; blockingLabels: string[]; gateStatusChecks: string[] }
     interface Blocker { pr: string; kind: 'zuul-check'|'status-check'|'reviews'|'changes-requested'|'draft'|'mergeable'|'label-missing'|'label-blocking'|'closed'|'upstream'; message: string }
     interface GateReport { ready: boolean; items: { pr: string; checks: { label: string; ok: boolean; message?: string }[] }[]; blockers: Blocker[] }
     ```
@@ -564,8 +608,18 @@ Good points to build, install, and manually test the extension:
       "Required status check `<name>` is <state>".
     - Reviews: if `reviewDecision` present, ok iff `APPROVED`; else `approvals >= rules.requiredApprovals`.
       `changesRequested > 0` → separate blocker.
-    - Draft → blocker; `mergeableState` in `dirty`, `blocked` → blocker "Merge state is <x>"
-      (`blocked` only if no other blocker explains it — still report it, kind `mergeable`).
+    - Draft → blocker. Merge state (decided in review Step 7): `dirty`, `blocked`, `unknown` and
+      absent block with kind `mergeable`; `clean`, `behind`, `unstable`, `has_hooks` and `draft`
+      pass. A rollup `mergeable === 'CONFLICTING'` blocks as `dirty`.
+    - Zuul gate status checks (names in `rules.gateStatusChecks`, case-insensitive): absent,
+      `missing` or `pending` is not a blocker and shows row `Zuul gate`, ok; `success` is ok;
+      `failure` or `error` is a blocker of kind `status-check`, "Zuul gate failed on this commit.
+      It needs a new trigger."
+    - `blocked` is excused only when all of these hold: the required list is known
+      (`requiredChecksKnown`, or `zuul.gate.requiredStatusChecks` names checks for this repo); a
+      gate status check is in that list and is absent or pending; every other required check is
+      `success`; and the PR has no other blocker. Then show row `Merge state`, ok, message
+      `Blocked only by the Zuul gate`. Never excuse `blocked` on a guess.
     - Labels: missing required, present blocking (case-insensitive).
     - Closed (not merged) upstream → blocker.
     - Upstream blockers are reported with `kind: 'upstream'` on the root and message
@@ -591,11 +645,15 @@ Good points to build, install, and manually test the extension:
     - If rollup is `undefined`: REST fallback — `listCommitStatuses` + `listCheckRuns` for
       checks, `getRequiredStatusChecks(base)` for `required` flags (missing required contexts
       become `missing`), draft/labels from the PR object.
-    - Reviews: `listReviews`; keep the latest review per user; count `APPROVED` and `CHANGES_REQUESTED`.
+    - Reviews: `listReviews`; skip `COMMENTED` and `PENDING`, then keep the latest review per user;
+      count `APPROVED` and `CHANGES_REQUESTED`.
     - `mergeableState` from `getPr` (`mergeable_state`).
-    - `zuulCheck`: from `getChangeStatus` for pipeline `check` (running if jobs without result),
-      else latest `check` buildset/builds for that SHA (`success` if all latest builds succeed),
-      else `none`.
+    - `zuulCheck`: from `getChangeStatus`, using only `live` statuses whose pipeline is `check` or
+      `''` and ignoring jobs with `voting === false` (running if jobs without result), else latest
+      `check` buildset/builds for that SHA (`success` if all latest builds succeed), else `none`.
+    - Required checks list (review Step 7): `getRequiredContexts(owner, repo, branch)` tries GraphQL
+      `refUpdateRule.requiredStatusCheckContexts`, then REST. Names that have not reported become
+      `missing`, and `requiredChecksKnown` records whether the list could be read.
   - `collectUpstreamFacts(...)`: recursive over `Depends-On` of non-merged PRs, depth ≤ 5,
     dedupe by ref, parallelism 5.
 - **Don't:** evaluate gate rules here (Step 15 does that).
@@ -654,20 +712,28 @@ Good points to build, install, and manually test the extension:
 - **Tier:** sonnet
 - **Risk:** medium
 - **Status:** todo
-- **Files:** `src/views/buildsTreeView.ts`, `src/extension.ts`, `package.json` (edit);
-  `src/views/taskDocumentProvider.ts` (new)
+- **Files:** `src/views/buildsTreeView.ts`, `src/services/buildsModel.ts`,
+  `test/unit/buildsModel.test.ts`, `src/clients/zuulClient.ts`, `test/unit/zuulClient.test.ts`,
+  `src/extension.ts`, `package.json` (edit); `src/views/taskDocumentProvider.ts` (new)
 - **Do:**
-  - Job items with `logUrl` become collapsible. Children (lazy, fetched on expand, cached per
-    build UUID):
-    1. For failed jobs: `$(flame) Failed Task: <task> [<host>]` per `extractFailedTasks`.
+  - Job items with a `uuid` and a result become collapsible, and a click expands them. Delete
+    `zuul.openBuildLog`: logs now open through `zuul.openLog` (Step 20) on the children below.
+    Jobs without a `uuid` or result stay plain items with no click action.
+  - In `buildsModel.ts`, stop copying `job.reportUrl` into `JobNode.logUrl`. `report_url` is a Zuul
+    web page, not a log location. On expand, call the new `ZuulClient.getBuild(tenant, uuid)`
+    (`GET /api/tenant/{t}/build/{uuid}`) and take `log_url` and `artifacts` from it.
+  - Children (lazy, fetched on expand, cached per build UUID):
+    1. For failed jobs: `Failed Task: <task> [<host>]` (icon `flame`) per `extractFailedTasks`.
        Click → open `zuul-task:/<uuid>/<index>.txt` (provider keeps an in-memory map of
        formatted text; read-only).
-    2. Build `artifacts` from the Builds API (`$(package)`), click → open URL externally.
-    3. Pinned files: manifest paths matching `settings.pinnedArtifacts` (`$(pin)`), click →
+    2. Build `artifacts` from the build (icon `package`), click → open URL externally.
+    3. Pinned files: manifest paths matching `settings.pinnedArtifacts` (icon `pin`), click →
        open in the log viewer (Step 20 command `zuul.openLog` with the absolute URL).
-    4. `$(folder) Browse All Logs` → lazily expands the manifest tree (dirs collapsible,
+    4. `Browse All Logs` (icon `folder`) → lazily expands the manifest tree (dirs collapsible,
        files open via `zuul.openLog`).
-  - Fetch errors show a single child `$(warning) Could not load logs: <message>`.
+  - Set each icon with `iconPath: new vscode.ThemeIcon('<name>')`. Plain tree labels do not render
+    `$(...)`.
+  - Fetch errors show a single child `Could not load logs: <message>` (icon `warning`).
   - Until Step 20 exists, `zuul.openLog` may be a stub that opens externally — Step 20 replaces it.
 - **Don't:** eagerly fetch `job-output.json` or `zuul-manifest.json` before the user expands a build.
 - **Done when:**
@@ -679,10 +745,13 @@ Good points to build, install, and manually test the extension:
 - **Risk:** low
 - **Status:** todo
 - **Files:** `src/views/logDocumentProvider.ts`, `src/services/logLinks.ts`, `test/unit/logLinks.test.ts` (new);
-  `src/extension.ts`, `package.json` (edit)
+  `src/clients/http.ts`, `test/unit/http.test.ts`, `src/extension.ts`, `package.json` (edit)
 - **Do:**
   - URI format: `vscode.Uri.from({ scheme: 'zuul-log', path: '/<first 7 chars of uuid>/<relative path>', query: encodeURIComponent(<absolute url>) })`.
-    `TextDocumentContentProvider` fetches via `HttpClient.getText` (gunzip handled there).
+    `TextDocumentContentProvider` fetches via the new `HttpClient.getTextLimited(url, maxBytes)`,
+    which reads `response.body` as a stream and returns `{ text, truncated }`. It stops once
+    `maxBytes` of decompressed text is read, and uses `zlib.createGunzip()` when the first bytes are
+    `0x1f 0x8b`. `getText` buffers the whole body, so don't use it here.
     Files > 20 MB: show the first 20 MB and a final line `… truncated, open in browser: <url>`.
   - Command `zuul.openLog(url: string, uuid?: string)` builds the URI and opens it; replace any
     stub from Step 19.
@@ -698,7 +767,8 @@ Good points to build, install, and manually test the extension:
 - **Don't:** resolve workspace files inside `provideDocumentLinks` (keep resolution lazy in `resolveDocumentLink`).
 - **Done when:**
   - `npm run check` passes
-  - Tests cover Python traces, `path:line`, `path:line:col`, URLs ignored
+  - Tests cover Python traces, `path:line`, `path:line:col`, URLs ignored, and `getTextLimited`
+    stopping at the limit (plain and gzip)
 
 ### Step 21: Stream the live console of running jobs
 
@@ -728,7 +798,8 @@ Good points to build, install, and manually test the extension:
 - **Tier:** sonnet
 - **Risk:** low
 - **Status:** todo
-- **Files:** `schemas/zuul-schema.json` (new), `package.json` (edit), `test/unit/schema.test.ts` (new)
+- **Files:** `schemas/zuul-schema.json`, `test/unit/schema.test.ts`,
+  `test/fixtures/zuul-config/.zuul.yaml` (new); `package.json` (edit)
 - **Do:**
   - JSON Schema draft-07. Root: array of single-key objects; keys `job`, `project`,
     `project-template`, `nodeset`, `secret`, `pipeline`, `semaphore`, `queue`, `pragma`,
@@ -761,22 +832,25 @@ Good points to build, install, and manually test the extension:
   `test/unit/configIndex.test.ts`, `test/unit/yamlContext.test.ts` (new)
 - **Do:**
   - `configIndex.ts` (pure core + thin watcher):
-    `parseZuulFile(uri: string, text: string): IndexEntry[]` using `yaml.parseDocument` with
-    `keepSourceTokens`; `IndexEntry { kind: 'job'|'nodeset'|'project-template'|'project'|'secret'|'semaphore'; name: string; uri: string; range: { start: number; end: number } /* offsets of the whole item */; nameRange; node: unknown /* plain JS value */ }`.
+    `parseZuulFile(uri: string, text: string, currentProject?: string): IndexEntry[]` using
+    `yaml.parseAllDocuments` with `keepSourceTokens`, because a file can hold several YAML
+    documents. A `- project:` item with no `name` is named `currentProject ?? ''`. `IndexEntry { kind: 'job'|'nodeset'|'project-template'|'project'|'secret'|'semaphore'; name: string; uri: string; range: { start: number; end: number } /* offsets of the whole item */; nameRange; node: unknown /* plain JS value */ }`.
     Tolerate parse errors (return entries that parsed).
-    `class ConfigIndex { update(uri, text); remove(uri); find(kind, name): IndexEntry[]; all(kind) }`.
+    `class ConfigIndex(getCurrentProject: () => string | undefined) { update(uri, text); remove(uri); find(kind, name): IndexEntry[]; all(kind) }`.
     Adapter `watchWorkspaceConfig(index)` using `workspace.findFiles` + `createFileSystemWatcher`
     with the glob `{.zuul.yaml,zuul.yaml,zuul.d/**/*.yaml,.zuul.d/**/*.yaml}` and
     `onDidChangeTextDocument` for open docs (debounce 300 ms).
   - `yamlContext.ts` (pure): `keyPathAt(text: string, offset: number): string[]` using an
     indentation heuristic (works on incomplete YAML): walk lines upward collecting the nearest
     less-indented `key:` / `- key:` ancestors. E.g. cursor after `parent: ` inside a job →
-    `['job', 'parent']`; inside `project: > check: > jobs: > - ` → `['project', 'check', 'jobs', '-']`.
+    `['job', 'parent']`; inside `project: > check: > jobs: > - ` → `['project', 'check', 'jobs', '-']`;
+    after `- zuul: ` under a job's `roles:` → `['job', 'roles', '-', 'zuul']`.
     Also `currentScalarRange(text, offset)` for the word under the cursor.
-- **Don't:** register language providers yet (Steps 24–26).
+- **Don't:** register language providers yet (Steps 24–26). Don't call `watchWorkspaceConfig` from
+  `extension.ts` (Step 24 does).
 - **Done when:**
   - `npm run check` passes
-  - Tests cover multi-document files, `zuul.d` multi-file, syntax errors, key paths for parent/nodeset/templates/jobs/run
+  - Tests cover multi-document files, `zuul.d` multi-file, syntax errors, key paths for parent/nodeset/templates/jobs/run/roles
 
 ### Step 24: Provide completion and hover for Zuul YAML
 
@@ -784,13 +858,20 @@ Good points to build, install, and manually test the extension:
 - **Risk:** low
 - **Status:** todo
 - **Files:** `src/language/completionProvider.ts`, `src/language/hoverProvider.ts`,
-  `src/language/suggestions.ts`, `test/unit/suggestions.test.ts` (new); `src/extension.ts` (edit)
+  `src/language/suggestions.ts`, `test/unit/suggestions.test.ts` (new); `src/extension.ts`,
+  `vitest.config.mts` (edit)
 - **Do:**
+  - In `extension.ts`, create one `ConfigIndex` and call `watchWorkspaceConfig(index)`. Steps 25–27
+    reuse that index.
+  - Add `src/language/*Provider.ts` and `src/language/*Lens.ts` to the coverage excludes in
+    `vitest.config.mts`.
   - `suggestions.ts` (pure): `suggestionsFor(keyPath, sources): Suggestion[]` where sources =
     local index entries + Zuul API lists (`listJobs`, `listNodesets`, `listProjectTemplates`,
-    `listSemaphores`). Mapping: `[...,'parent']` and `[project|project-template, <pipeline>, 'jobs', '-']`
+    `listSemaphores`, `listProjects`). Mapping: `[...,'parent']` and `[project|project-template, <pipeline>, 'jobs', '-']`
     → jobs; `[...,'nodeset']` → nodesets; `['project'|'project-template','templates','-']` →
-    templates; `[...,'semaphores', ...]` → semaphores. Local items first, then remote; dedupe by name.
+    templates; `[...,'semaphores', ...]` → semaphores;
+    `[...,'roles','-','zuul']` → projects (a `zuul:` role entry names the project that holds the
+    roles). Local items first, then remote; dedupe by name.
     `Suggestion { label; detail /* source repo or "workspace" */; documentation /* description */ }`.
   - Providers registered for selector `{ language: 'yaml', pattern: '**/{.zuul.yaml,zuul.yaml,zuul.d/**/*.yaml,.zuul.d/**/*.yaml}' }`.
     Remote lists fail silently (local only) when not signed in / no tenant.
@@ -826,7 +907,8 @@ Good points to build, install, and manually test the extension:
 - **Risk:** medium
 - **Status:** todo
 - **Files:** `src/language/effectiveJob.ts`, `src/language/effectiveJobLens.ts`,
-  `test/unit/effectiveJob.test.ts` (new); `src/extension.ts`, `package.json` (edit)
+  `test/unit/effectiveJob.test.ts` (new); `src/language/hoverProvider.ts`, `src/extension.ts`,
+  `package.json` (edit)
 - **Do:**
   - `effectiveJob.ts` (pure): `resolveChain(name, lookup: (name) => Promise<JobDef | undefined>): Promise<JobDef[]>`
     (child first, follows `parent`, stops at missing parent or depth 20, detects loops; implicit
@@ -841,10 +923,17 @@ Good points to build, install, and manually test the extension:
     command `zuul.previewEffectiveJob(name)` opens `zuul-effective:/<name>.yaml` (read-only
     content provider, `yaml.stringify` of the flattened job with a header comment listing
     `inheritance`) in `ViewColumn.Beside`.
-- **Don't:** resolve remote parents inside `provideCodeLenses` (only fetch when the user clicks the CodeLens).
+  - Variable hover, in `hoverProvider.ts`: hovering a key under a job's `vars:`, `host-vars:` or
+    `group-vars:` lists every job in the chain that sets it, child first, with its value. Pure
+    helper in `effectiveJob.ts`:
+    `findVariableSources(chain, block: 'vars' | 'hostVars' | 'groupVars', path: string[]): { job: string; value: unknown }[]`.
+    Resolve the chain with a lookup over the workspace `ConfigIndex` only. If the last job's parent
+    is not in the index, end with `Chain continues outside this workspace at <name>`.
+- **Don't:** resolve remote parents inside `provideCodeLenses` (only fetch when the user clicks the CodeLens). Don't make network calls for variable hover.
 - **Done when:**
   - `npm run check` passes
-  - Tests cover ordering rules, `parent: null`, missing remote parent, loop detection
+  - Tests cover ordering rules, `parent: null`, missing remote parent, loop detection,
+    `findVariableSources`
 
 ### Step 27: Simulate `files` / `irrelevant-files` against the git diff
 
@@ -916,23 +1005,28 @@ Good points to build, install, and manually test the extension:
 - **Risk:** medium
 - **Status:** todo
 - **Files:** `src/auth/gheOAuthProvider.ts`, `test/unit/gheOAuthProvider.test.ts` (new);
-  `src/extension.ts`, `package.json` (edit)
+  `src/auth/authService.ts`, `test/unit/authService.test.ts`, `src/extension.ts`, `package.json` (edit)
 - **Do:**
   - `GheOAuthProvider` implements `TokenProvider` with `id: 'oauth'`, injected
     `authentication` + `configuration` + `prompt` facades.
     - Provider id: `github` when host is `github.com`, else `github-enterprise`.
-    - For GHE: if `github-enterprise.uri` (global setting) is empty or a different host, and
-      `interactive`, ask (modal) "Use https://<host> as GitHub Enterprise server for VS Code
-      sign-in?" → on yes, update it at `ConfigurationTarget.Global`. If it points to another
-      host and the user declines → return `undefined`.
+    - For GHE, the configured hosts are `github-enterprise.uri` plus every entry of
+      `github-enterprise.uris` (global settings). Read both. If `host` is not among them:
+      - Non-interactive: return `undefined` without changing a setting or calling `getSession`.
+      - Interactive: ask (modal) "Use https://<host> as GitHub Enterprise server for VS Code
+        sign-in?" → on yes, update `github-enterprise.uri` at `ConfigurationTarget.Global`. If the
+        user declines → return `undefined`.
     - `getSession(providerId, ['repo', 'read:user'], interactive ? { createIfNone: true } : { silent: true })`
       → `accessToken`.
-  - Commands `zuul.signIn` ("Sign In") → `auth.getToken(host, { interactive: true })` using
-    method `oauth` when available; `zuul.signOut` ("Sign Out") → clears PAT and gh cache and
+  - `AuthService.getToken(host, { interactive, method? })`: `method` overrides `zuul.auth.method`
+    for that one call.
+  - Commands `zuul.signIn` ("Sign In") → `auth.getToken(host, { interactive: true, method: 'oauth' })`;
+    `zuul.signOut` ("Sign Out") → clears PAT and gh cache and
     tells the user to sign out of the VS Code account via the Accounts menu (VS Code sessions
     can't be removed by extensions).
-  - Register the provider in `AuthService` but keep the Step 6 `auto` order for now (`['pat','gh-cli','oauth']`).
-- **Don't:** switch the default `zuul.auth.method` yet (Step 31) or implement Device Flow here (Step 30).
+  - Add `oauth` to the `zuul.auth.method` enum. Register the provider in `AuthService` but keep the
+    Step 6 `auto` order for now (`['pat','gh-cli','oauth']`).
+- **Don't:** change `auto` to OAuth-first yet (Step 31) or implement Device Flow here (Step 30).
 - **Done when:**
   - `npm run check` passes
   - Tests cover github.com vs GHE ids, setting update consent, silent vs interactive
@@ -959,13 +1053,20 @@ Good points to build, install, and manually test the extension:
     For github.com the same endpoints live on `github.com`.
   - `ZuulGheAuthenticationProvider` implements `vscode.AuthenticationProvider`, registered via
     `vscode.authentication.registerAuthenticationProvider('zuul-ghe', 'Zuul: GitHub Enterprise', provider, { supportsMultipleAccounts: false })`
-    and `contributes.authentication` in `package.json`. `createSession`: start flow, copy
+    and `contributes.authentication` in `package.json`. VS Code passes no host to the provider, so
+    its constructor takes `getHost: () => string | undefined`, which returns the current
+    `GitContext.host` (this already includes the `zuul.ghe.host` override). With no host,
+    `createSession` throws "Open a repository first". `getSessions` returns only sessions for that
+    host. `createSession`: start flow, copy
     `user_code` to the clipboard, show a modal with the code and "Open Browser" →
     `env.openExternal(verification_uri)`, poll with a cancellable `withProgress` notification.
     Account label from `GET /user`. Sessions (JSON, including host) stored in `context.secrets`
     under `zuul.oauth.sessions`. `removeSession` deletes it. If `refresh_token` + `expires_in`
     were returned, refresh 5 min before expiry via `grant_type=refresh_token`.
-  - `GheOAuthProvider.getToken`: if `oauthClientId` set → `getSession('zuul-ghe', scopes, …)`.
+  - `GheOAuthProvider.getToken`: if `oauthClientId` set →
+    `getSession('zuul-ghe', scopes, interactive ? { createIfNone: true } : { silent: true })`. This
+    path does not need `github-enterprise.uri`, so setting `oauthClientId` counts as configuring
+    the host.
 - **Don't:** implement PKCE / URI handler. Don't log codes or tokens.
 - **Done when:**
   - `npm run check` passes
@@ -977,20 +1078,24 @@ Good points to build, install, and manually test the extension:
 - **Risk:** medium
 - **Status:** todo
 - **Files:** `package.json`, `src/auth/authService.ts`, `src/config/settings.ts`,
-  `test/unit/authService.test.ts`, `test/unit/settings.test.ts`, `src/extension.ts` (edit)
+  `src/context/zuulContext.ts`, `src/services/statusBarText.ts`, `src/views/statusBar.ts`,
+  `test/unit/authService.test.ts`, `test/unit/settings.test.ts`, `test/unit/statusBarText.test.ts`,
+  `src/extension.ts` (edit)
 - **Do:**
-  - `zuul.auth.method` default → `"auto"` (package.json + `settings.ts` default + tests).
+  - `zuul.auth.method` already defaults to `"auto"` (review Step 11). Only the order changes here.
   - `auto` order → `['oauth', 'gh-cli', 'pat']`; non-interactive OAuth uses `silent: true`.
-    When nothing returns a token and `interactive` is true: QuickPick
+    With `interactive: true`, first try every provider with `interactive: false`. If none returns
+    a token, show the QuickPick
     "Sign in with GitHub Enterprise (recommended)" (→ oauth interactive) / "Enter a Personal
-    Access Token" (→ PAT `setToken`).
+    Access Token" (→ PAT `setToken`). A cancelled QuickPick or sign-in returns `undefined`.
   - Error "Sign in" actions and the Gate Readiness welcome link now use `zuul.signIn`.
-  - Status bar: when not signed in and a PR context exists, show `$(account) Zuul: Sign in`
-    (command `zuul.signIn`).
+  - Status bar: when the context is resolved and `zuul.signedIn` is false, show
+    `$(account) Zuul: Sign in` (command `zuul.signIn`).
 - **Don't:** prompt interactively during background polling (`interactive: false` must stay silent).
 - **Done when:**
   - `npm run check` passes
-  - Tests cover the new order, the fallback QuickPick choice routing, and the default
+  - Tests cover the new order, trying silently first, the fallback QuickPick choice routing, a
+    cancelled sign-in, and the status-bar sign-in
 
 > **Checkpoint 5 (OAuth Sign-In):** Default OAuth sign-in (VS Code built-in `github-enterprise` / `github` provider + Device Flow) is ready to test via `Zuul: Sign In`.
 
@@ -1025,16 +1130,26 @@ Good points to build, install, and manually test the extension:
 - **Tier:** sonnet
 - **Risk:** medium
 - **Status:** todo
-- **Files:** `test/integration/**` (new), `.vscode-test.mjs` (new), `package.json` (edit)
+- **Files:** `test/integration/**`, `.vscode-test.mjs` (new); `package.json`, `esbuild.mjs`,
+  `tsconfig.json`, `.gitignore`, `.vscodeignore`, `src/clients/gheClient.ts`, `src/extension.ts` (edit)
 - **Do:**
-  - Script `test:integration` (`vscode-test`); **not** part of `npm run check` (downloads VS Code).
+  - Script `test:integration`: `node esbuild.mjs --integration && vscode-test`; **not** part of
+    `npm run check` (downloads VS Code). `--integration` bundles `test/integration/**/*.test.ts`
+    into `out/integration/`, because `vscode-test` runs plain JavaScript. Add `out/` to `.gitignore`
+    and `.vscodeignore`.
+  - Mocha types: `test/integration/tsconfig.json` extends the root config with
+    `types: ["node", "vscode", "mocha"]`. The root `tsconfig.json` excludes `test/integration`, and
+    `typecheck` also runs `tsc --noEmit -p test/integration`.
   - `test/integration/mockServer.ts`: one `node:http` server on a random port serving both GHE
     (`/api/v3/...`, `/api/graphql`) and Zuul (`/api/...`) from in-memory state; records
     requests. Workspace fixture `test/integration/fixture-repo` with `.git` remote pointing at
     `http://127.0.0.1:<port>/acme/app` (created at test start with `git init` + `git remote add`),
     `.vscode/settings.json` with `zuul.url`, `zuul.tenant`, `zuul.ghe.host`.
     GheClient must allow `http://` for `127.0.0.1` only: add `gheBaseUrlOverride` (internal,
-    env `ZUUL_VSCODE_TEST_GHE_URL`) — the only test hook allowed.
+    env `ZUUL_VSCODE_TEST_GHE_URL`).
+  - VS Code's API can't read the status bar or tree contents, so `activate` returns a test API
+    `{ getStatusBarText(), getDependencyLabels() }`, only when that env var is set. These two are
+    the only test hooks allowed.
   - Flow test: store a PAT via `zuul.setGhePat` (stub input box) → PR detected → status bar text
     → `zuul.addDependsOn` with a pasted URL (stub QuickPick) → mock PATCH body contains
     `Depends-On:` → mock Zuul status without that item → out-of-sync item present →
@@ -1052,7 +1167,7 @@ Good points to build, install, and manually test the extension:
 - **Files:** `README.md`, `CHANGELOG.md`, `docs/configuration.md`, `docs/development.md` (new)
 - **Do:**
   - `README.md` (short): what it is, feature list (one line each), requirements (VS Code
-    ≥ 1.100, Zuul with multi-tenant API, Red Hat YAML extension for schema validation),
+    ≥ 1.101, Zuul with multi-tenant API, Red Hat YAML extension for schema validation),
     quick start (set `zuul.url`, sign in), links to the two docs.
   - `docs/configuration.md`: settings table (copy from `package.json` `contributes.configuration`),
     auth methods and order (`auto` = OAuth → gh CLI → PAT), Device Flow setup (OAuth App with
@@ -1064,7 +1179,15 @@ Good points to build, install, and manually test the extension:
   - `CHANGELOG.md`: Keep a Changelog format, `## [Unreleased]` with an `### Added` list of the features.
 - **Don't:** rewrite or delete `IMPLEMENTATION_PLAN.md`.
 - **Done when:**
-  - `npm run check` passes (prettier formats the markdown)
+  - Run `npm run format` first, then `npm run check` passes (`check` only verifies formatting)
+
+## Future work
+
+- **Required approval count from branch protection.** Not every user can read the branch protection
+  API, so the extension can't rely on it. `reviewDecision` already reflects branch protection for
+  anyone who can read the PR, and `zuul.gate.requiredApprovals` is the fallback when it is absent.
+  Revisit if GraphQL `refUpdateRule.requiredApprovingReviewCount` turns out to be readable by
+  non-admins on GHE (not confirmed).
 
 ## Out of scope
 
@@ -1074,4 +1197,5 @@ Good points to build, install, and manually test the extension:
 - Marketplace publishing, telemetry, localisation.
 - Full JSON-schema validation inside unit tests (no validator dependency).
 - Removing or rewriting `IMPLEMENTATION_PLAN.md`.
+- Fork-based workflows. PR lookup uses `head={owner}:{branch}` on the current remote only.
 

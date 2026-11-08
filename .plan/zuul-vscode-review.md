@@ -29,6 +29,9 @@ Facts checked on 2026-11-08:
 - Reading required checks: `getRequiredStatusChecks` already maps 403 and 404 to `undefined`, and may
   be refused for non-admins. GraphQL `Ref.refUpdateRule.requiredStatusCheckContexts` describes rules
   enforced on the viewer, but non-admin access on GHE is **not confirmed**.
+- Confirmed by the user: not every user can read the branch protection API. Step 7's "required list
+  unknown" path covers this. The required approval count stays future work (see
+  `.plan/zuul-vscode.md`).
 - Real Zuul shape, from `zuul.opendev.org` (Zuul 14.3.1.dev134, tenant `openstack`). OpenDev uses
   Gerrit, so re-check once against a GHE-backed Zuul:
 
@@ -107,7 +110,7 @@ the code, and the pre-commit checks run.
 
 - **Tier:** self
 - **Risk:** low
-- **Status:** todo
+- **Status:** done
 - **Files:** `.plan/zuul-vscode.md`, `package.json`, `package-lock.json`, `esbuild.mjs` (edit)
 - **Do:**
   - Code: `engines.vscode` to `^1.101.0`, `@types/vscode` to `~1.101.0` (run `npm install`), esbuild
@@ -436,9 +439,57 @@ the code, and the pre-commit checks run.
 - **Done when:**
   - `npm run check` passes with per-file thresholds on
 
+### Step 13: Show review status on upstream PRs
+
+- **Tier:** sonnet
+- **Risk:** low
+- **Status:** todo
+- **Files:** `src/services/dependsOnService.ts`, `src/services/dependsOnPresentation.ts`,
+  `test/unit/dependsOnService.test.ts`, `test/unit/dependsOnPresentation.test.ts`
+- **Do:**
+  - Add `review?: 'approved' | 'changes requested' | 'review required'` to `UpstreamDep`, mapped from
+    `reviewDecision`.
+  - In `getUpstream`, for open PRs only, call `ghe.getPrRollup(owner, repo, n)` after `getPr`. A
+    missing rollup, a null `reviewDecision` or a thrown error leaves `review` unset and never
+    changes `state`.
+  - `formatUpstreamDescription`: `open · approved · <zuul summary>`. Leave out the middle part when
+    `review` is unset. `formatUpstreamTooltip`: add a line `Review: approved`.
+- **Don't:** call `listReviews` or read branch protection. `reviewDecision` needs only read access
+  to the PR.
+- **Done when:**
+  - `npm run check` passes
+  - Tests: each `reviewDecision` maps to its text; a merged PR makes no rollup call; a failing
+    rollup keeps `state: 'open'` with no `review`
+
+### Step 14: Show trigger comments as rows in Gate Readiness
+
+- **Tier:** sonnet
+- **Risk:** low
+- **Status:** todo
+- **Files:** `src/services/gatePresentation.ts`, `test/unit/gatePresentation.test.ts`,
+  `src/views/prGateTreeView.ts`
+- **Do:**
+  - VS Code menus are static, so the toolbar can't have one button per configured trigger. Tree rows
+    can.
+  - `buildGateChildren`: add a last root node `Triggers` (expanded) with one child per
+    `zuul.triggerComments` entry, only when there is at least one. Pass the list in as a parameter
+    so the function stays pure.
+  - `prGateTreeView` renders each child with label = trigger `label`, description = `comment`,
+    `iconPath: new vscode.ThemeIcon(icon ?? 'comment')` and
+    `command: { command: 'zuul.postTrigger', arguments: [comment] }`. That command already accepts a
+    comment and shows the confirmation modal, so no new command is needed.
+  - `prGateTreeView` reads the list with `readWorkspaceSettings()` at render time and re-renders on
+    `onSettingsChanged`.
+- **Don't:** remove the toolbar button, add a webview, or count these rows as blockers.
+- **Done when:**
+  - `npm run check` passes
+  - Tests: rows follow the configured order; the default icon is `comment`; an empty list gives no
+    `Triggers` node; the header and PR nodes come first
+
 ## Out of scope
 
 - CI changes, and secret scanning (the `gitleaks` hook was removed at the user's request).
 - Multi-root repo picking, and showing `owner/repo @ branch` in the view description.
 - Non-standard ports on GHE remotes.
 - Fork workflows (recorded as out of scope in Step 2).
+- Required approval count from branch protection (Future work in `.plan/zuul-vscode.md`).
