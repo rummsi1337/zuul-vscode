@@ -13,6 +13,7 @@ import {
 import { normalizeHost } from '../git/remoteUrl';
 import { type Logger } from '../util/logger';
 import { HttpClient, HttpError, type QueryParams } from './http';
+import { RateLimitGuard, RateLimitedError } from './rateLimit';
 
 const MAX_PAGINATION_PAGES = 10;
 const PER_PAGE = 100;
@@ -137,6 +138,7 @@ export class GheClient {
     getToken: () => Promise<string | undefined>,
     fetchFn?: typeof fetch,
     logger?: Pick<Logger, 'info' | 'warn'>,
+    now: () => number = Date.now,
   ) {
     const normalizedHost = normalizeHost(host);
     this.host = normalizedHost;
@@ -158,6 +160,7 @@ export class GheClient {
       fetchFn,
       logger: this.logger,
       conditionalGet: true,
+      rateLimit: new RateLimitGuard(now),
     });
   }
 
@@ -277,7 +280,11 @@ export class GheClient {
         `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches/${encodeURIComponent(branch)}/protection/required_status_checks`,
       );
     } catch (err) {
-      if (err instanceof HttpError && (err.status === 403 || err.status === 404)) {
+      if (
+        !(err instanceof RateLimitedError) &&
+        err instanceof HttpError &&
+        (err.status === 403 || err.status === 404)
+      ) {
         this.logger?.info(
           `[GHE] Required status checks returned ${err.status} for branch="${branch}" on ${owner}/${repo}`,
         );
@@ -307,7 +314,10 @@ export class GheClient {
       if (Array.isArray(contexts)) {
         return uniqueNames(contexts);
       }
-    } catch {
+    } catch (err) {
+      if (err instanceof RateLimitedError) {
+        throw err;
+      }
       // Fall back to REST below.
     }
 
@@ -347,6 +357,9 @@ export class GheClient {
         requiresSignatures: rule.requiresSignatures,
       };
     } catch (err) {
+      if (err instanceof RateLimitedError) {
+        throw err;
+      }
       this.logger?.info(
         `[GHE] Could not read merge rules for branch="${branch}" on ${owner}/${repo}: ${String(err)}`,
       );
@@ -363,6 +376,9 @@ export class GheClient {
       }>(this.graphqlUrl, PR_ROLLUP_QUERY, { owner, repo, num });
       return data.repository?.pullRequest ?? data.pullRequest ?? undefined;
     } catch (err) {
+      if (err instanceof RateLimitedError) {
+        throw err;
+      }
       if (err instanceof HttpError && (err.status === 401 || err.status === 403)) {
         throw err;
       }

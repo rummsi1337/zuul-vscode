@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { GheClient, parseNextLink } from '../../src/clients/gheClient';
 import { HttpError } from '../../src/clients/http';
+import { RateLimitedError } from '../../src/clients/rateLimit';
 import checkRunsFixture from '../fixtures/ghe/check-runs.json';
 import combinedStatusFixture from '../fixtures/ghe/combined-status.json';
 import prRollupFixture from '../fixtures/ghe/pr-rollup.json';
@@ -442,5 +443,21 @@ describe('GheClient', () => {
     expect(second).toEqual(first);
     const sent = fetchFn.mock.calls[1]?.[1] as { headers: Record<string, string> };
     expect(sent.headers['If-None-Match']).toBe('"pr"');
+  });
+
+  it('does not fall back to REST while rate limited', async () => {
+    const fetchFn = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({}, 429, { 'retry-after': '60' }));
+    const client = new GheClient('ghe.example.com', async () => 'tok', fetchFn);
+
+    await expect(client.getRequiredContexts('acme', 'service', 'main')).rejects.toBeInstanceOf(
+      RateLimitedError,
+    );
+    await expect(client.getBranchMergeRules('acme', 'service', 'main')).rejects.toBeInstanceOf(
+      RateLimitedError,
+    );
+    await expect(client.getPrRollup('acme', 'service', 1)).rejects.toBeInstanceOf(RateLimitedError);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
   });
 });

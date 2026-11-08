@@ -160,7 +160,7 @@ When polling resumes:
 
 - **Tier:** sonnet
 - **Risk:** medium
-- **Status:** todo
+- **Status:** done
 - **Files:** `src/clients/rateLimit.ts` (new), `test/unit/rateLimit.test.ts` (new),
   `src/clients/http.ts`, `src/clients/gheClient.ts`, `src/util/commandErrors.ts`,
   `test/unit/http.test.ts`, `test/unit/gheClient.test.ts`, `test/unit/commandErrors.test.ts` (edit)
