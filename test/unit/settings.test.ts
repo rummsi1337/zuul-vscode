@@ -30,6 +30,7 @@ describe('settings', () => {
         requiredStatusChecks: {},
         requiredLabels: [],
         blockingLabels: ['do-not-merge', 'wip'],
+        gateStatusChecks: ['{tenant}/gate'],
       },
     });
   });
@@ -55,6 +56,7 @@ describe('settings', () => {
       },
       'gate.requiredLabels': ['ready-to-merge'],
       'gate.blockingLabels': ['hold'],
+      'gate.gateStatusChecks': ['my-tenant/gate'],
     };
 
     const settings = readSettings((key) => values[key]);
@@ -80,6 +82,7 @@ describe('settings', () => {
         },
         requiredLabels: ['ready-to-merge'],
         blockingLabels: ['hold'],
+        gateStatusChecks: ['my-tenant/gate'],
       },
     });
   });
@@ -99,6 +102,7 @@ describe('settings', () => {
       'gate.requiredStatusChecks': { '*': 'not-an-array' },
       'gate.requiredLabels': 'not-an-array',
       'gate.blockingLabels': [null],
+      'gate.gateStatusChecks': 'not-an-array',
     };
 
     const settings = readSettings((key) => badValues[key]);
@@ -118,6 +122,7 @@ describe('settings', () => {
         requiredStatusChecks: {},
         requiredLabels: [],
         blockingLabels: ['do-not-merge', 'wip'],
+        gateStatusChecks: ['{tenant}/gate'],
       },
     });
   });

@@ -194,6 +194,125 @@ describe('GheClient', () => {
     );
   });
 
+  it('paginates check runs across pages (e.g. 31 runs)', async () => {
+    const page1Runs = Array.from({ length: 30 }, (_, i) => ({
+      id: i + 1,
+      name: `check-${i + 1}`,
+      status: 'completed',
+      conclusion: 'success',
+    }));
+    const page2Runs = [{ id: 31, name: 'check-31', status: 'completed', conclusion: 'success' }];
+    const fetchFn = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        jsonResponse({ check_runs: page1Runs }, 200, {
+          Link: '<https://ghe.example.com/api/v3/repos/acme/service/commits/sha/check-runs?per_page=100&page=2>; rel="next"',
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ check_runs: page2Runs }, 200));
+
+    const client = new GheClient('ghe.example.com', async () => 'tok', fetchFn);
+    const runs = await client.listCheckRuns('acme', 'service', 'sha');
+    expect(runs).toHaveLength(31);
+    expect(runs[0]?.name).toBe('check-1');
+    expect(runs[30]?.name).toBe('check-31');
+  });
+
+  it('gets required contexts via GraphQL refUpdateRule and falls back to REST on failure', async () => {
+    // 1. GraphQL succeeds
+    const graphqlSuccessFetch = vi.fn<typeof fetch>(async () =>
+      jsonResponse({
+        data: {
+          repository: {
+            ref: {
+              refUpdateRule: {
+                requiredStatusCheckContexts: ['ci/build', 'ci/test', 'ci/build', null],
+              },
+            },
+          },
+        },
+      }),
+    );
+    const client1 = new GheClient('ghe.example.com', async () => 'tok', graphqlSuccessFetch);
+    const contexts1 = await client1.getRequiredContexts('acme', 'service', 'main');
+    expect(contexts1).toEqual(['ci/build', 'ci/test']);
+
+    // 2. GraphQL fails, falls back to REST
+    const fallbackFetch = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response('GraphQL not supported', { status: 500 }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          strict: true,
+          contexts: ['rest/lint'],
+          checks: [{ context: 'rest/sonar' }, { context: 'rest/lint' }],
+        }),
+      );
+    const client2 = new GheClient('ghe.example.com', async () => 'tok', fallbackFetch);
+    const contexts2 = await client2.getRequiredContexts('acme', 'service', 'main');
+    expect(contexts2).toEqual(['rest/lint', 'rest/sonar']);
+
+    // 3. GraphQL refUpdateRule is null/missing, REST returns 404 -> undefined
+    const missingFetch = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          data: {
+            repository: {
+              ref: {
+                refUpdateRule: null,
+              },
+            },
+          },
+        }),
+      )
+      .mockResolvedValueOnce(new Response('Not Found', { status: 404 }));
+    const client3 = new GheClient('ghe.example.com', async () => 'tok', missingFetch);
+    const contexts3 = await client3.getRequiredContexts('acme', 'service', 'main');
+    expect(contexts3).toBeUndefined();
+  });
+
+  it('reads branch merge rules via GraphQL and returns undefined when it cannot', async () => {
+    const ruleResponse = (rule: unknown): Response =>
+      jsonResponse({ data: { repository: { ref: { refUpdateRule: rule } } } });
+    const fetchFn = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        ruleResponse({
+          requiredApprovingReviewCount: 2,
+          requiresConversationResolution: true,
+          requiresSignatures: false,
+        }),
+      )
+      .mockResolvedValueOnce(
+        ruleResponse({
+          requiredApprovingReviewCount: null,
+          requiresConversationResolution: false,
+          requiresSignatures: true,
+        }),
+      )
+      .mockResolvedValueOnce(ruleResponse(null))
+      .mockResolvedValueOnce(
+        jsonResponse({ errors: [{ message: "Field 'requiresSignatures' doesn't exist" }] }),
+      )
+      .mockResolvedValueOnce(new Response('Internal Error', { status: 500 }));
+    const client = new GheClient('ghe.example.com', async () => 'tok', fetchFn);
+
+    expect(await client.getBranchMergeRules('acme', 'service', 'main')).toEqual({
+      requiredApprovingReviewCount: 2,
+      requiresConversationResolution: true,
+      requiresSignatures: false,
+    });
+    expect(await client.getBranchMergeRules('acme', 'service', 'main')).toEqual({
+      requiredApprovingReviewCount: 0,
+      requiresConversationResolution: false,
+      requiresSignatures: true,
+    });
+    expect(await client.getBranchMergeRules('acme', 'service', 'main')).toBeUndefined();
+    expect(await client.getBranchMergeRules('acme', 'service', 'main')).toBeUndefined();
+    expect(await client.getBranchMergeRules('acme', 'service', 'main')).toBeUndefined();
+  });
+
   it('fetches PR rollup via GraphQL and returns undefined on GraphQL or HTTP errors', async () => {
     const fetchFn = vi
       .fn<typeof fetch>()

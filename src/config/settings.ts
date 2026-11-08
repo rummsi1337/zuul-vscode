@@ -13,6 +13,7 @@ export interface GateSettings {
   requiredStatusChecks: Record<string, string[]>;
   requiredLabels: string[];
   blockingLabels: string[];
+  gateStatusChecks: string[];
 }
 
 export interface ZuulSettings {
@@ -37,6 +38,7 @@ const DEFAULT_PINNED_ARTIFACTS: readonly string[] = ['job-output.txt'];
 const DEFAULT_REQUIRED_APPROVALS = 1;
 const DEFAULT_REQUIRED_LABELS: readonly string[] = [];
 const DEFAULT_BLOCKING_LABELS: readonly string[] = ['do-not-merge', 'wip'];
+const DEFAULT_GATE_STATUS_CHECKS: readonly string[] = ['{tenant}/gate'];
 
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string');
@@ -142,6 +144,7 @@ export function readSettings(get: (key: string) => unknown): ZuulSettings {
       requiredStatusChecks: readRequiredStatusChecks(get('gate.requiredStatusChecks')),
       requiredLabels: readStringArray(get('gate.requiredLabels'), DEFAULT_REQUIRED_LABELS),
       blockingLabels: readStringArray(get('gate.blockingLabels'), DEFAULT_BLOCKING_LABELS),
+      gateStatusChecks: readStringArray(get('gate.gateStatusChecks'), DEFAULT_GATE_STATUS_CHECKS),
     },
   };
 }

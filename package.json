@@ -314,12 +314,12 @@
         "zuul.gate.requiredApprovals": {
           "type": "number",
           "default": 1,
-          "markdownDescription": "Fallback number of required approvals when not auto-detected from GitHub."
+          "markdownDescription": "Fallback number of required approvals when not auto-detected from GitHub. Mirror the approval requirements of your Zuul gate pipeline: Zuul's `require:` rules can't be read through its API."
         },
         "zuul.gate.requiredStatusChecks": {
           "type": "object",
           "default": {},
-          "markdownDescription": "Additional required status check contexts keyed by `*` or `org/repo`.",
+          "markdownDescription": "Additional required status check contexts keyed by `*` or `org/repo`. `{tenant}` is replaced with the Zuul tenant.",
           "additionalProperties": {
             "type": "array",
             "items": {
@@ -330,7 +330,7 @@
         "zuul.gate.requiredLabels": {
           "type": "array",
           "default": [],
-          "markdownDescription": "Labels that must be present on a pull request for gate readiness.",
+          "markdownDescription": "Labels that must be present on a pull request for gate readiness. Mirror the label requirements of your Zuul gate pipeline: Zuul's `require:` rules can't be read through its API.",
           "items": {
             "type": "string"
           }
@@ -342,6 +342,16 @@
             "wip"
           ],
           "markdownDescription": "Labels that block a pull request from entering the gate.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "zuul.gate.gateStatusChecks": {
+          "type": "array",
+          "default": [
+            "{tenant}/gate"
+          ],
+          "markdownDescription": "Status checks that only report once a pull request enters Zuul's gate. `{tenant}` is replaced with the Zuul tenant.",
           "items": {
             "type": "string"
           }

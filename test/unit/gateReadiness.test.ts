@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 import {
   type BlockerKind,
   evaluateGate,
+  gateLoadFailureReport,
   type GateRules,
   type PrGateFacts,
+  resolveGateRules,
 } from '../../src/services/gateReadiness';
 
 function makeReadyPr(overrides: Partial<PrGateFacts> = {}): PrGateFacts {
@@ -18,6 +20,12 @@ function makeReadyPr(overrides: Partial<PrGateFacts> = {}): PrGateFacts {
     approvals: 2,
     changesRequested: 0,
     checks: [{ name: 'ci/unit', state: 'success', required: true }],
+    requiredChecksKnown: true,
+    mergeRules: {
+      requiredApprovingReviewCount: 0,
+      requiresConversationResolution: false,
+      requiresSignatures: false,
+    },
     zuulCheck: 'success',
     ...overrides,
   };
@@ -29,6 +37,7 @@ function makeDefaultRules(overrides: Partial<GateRules> = {}): GateRules {
     requiredStatusChecks: {},
     requiredLabels: [],
     blockingLabels: ['do-not-merge', 'wip'],
+    gateStatusChecks: [],
     ...overrides,
   };
 }
@@ -241,7 +250,33 @@ describe('evaluateGate', () => {
       [],
       makeDefaultRules(),
     );
-    expect(noMergeState.ready).toBe(true);
+    expect(noMergeState.blockers).toEqual([
+      { pr: 'acme/service-a#42', kind: 'mergeable', message: 'Merge state is unknown' },
+    ]);
+  });
+
+  it('passes and blocks merge states per the table', () => {
+    const cases: [string | undefined, boolean][] = [
+      ['clean', true],
+      ['behind', true],
+      ['unstable', true],
+      ['has_hooks', true],
+      ['draft', true],
+      ['CLEAN', true],
+      ['dirty', false],
+      ['blocked', false],
+      ['unknown', false],
+      [undefined, false],
+    ];
+    for (const [mergeableState, ready] of cases) {
+      const report = evaluateGate(makeReadyPr({ mergeableState }), [], makeDefaultRules());
+      expect({ mergeableState, ready: report.ready }).toEqual({ mergeableState, ready });
+      const row = report.items[0].checks.find((c) => c.label === 'Merge state');
+      expect(row?.ok).toBe(ready);
+      if (!ready) {
+        expect(report.blockers.map((b) => b.kind)).toEqual(['mergeable']);
+      }
+    }
   });
 
   it('matches required and blocking labels case-insensitively', () => {
@@ -309,19 +344,9 @@ describe('evaluateGate', () => {
 
     expect(report.blockers).toEqual([
       {
-        pr: 'acme/api#55',
-        kind: 'status-check',
-        message: 'Required status check `sonarqube` is pending',
-      },
-      {
         pr: 'acme/frontend#100',
         kind: 'upstream',
         message: 'Blocked by upstream `acme/api#55`: Required status check `sonarqube` is pending',
-      },
-      {
-        pr: 'acme/db-schema#12',
-        kind: 'closed',
-        message: 'Pull request is closed without being merged',
       },
       {
         pr: 'acme/frontend#100',
@@ -330,6 +355,64 @@ describe('evaluateGate', () => {
           'Blocked by upstream `acme/db-schema#12`: Pull request is closed without being merged',
       },
     ]);
+    // The upstream PR's own detail stays in its item.
+    expect(report.items[1].checks).toContainEqual({
+      label: 'Status check: sonarqube',
+      ok: false,
+      message: 'Required status check `sonarqube` is pending',
+    });
+  });
+
+  it('counts one upstream problem as one blocker', () => {
+    const upstream = makeReadyPr({ ref: 'acme/lib#7', zuulCheck: 'failure' });
+    const report = evaluateGate(makeReadyPr(), [upstream], makeDefaultRules());
+
+    expect(report.ready).toBe(false);
+    expect(report.blockers).toEqual([
+      {
+        pr: 'acme/service-a#42',
+        kind: 'upstream',
+        message: 'Blocked by upstream `acme/lib#7`: Zuul check is failure on HEAD',
+      },
+    ]);
+  });
+
+  it('counts an unreadable upstream PR as one blocker', () => {
+    const upstream = makeReadyPr({
+      ref: 'acme/lib#7',
+      zuulCheck: 'none',
+      approvals: 0,
+      mergeableState: undefined,
+      loadError: 'Could not read this pull request',
+    });
+    const report = evaluateGate(makeReadyPr(), [upstream], makeDefaultRules());
+
+    expect(report.ready).toBe(false);
+    expect(report.blockers).toEqual([
+      {
+        pr: 'acme/service-a#42',
+        kind: 'upstream',
+        message: 'Blocked by upstream `acme/lib#7`: Could not read this pull request',
+      },
+    ]);
+    expect(report.items[1].checks).toEqual([
+      { label: 'Pull request', ok: false, message: 'Could not read this pull request' },
+    ]);
+  });
+
+  it('does not claim there are no required checks when the list cannot be read', () => {
+    const report = evaluateGate(
+      makeReadyPr({ requiredChecksKnown: false, checks: [] }),
+      [],
+      makeDefaultRules(),
+    );
+
+    expect(report.ready).toBe(true);
+    expect(report.items[0].checks).toContainEqual({
+      label: 'Status checks',
+      ok: true,
+      message: "Required checks can't be read, relying on the merge state",
+    });
   });
 
   it('covers all 10 blocker kinds', () => {
@@ -342,6 +425,7 @@ describe('evaluateGate', () => {
       draft: true,
       mergeableState: 'dirty',
       labels: ['wip'],
+      state: 'closed',
     });
     const closedUpstream = makeReadyPr({
       ref: 'acme/lib#2',
@@ -373,5 +457,305 @@ describe('evaluateGate', () => {
         'upstream',
       ]),
     );
+  });
+});
+
+describe('Zuul gate status checks', () => {
+  const GATE = 'acme-tenant/gate';
+  const gateRules = (overrides: Partial<GateRules> = {}): GateRules =>
+    makeDefaultRules({ gateStatusChecks: [GATE], ...overrides });
+  const gateRow = (report: ReturnType<typeof evaluateGate>) =>
+    report.items[0].checks.find((c) => c.label === 'Zuul gate');
+
+  it('treats the gate check per the table (absent, pending, success, failure)', () => {
+    const absent = evaluateGate(makeReadyPr(), [], gateRules());
+    expect(absent.ready).toBe(true);
+    expect(gateRow(absent)).toEqual({
+      label: 'Zuul gate',
+      ok: true,
+      message: 'Starts once everything else is done',
+    });
+
+    const missing = evaluateGate(
+      makeReadyPr({
+        checks: [
+          { name: 'ci/unit', state: 'success', required: true },
+          { name: GATE, state: 'missing', required: true },
+        ],
+      }),
+      [],
+      gateRules(),
+    );
+    expect(missing.ready).toBe(true);
+    expect(gateRow(missing)?.message).toBe('Starts once everything else is done');
+
+    const pending = evaluateGate(
+      makeReadyPr({ checks: [{ name: 'ACME-tenant/Gate', state: 'pending', required: true }] }),
+      [],
+      gateRules(),
+    );
+    expect(pending.ready).toBe(true);
+    expect(gateRow(pending)).toEqual({ label: 'Zuul gate', ok: true, message: 'Running' });
+
+    const success = evaluateGate(
+      makeReadyPr({ checks: [{ name: GATE, state: 'success', required: true }] }),
+      [],
+      gateRules(),
+    );
+    expect(success.ready).toBe(true);
+    expect(gateRow(success)?.ok).toBe(true);
+
+    for (const state of ['failure', 'error'] as const) {
+      const failed = evaluateGate(
+        makeReadyPr({ checks: [{ name: GATE, state, required: false }] }),
+        [],
+        gateRules(),
+      );
+      expect(failed.ready).toBe(false);
+      expect(failed.blockers).toEqual([
+        {
+          pr: 'acme/service-a#42',
+          kind: 'status-check',
+          message: 'Zuul gate failed on this commit. It needs a new trigger.',
+        },
+      ]);
+      expect(gateRow(failed)?.ok).toBe(false);
+    }
+  });
+
+  it('excuses `blocked` when only the gate is outstanding', () => {
+    for (const gateState of ['absent', 'pending'] as const) {
+      const checks: PrGateFacts['checks'] = [{ name: 'ci/unit', state: 'success', required: true }];
+      if (gateState === 'pending') {
+        checks.push({ name: GATE, state: 'pending', required: true });
+      }
+      const report = evaluateGate(
+        makeReadyPr({ mergeableState: 'blocked', checks }),
+        [],
+        gateRules({ requiredStatusChecks: gateState === 'absent' ? { '*': [GATE] } : {} }),
+      );
+      expect(report.ready).toBe(true);
+      expect(report.items[0].checks).toContainEqual({
+        label: 'Merge state',
+        ok: true,
+        message: 'Blocked only by the Zuul gate',
+      });
+    }
+  });
+
+  it('keeps `blocked` a blocker when the required list is unknown', () => {
+    const report = evaluateGate(
+      makeReadyPr({
+        mergeableState: 'blocked',
+        requiredChecksKnown: false,
+        checks: [{ name: GATE, state: 'pending', required: true }],
+      }),
+      [],
+      gateRules(),
+    );
+    expect(report.ready).toBe(false);
+    expect(report.blockers).toEqual([
+      {
+        pr: 'acme/service-a#42',
+        kind: 'mergeable',
+        message:
+          "Merge is blocked, and this repo's required checks can't be read. List them in zuul.gate.requiredStatusChecks to tell whether only the Zuul gate is left.",
+      },
+    ]);
+  });
+
+  it('counts the required list as known when the settings name checks for this repo', () => {
+    const report = evaluateGate(
+      makeReadyPr({ mergeableState: 'blocked', requiredChecksKnown: false, checks: [] }),
+      [],
+      gateRules({ requiredStatusChecks: { 'ACME/service-a': [GATE] } }),
+    );
+    expect(report.ready).toBe(true);
+  });
+
+  it('keeps `blocked` a blocker when another required check has not reported', () => {
+    const report = evaluateGate(
+      makeReadyPr({
+        mergeableState: 'blocked',
+        checks: [
+          { name: 'ci/unit', state: 'missing', required: true },
+          { name: GATE, state: 'pending', required: true },
+        ],
+      }),
+      [],
+      gateRules(),
+    );
+    expect(report.ready).toBe(false);
+    expect(report.blockers.map((b) => b.message)).toEqual([
+      'Required status check `ci/unit` is missing',
+      'Merge state is blocked',
+    ]);
+  });
+
+  it('keeps `blocked` a blocker when the gate check is not in the required list', () => {
+    const report = evaluateGate(
+      makeReadyPr({
+        mergeableState: 'blocked',
+        checks: [
+          { name: 'ci/unit', state: 'success', required: true },
+          { name: GATE, state: 'pending', required: false },
+        ],
+      }),
+      [],
+      gateRules(),
+    );
+    expect(report.ready).toBe(false);
+    expect(report.blockers.map((b) => b.message)).toEqual(['Merge state is blocked']);
+  });
+
+  it('keeps `blocked` a blocker when the PR has another blocker', () => {
+    const report = evaluateGate(
+      makeReadyPr({
+        mergeableState: 'blocked',
+        labels: ['wip'],
+        checks: [{ name: GATE, state: 'pending', required: true }],
+      }),
+      [],
+      gateRules(),
+    );
+    expect(report.blockers.map((b) => b.kind)).toEqual(['mergeable', 'label-blocking']);
+  });
+
+  describe('other causes of `blocked`', () => {
+    const onlyGateLeft = (overrides: Partial<PrGateFacts>): PrGateFacts =>
+      makeReadyPr({
+        mergeableState: 'blocked',
+        checks: [{ name: GATE, state: 'pending', required: true }],
+        ...overrides,
+      });
+    const openRules = {
+      requiredApprovingReviewCount: 0,
+      requiresConversationResolution: false,
+      requiresSignatures: false,
+    };
+
+    it.each([
+      [
+        'resolved conversations',
+        { ...openRules, requiresConversationResolution: true },
+        "Merge is blocked, and this branch requires resolved conversations. That can't be checked here, so it may be more than the Zuul gate.",
+      ],
+      [
+        'signed commits',
+        { ...openRules, requiresSignatures: true },
+        "Merge is blocked, and this branch requires signed commits. That can't be checked here, so it may be more than the Zuul gate.",
+      ],
+    ])('keeps `blocked` a blocker when the branch requires %s', (_name, mergeRules, message) => {
+      const report = evaluateGate(onlyGateLeft({ mergeRules }), [], gateRules());
+      expect(report.ready).toBe(false);
+      expect(report.blockers).toEqual([{ pr: 'acme/service-a#42', kind: 'mergeable', message }]);
+    });
+
+    it('keeps `blocked` a blocker when approvals are short of the branch rule', () => {
+      const report = evaluateGate(
+        onlyGateLeft({
+          reviewDecision: undefined,
+          approvals: 1,
+          mergeRules: { ...openRules, requiredApprovingReviewCount: 2 },
+        }),
+        [],
+        gateRules(),
+      );
+      expect(report.blockers.map((b) => b.message)).toEqual([
+        'Merge is blocked: this branch requires at least 2 approval(s) (currently 1)',
+      ]);
+    });
+
+    it("trusts GHE's APPROVED decision over the approval count", () => {
+      const report = evaluateGate(
+        onlyGateLeft({
+          reviewDecision: 'APPROVED',
+          approvals: 1,
+          mergeRules: { ...openRules, requiredApprovingReviewCount: 2 },
+        }),
+        [],
+        gateRules(),
+      );
+      expect(report.ready).toBe(true);
+    });
+
+    it('keeps `blocked` a blocker when the merge rules cannot be read', () => {
+      const report = evaluateGate(onlyGateLeft({ mergeRules: undefined }), [], gateRules());
+      expect(report.blockers.map((b) => b.message)).toEqual([
+        "Merge is blocked, and this branch's other merge rules can't be read. List its required checks in zuul.gate.requiredStatusChecks to tell whether only the Zuul gate is left.",
+      ]);
+    });
+
+    it('excuses `blocked` with unreadable merge rules when the settings list the checks', () => {
+      const report = evaluateGate(
+        onlyGateLeft({ mergeRules: undefined, requiredChecksKnown: false }),
+        [],
+        gateRules({ requiredStatusChecks: { '*': [GATE] } }),
+      );
+      expect(report.ready).toBe(true);
+    });
+
+    it('does not let the settings override a merge rule that is known to be on', () => {
+      const report = evaluateGate(
+        onlyGateLeft({ mergeRules: { ...openRules, requiresConversationResolution: true } }),
+        [],
+        gateRules({ requiredStatusChecks: { '*': [GATE] } }),
+      );
+      expect(report.ready).toBe(false);
+    });
+  });
+
+  it('substitutes {tenant} in the configured names', () => {
+    const rules = resolveGateRules(
+      makeDefaultRules({
+        gateStatusChecks: ['{tenant}/gate', 'static'],
+        requiredStatusChecks: { '*': ['{tenant}/gate', 'ci/unit'], 'acme/app': ['{tenant}/check'] },
+      }),
+      'acme-tenant',
+    );
+    expect(rules.gateStatusChecks).toEqual(['acme-tenant/gate', 'static']);
+    expect(rules.requiredStatusChecks).toEqual({
+      '*': ['acme-tenant/gate', 'ci/unit'],
+      'acme/app': ['acme-tenant/check'],
+    });
+  });
+
+  it('excuses `blocked` when the settings list the gate as {tenant}/gate', () => {
+    const report = evaluateGate(
+      makeReadyPr({
+        mergeableState: 'blocked',
+        requiredChecksKnown: false,
+        mergeRules: undefined,
+        checks: [],
+      }),
+      [],
+      resolveGateRules(
+        makeDefaultRules({
+          gateStatusChecks: ['{tenant}/gate'],
+          requiredStatusChecks: { '*': ['{tenant}/gate'] },
+        }),
+        'acme-tenant',
+      ),
+    );
+    expect(report.ready).toBe(true);
+  });
+});
+
+describe('gateLoadFailureReport', () => {
+  it('is never ready and carries one load-error blocker', () => {
+    const report = gateLoadFailureReport('acme/service#42', 'HTTP 500');
+    expect(report.ready).toBe(false);
+    expect(report.blockers).toEqual([
+      {
+        pr: 'acme/service#42',
+        kind: 'load-error',
+        message: 'Could not load gate data: HTTP 500',
+      },
+    ]);
+    expect(report.items[0].checks[0]).toEqual({
+      label: 'Gate data',
+      ok: false,
+      message: 'Could not load gate data: HTTP 500',
+    });
   });
 });
