@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { type PullRequest, type SearchItem } from '../../src/clients/gheTypes';
 import { type ChangeStatus } from '../../src/clients/zuulTypes';
 import {
+  applyAddDependsOn,
+  applyRemoveDependsOn,
   DependsOnService,
   extractPrCoordinates,
   MAX_CYCLE_FETCHES,
@@ -541,5 +543,62 @@ describe('DependsOnService.wouldCreateCycle', () => {
     );
     expect(hasCycle).toBe(false);
     expect(ghe.getPr).toHaveBeenCalledTimes(MAX_CYCLE_FETCHES);
+  });
+});
+
+describe('applyAddDependsOn / applyRemoveDependsOn', () => {
+  const ref = { owner: 'org', repo: 'repo', number: 1 };
+
+  it('adds to the fresh body, not a stale one', async () => {
+    const ghe = {
+      getPr: vi.fn().mockResolvedValue(makePr({ body: 'fresh text' })),
+      updatePrBody: vi.fn().mockResolvedValue(undefined),
+    };
+    await applyAddDependsOn(
+      ghe,
+      { ...ref, body: 'stale text' },
+      'https://ghe.example.com/org/other/pull/2',
+    );
+    expect(ghe.getPr).toHaveBeenCalledWith('org', 'repo', 1);
+    expect(ghe.updatePrBody).toHaveBeenCalledTimes(1);
+    const [, , , body] = ghe.updatePrBody.mock.calls[0] as [string, string, number, string];
+    expect(body).toContain('fresh text');
+    expect(body).not.toContain('stale text');
+    expect(body).toContain('Depends-On: https://ghe.example.com/org/other/pull/2');
+  });
+
+  it('removes from the fresh body, not a stale one', async () => {
+    const ghe = {
+      getPr: vi
+        .fn()
+        .mockResolvedValue(
+          makePr({ body: 'fresh\nDepends-On: https://ghe.example.com/org/other/pull/2' }),
+        ),
+      updatePrBody: vi.fn().mockResolvedValue(undefined),
+    };
+    await applyRemoveDependsOn(
+      ghe,
+      { ...ref, body: 'stale\nDepends-On: https://ghe.example.com/org/other/pull/2' },
+      { owner: 'org', repo: 'other', number: 2 },
+    );
+    const [owner, repo, n, body] = ghe.updatePrBody.mock.calls[0] as [
+      string,
+      string,
+      number,
+      string,
+    ];
+    expect([owner, repo, n]).toEqual(['org', 'repo', 1]);
+    expect(body).toContain('fresh');
+    expect(body).not.toContain('stale');
+    expect(body).not.toContain('Depends-On');
+  });
+
+  it('does not update when getPr fails', async () => {
+    const ghe = {
+      getPr: vi.fn().mockRejectedValue(new Error('nope')),
+      updatePrBody: vi.fn(),
+    };
+    await expect(applyAddDependsOn(ghe, ref, 'https://x/o/r/pull/2')).rejects.toThrow('nope');
+    expect(ghe.updatePrBody).not.toHaveBeenCalled();
   });
 });

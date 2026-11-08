@@ -194,24 +194,71 @@ the code, and the pre-commit checks run.
 
 - **Tier:** sonnet
 - **Risk:** medium
-- **Status:** todo
-- **Files:** `src/views/addDependsOnPick.ts`, `dependsOnTreeView.ts`, `prGateTreeView.ts` (edit);
+- **Status:** done
+- **Files:** `src/views/addDependsOnPick.ts`, `dependsOnTreeView.ts`, `prGateTreeView.ts`,
+  `src/services/dependsOnService.ts`, `test/unit/dependsOnService.test.ts` (edit);
   `src/services/dependsOnCandidates.ts`, `dependsOnPresentation.ts`, `gatePresentation.ts`,
   `src/services/keyedAsyncCache.ts` and one test file for each (new)
 - **Do:**
-  - Move to `dependsOnCandidates.ts`: `parsePrUrlCandidate`, `searchItemToCandidate`,
-    `buildTenantProjectSet`, `buildSectionedQuickPickItems`.
+  - The four new modules must not import `vscode` (coverage counts them, and the test mock has no
+    `QuickPickItemKind`).
+  - Move to `dependsOnCandidates.ts`: `DependsOnCandidate`, `parsePrUrlCandidate`,
+    `searchItemToCandidate`, `buildTenantProjectSet`, `buildSectionedQuickPickItems`,
+    `toQuickPickItem`, and `HTTP_PR_URL_RE`. `buildSectionedQuickPickItems` returns plain
+    `CandidateRow[]`: the fields `toQuickPickItem` sets today, plus `separator?: true` on section
+    headers (replaces `makeSeparator`). `DependsOnQuickPickItem` stays in the view. Add a local mapper
+    in `addDependsOnPick.ts` that turns a `separator` row into
+    `{ label, kind: vscode.QuickPickItemKind.Separator }` and passes other rows through.
   - Move to `dependsOnPresentation.ts`: the `formatUpstream*` functions, `resolveUpstreamUrl`,
-    `getUpstreamIconId`, `formatDownstreamLabel`, `extractRemovalCoordinates`.
-  - Move to `gatePresentation.ts`: `formatGateHeader`, `buildGateChildren`.
-  - Add `KeyedAsyncCache<T>` (key, TTL, in-flight, sequence). It clears in-flight only if still
-    current, and `invalidate()` also drops in-flight. Use it in both tree providers.
-  - Extract `applyAddDependsOn(ghe, ref, url)` and `applyRemoveDependsOn(ghe, ref, target)` into
-    `dependsOnService.ts`: fresh `getPr`, edit, `updatePrBody`.
-- **Don't:** change labels, order or behaviour.
+    `getUpstreamIconId`, `formatDownstreamLabel`, `extractRemovalCoordinates` (now exported).
+  - Move to `gatePresentation.ts`: `formatGateHeader`, `buildGateChildren` and the `GateTreeNode`
+    types.
+  - Add `KeyedAsyncCache<T>` in `src/services/keyedAsyncCache.ts`. It holds one entry at a time:
+
+    ```ts
+    constructor(ttlMs: number, now: () => number = Date.now)
+    peek(key: string): T | undefined   // last stored value for this key, even if expired
+    isFresh(key: string): boolean      // stored for this key and age < ttlMs
+    get(key: string, load: (isCurrent: () => boolean) => Promise<T>): Promise<T>
+    invalidate(): void                 // drops the stored value and the running load
+    ```
+
+    `get` returns the fresh value, else joins the running load for this key, else calls `load`
+    synchronously. A newer load or `invalidate()` makes a running load stale: `isCurrent()` turns
+    false, its result is not stored, and it cannot clear the newer load's in-flight entry. A rejected
+    load stores nothing. Age counts from when the load finished.
+  - `PrGateTreeDataProvider`: `KeyedAsyncCache<GateReport>` with `GATE_REFRESH_MIN_INTERVAL_MS`
+    replaces `cached`, `inflight` and `CachedReport`. Keep the key as it is. The load callback logs
+    the existing warning and rethrows; `getReport` catches and returns `cache.peek(key)`, so a failed
+    load is not stored and retries on the next call, as today. `invalidateCache()` calls `invalidate()`.
+  - `DependsOnTreeDataProvider`: `KeyedAsyncCache<void>` with `DEPENDS_ON_REFRESH_TTL_MS` replaces
+    `lastFetchedAt`, `inFlightPromise` and `fetchSeq`. Key: `${prKey}\n${body}`.
+    - Rows stay in `upstream`, `downstream` and `hasLoadedOnceForPr`, so old rows still show while a
+      changed body loads.
+    - `cachedPrKey` and `cachedBody` stay. Set them at the top of the load callback, and clear them
+      where they are cleared today.
+    - The load callback checks `this.disposed || !isCurrent()` in place of the `seq` check. It catches
+      and logs errors itself, so a failed load counts as done and waits for the TTL, as today.
+    - `needsFetch` becomes: `prKey` is defined and `!cache.isFresh(key)`.
+    - Delete the `else if (this.inFlightPromise)` branch in `getChildren`. `needsFetch` is now true
+      during a load, and `get` joins it.
+    - `invalidateCache()` calls `invalidate()` and still clears `cachedBody`. The no-snapshot path in
+      `handleSnapshotChange` calls `invalidate()` in place of its `fetchSeq` and `inFlightPromise` lines.
+  - Add to `dependsOnService.ts`, both returning `Promise<void>` and taking
+    `ghe: Pick<GheClient, 'getPr' | 'updatePrBody'>` and `ref: PrCoordinates`:
+    `applyAddDependsOn(ghe, ref, url)` and
+    `applyRemoveDependsOn(ghe, ref, target: { owner: string; repo: string; number: number })`.
+    Each does a fresh `getPr`, edits with `addDependsOn` or `removeDependsOn`, then `updatePrBody`.
+    The callers keep their log lines, `onUpdated` and refresh calls. The `this.disposed` check between
+    `getPr` and `updatePrBody` goes away, because the user has already confirmed the edit.
+- **Don't:** change labels, order or behaviour, beyond the cache rules written above.
 - **Done when:**
   - `npm run check` passes
   - Moved modules count toward coverage and each has its own test file
+  - `grep -l "from 'vscode'"` on the four new modules finds nothing
+  - `keyedAsyncCache.test.ts` covers: TTL expiry, joining a load for the same key, a newer key making
+    the old load stale, `invalidate()` dropping a running load, a rejected load storing nothing
+  - `dependsOnService.test.ts` covers both `apply*` functions using the fresh body, not a stale one
 
 ### Step 5: Match the real Zuul status API
 

@@ -3,7 +3,14 @@ import { type PullRequest, type SearchItem } from '../clients/gheTypes';
 import { type ZuulClient } from '../clients/zuulClient';
 import { type ChangeStatus } from '../clients/zuulTypes';
 import { mapWithConcurrency } from '../util/concurrency';
-import { type DependsOnRef, formatPrRef, parseDependsOn, prRefKey } from './dependsOnParser';
+import {
+  addDependsOn,
+  type DependsOnRef,
+  formatPrRef,
+  parseDependsOn,
+  prRefKey,
+  removeDependsOn,
+} from './dependsOnParser';
 
 export const MAX_UPSTREAM_CONCURRENCY = 5;
 export const MAX_CYCLE_DEPTH = 10;
@@ -177,6 +184,24 @@ export function syncState(
     missingInZuul,
     extraInZuul,
   };
+}
+
+export async function applyAddDependsOn(
+  ghe: Pick<GheClient, 'getPr' | 'updatePrBody'>,
+  ref: PrCoordinates,
+  url: string,
+): Promise<void> {
+  const freshPr = await ghe.getPr(ref.owner, ref.repo, ref.number);
+  await ghe.updatePrBody(ref.owner, ref.repo, ref.number, addDependsOn(freshPr.body, url));
+}
+
+export async function applyRemoveDependsOn(
+  ghe: Pick<GheClient, 'getPr' | 'updatePrBody'>,
+  ref: PrCoordinates,
+  target: { owner: string; repo: string; number: number },
+): Promise<void> {
+  const freshPr = await ghe.getPr(ref.owner, ref.repo, ref.number);
+  await ghe.updatePrBody(ref.owner, ref.repo, ref.number, removeDependsOn(freshPr.body, target));
 }
 
 export class DependsOnService {
