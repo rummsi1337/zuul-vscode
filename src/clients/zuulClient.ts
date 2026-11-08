@@ -6,7 +6,6 @@ import {
   type JobStatus,
   type ListBuildsetsOptions,
   type ListBuildsOptions,
-  type QueuedRef,
   type ZuulInfo,
   type ZuulJobSummary,
   type ZuulJobVariant,
@@ -31,33 +30,17 @@ interface RawJobStatus {
   running?: boolean;
   elapsed_time?: number | null;
   remaining_time?: number | null;
-  url?: string | null;
-  stream_url?: string | null;
+  voting?: boolean;
+  pipeline?: string;
   report_url?: string | null;
-}
-
-interface RawQueuedItem {
-  id?: string;
-  project?: string;
-  change?: number | string;
-  patchset?: string | number;
-  live?: boolean;
-  url?: string | null;
-  ref_url?: string | null;
 }
 
 interface RawChangeStatusItem {
   pipeline?: string;
   queue?: string;
-  queue_name?: string;
-  id?: string;
-  project?: string;
   live?: boolean;
   enqueue_time?: number | null;
   remaining_time?: number | null;
-  item_ahead?: RawQueuedItem | null;
-  items_ahead?: RawQueuedItem[] | null;
-  refs?: RawQueuedItem[] | null;
   jobs?: RawJobStatus[] | null;
 }
 
@@ -79,6 +62,7 @@ interface RawBuild {
   change?: number | string | null;
   patchset?: string | number | null;
   ref?: RawBuildRef | null;
+  voting?: boolean;
   artifacts?: { name?: string; url?: string }[] | null;
 }
 
@@ -141,9 +125,8 @@ export function normalizeJobStatus(raw: RawJobStatus): JobStatus {
   if (typeof raw.remaining_time === 'number') {
     job.remainingMs = raw.remaining_time;
   }
-  const streamUrl = raw.stream_url ?? raw.url ?? undefined;
-  if (streamUrl) {
-    job.streamUrl = streamUrl;
+  if (typeof raw.voting === 'boolean') {
+    job.voting = raw.voting;
   }
   if (raw.report_url) {
     job.reportUrl = raw.report_url;
@@ -152,74 +135,18 @@ export function normalizeJobStatus(raw: RawJobStatus): JobStatus {
   return job;
 }
 
-function toQueuedRef(raw: RawQueuedItem, defaultLive: boolean): QueuedRef {
-  const ref: QueuedRef = {
-    project: raw.project ?? '',
-    live: typeof raw.live === 'boolean' ? raw.live : defaultLive,
-  };
+export function normalizeChangeStatus(raw: RawChangeStatusItem): ChangeStatus {
+  const jobs = (raw.jobs ?? []).map(normalizeJobStatus);
+  const pipeline = raw.pipeline ?? (raw.jobs ?? []).find((job) => job.pipeline)?.pipeline ?? '';
 
-  const change = parseChangeNumber(raw.change, raw.id);
-  if (change !== undefined) {
-    ref.change = change;
-  }
-
-  const url = raw.url ?? raw.ref_url ?? undefined;
-  if (url) {
-    ref.url = url;
-  }
-
-  return ref;
-}
-
-export function normalizeChangeStatus(
-  raw: RawChangeStatusItem,
-  targetPr?: number | string,
-  targetSha?: string,
-): ChangeStatus {
-  const itemsAhead: QueuedRef[] = [];
-  const seenKeys = new Set<string>();
-
-  const pushUnique = (ref: QueuedRef): void => {
-    const key = `${ref.project}#${ref.change ?? ''}:${ref.url ?? ''}`;
-    if (!seenKeys.has(key)) {
-      seenKeys.add(key);
-      itemsAhead.push(ref);
-    }
-  };
-
-  if (raw.item_ahead) {
-    pushUnique(toQueuedRef(raw.item_ahead, false));
-  }
-
-  if (Array.isArray(raw.items_ahead)) {
-    for (const ahead of raw.items_ahead) {
-      pushUnique(toQueuedRef(ahead, false));
-    }
-  }
-
-  if (Array.isArray(raw.refs)) {
-    const targetChangeNum = parseChangeNumber(targetPr);
-    for (const ref of raw.refs) {
-      const refChange = parseChangeNumber(ref.change, ref.id);
-      const isTargetChange =
-        targetChangeNum !== undefined &&
-        refChange === targetChangeNum &&
-        (!targetSha || !ref.patchset || String(ref.patchset) === targetSha);
-      if (!isTargetChange) {
-        pushUnique({
-          ...toQueuedRef(ref, false),
-          live: false,
-        });
-      }
-    }
-  }
-
+  // item_ahead is a UUID and refs[] lists bundle members, so neither is an item ahead.
+  // The queue ahead is read from GET /status instead.
   const status: ChangeStatus = {
-    pipeline: raw.pipeline ?? '',
-    queue: raw.queue ?? raw.queue_name ?? '',
+    pipeline,
+    queue: raw.queue ?? '',
     live: raw.live ?? true,
-    jobs: (raw.jobs ?? []).map(normalizeJobStatus),
-    itemsAhead,
+    jobs,
+    itemsAhead: [],
   };
 
   if (typeof raw.enqueue_time === 'number') {
@@ -245,6 +172,9 @@ export function normalizeBuild(raw: RawBuild): Build {
 
   if (raw.result) {
     build.result = raw.result;
+  }
+  if (typeof raw.voting === 'boolean') {
+    build.voting = raw.voting;
   }
   const logUrl = raw.log_url ?? undefined;
   if (logUrl) {
@@ -368,7 +298,7 @@ export class ZuulClient {
       const raw = await this.http.getJson<RawChangeStatusItem[]>(
         this.tenantPath(tenant, `/status/change/${pr},${sha}`),
       );
-      return raw.map((item) => normalizeChangeStatus(item, pr, sha));
+      return raw.map((item) => normalizeChangeStatus(item));
     } catch (err) {
       if (err instanceof HttpError && err.status === 404) {
         return [];

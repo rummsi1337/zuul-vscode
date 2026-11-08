@@ -212,6 +212,41 @@ describe('PrTracker', () => {
     tracker.dispose();
   });
 
+  it('falls back to listBuilds when every status is non-live', async () => {
+    const { findOpenPrForBranch, getChangeStatus, listBuilds, makeResolvedContext } =
+      createMockClients();
+    findOpenPrForBranch.mockResolvedValue(makePr());
+    getChangeStatus.mockResolvedValue([makeStatus({ live: false, jobs: [] })]);
+    listBuilds.mockResolvedValue([makeBuild()]);
+
+    const { source } = createFakeContextSource(makeResolvedContext());
+    const { focusEvents } = createFakeFocusEvents(true);
+    const tracker = new PrTracker(source, createFakeLogger(), setTimeout, Date.now, focusEvents);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(listBuilds).toHaveBeenCalledTimes(1);
+    tracker.dispose();
+  });
+
+  it('skips listBuilds when one status is live among non-live ones', async () => {
+    const { findOpenPrForBranch, getChangeStatus, listBuilds, makeResolvedContext } =
+      createMockClients();
+    findOpenPrForBranch.mockResolvedValue(makePr());
+    getChangeStatus.mockResolvedValue([
+      makeStatus({ live: false, jobs: [] }),
+      makeStatus({ live: true }),
+    ]);
+    listBuilds.mockResolvedValue([]);
+
+    const { source } = createFakeContextSource(makeResolvedContext());
+    const { focusEvents } = createFakeFocusEvents(true);
+    const tracker = new PrTracker(source, createFakeLogger(), setTimeout, Date.now, focusEvents);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(listBuilds).not.toHaveBeenCalled();
+    tracker.dispose();
+  });
+
   it('falls back to listBuilds when getChangeStatus returns empty and polls every 60s', async () => {
     const { findOpenPrForBranch, getChangeStatus, listBuilds, makeResolvedContext } =
       createMockClients();

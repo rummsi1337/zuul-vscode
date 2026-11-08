@@ -264,9 +264,11 @@ the code, and the pre-commit checks run.
 
 - **Tier:** sonnet
 - **Risk:** high
-- **Status:** todo
+- **Status:** done
 - **Files:** `src/clients/zuulClient.ts`, `src/clients/zuulTypes.ts`, `src/services/buildsModel.ts`,
-  `test/unit/zuulClient.test.ts`, `test/fixtures/zuul/status-modern.json`, `status-legacy.json`
+  `src/services/prTracker.ts`, `.plan/zuul-vscode.md`, `test/unit/zuulClient.test.ts`,
+  `test/unit/buildsModel.test.ts`, `test/unit/prTracker.test.ts`,
+  `test/fixtures/zuul/status-modern.json`, `status-legacy.json`
 - **Do:**
   - Rewrite `status-modern.json` to the shape in Context (`jobs` with one running and one finished;
     GitHub-style `refs[].id` such as `"42,abc123"`). Add a non-live item with `jobs: []`.
@@ -276,9 +278,21 @@ the code, and the pre-commit checks run.
     the change number from `ref.id` and do not expect `change`, `patchset` or `ref_url`.
   - Add `voting?: boolean` to `JobStatus` and `Build`, and map it.
   - `url` on jobs is relative. Build `streamUrl` from the base URL, or remove it if nothing uses it.
+  - Added after review: a non-live item with `jobs: []` says nothing about this PR's builds.
+    `buildTree` drops statuses with `!live && jobs.length === 0` before its length check, so the
+    builds branch runs. `PrTracker` calls `listBuilds` when `statuses.every((s) => !s.live)`.
+  - Added after review: in `status-modern.json` the non-live item's only ref is
+    `42,9f8e7d6c5b4a3210`, and the two items are not linked: the first item's `item_ahead` and
+    `items_behind` use UUIDs that are not in the array.
+  - Added after review: in `.plan/zuul-vscode.md`, remove `streamUrl` from the `JobStatus` listing and
+    add `voting?: boolean` to the `JobStatus` and `Build` listings.
 - **Done when:**
   - `npm run check` passes
   - Tests assert `pipeline: 'check'` from `jobs[].pipeline`, a non-live item, and `voting: false`
+  - Tests assert `normalizeBuild` keeps `voting: false`, and `buildTree` carries `voting` on both the
+    statuses and the builds paths
+  - Tests: `buildTree` with only a non-live empty item falls through to builds; `PrTracker` calls
+    `listBuilds` when every status is non-live and not when one is live
 
 ### Step 6: Make the Zuul sync check work
 
@@ -290,6 +304,8 @@ the code, and the pre-commit checks run.
 - **Do:**
   - Add `getQueueAhead(tenant, pr, sha): Promise<QueuedRef[]>`: `GET /status` (no cache), find the item
     whose `refs[].id` is `<pr>,<sha>`, follow `item_ahead` UUIDs, return `project`, `change`, `live`, `url`.
+    Read `change` from `ref.id` through the `id` path `parseChangeNumber` still has for this. Step 5 left
+    `ChangeStatus.itemsAhead` as `[]`, so these refs are the only source of queue data.
   - Call it only when the PR has Depends-On lines and statuses exist, at the existing 60 s cadence.
   - `syncState` uses those refs. An item counts as extra only if it is outside the transitive upstream
     set (walk `Depends-On` bodies, depth 5, 50 PRs). A→B→C must be in sync when the body of A lists B.
@@ -460,7 +476,8 @@ the code, and the pre-commit checks run.
   - Replace silent `false` returns with `No pull request found for the current branch.`
   - After posting, `setStatusBarMessage('Posted "recheck" on #12', 4000)`. Timeout text:
     `Zuul has not reacted to "recheck" yet. It may still be queued.` with Refresh.
-  - Status bar: `total === 0` gives `$(clock) Zuul <pipeline>: queued`; all jobs done without failure
+  - Status bar: ignore items with `!live && jobs.length === 0`; `total === 0` gives
+    `$(clock) Zuul <pipeline>: queued`; all jobs done without failure
     gives `$(check) ... passed`; empty pipeline omits the name; PASSED only if every latest build is
     success or skipped; mark non-voting failures as not failing.
   - Text: `1 blocker` / `2 blockers`; drop `$(warning)` from the out-of-sync label; remove the literal

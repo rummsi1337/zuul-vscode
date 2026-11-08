@@ -10,6 +10,7 @@ export interface JobNode {
   uuid?: string;
   logUrl?: string;
   durationMs?: number;
+  voting?: boolean;
 }
 
 export interface PipelineNode {
@@ -120,6 +121,9 @@ function jobStatusToNode(job: JobStatus): JobNode {
   if (typeof job.elapsedMs === 'number' && Number.isFinite(job.elapsedMs)) {
     node.durationMs = job.elapsedMs;
   }
+  if (job.voting !== undefined) {
+    node.voting = job.voting;
+  }
 
   return node;
 }
@@ -200,6 +204,9 @@ function buildToNode(build: Build): JobNode {
   if (durationMs !== undefined) {
     node.durationMs = durationMs;
   }
+  if (build.voting !== undefined) {
+    node.voting = build.voting;
+  }
 
   return node;
 }
@@ -209,8 +216,10 @@ export function buildTree(snapshot: PrSnapshot | undefined): PipelineNode[] {
     return [];
   }
 
-  if (snapshot.statuses && snapshot.statuses.length > 0) {
-    return snapshot.statuses.map((status) => ({
+  // Non-live items have no jobs; they must not hide the builds fallback.
+  const statuses = (snapshot.statuses ?? []).filter((s) => s.live || s.jobs.length > 0);
+  if (statuses.length > 0) {
+    return statuses.map((status) => ({
       pipeline: status.pipeline || 'check',
       live: status.live,
       jobs: sortJobs((status.jobs ?? []).map(jobStatusToNode)),

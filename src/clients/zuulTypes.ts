@@ -15,7 +15,7 @@ export interface JobStatus {
   running: boolean;
   elapsedMs?: number;
   remainingMs?: number;
-  streamUrl?: string;
+  voting?: boolean;
   reportUrl?: string;
 }
 
@@ -42,6 +42,7 @@ export interface Build {
   project?: string;
   change?: number;
   patchset?: string;
+  voting?: boolean;
   artifacts: BuildArtifact[];
 }
 
