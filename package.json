@@ -5,7 +5,11 @@
   "publisher": "zuul-vscode-dev",
   "version": "0.0.1",
   "private": true,
-  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rummsi1337/zuul-vscode.git"
+  },
+  "license": "MIT",
   "engines": {
     "vscode": "^1.100.0"
   },
