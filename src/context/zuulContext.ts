@@ -144,10 +144,10 @@ export class ZuulContextService implements vscode.Disposable {
     this.resolveTenantFn = options.resolveTenantFn ?? resolveTenant;
     this.createGheClient =
       options.createGheClient ??
-      ((host, getToken, fetchFn) => new GheClient(host, getToken, fetchFn));
+      ((host, getToken, fetchFn) => new GheClient(host, getToken, fetchFn, this.logger));
     this.createZuulClient =
       options.createZuulClient ??
-      ((baseUrl, fetchFn) => new ZuulClient(baseUrl, undefined, fetchFn));
+      ((baseUrl, fetchFn) => new ZuulClient(baseUrl, undefined, fetchFn, undefined, this.logger));
     this.fetchFn = options.fetchFn;
     this.showErrorMessage =
       options.showErrorMessage ??
@@ -318,6 +318,9 @@ export class ZuulContextService implements vscode.Disposable {
     }
 
     const project = `${gitCtx.owner}/${gitCtx.repo}`;
+    this.logger.info(
+      `[Zuul] Resolving context for owner=${gitCtx.owner} repo=${gitCtx.repo} branch=${gitCtx.branch ?? 'none'} host=${gitCtx.host} (zuulUrl=${zuulUrl})`,
+    );
     const zuul = this.getOrCreateZuulClient(zuulUrl);
     const ghe = this.getOrCreateGheClient(gitCtx.host);
 
