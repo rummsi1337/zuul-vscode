@@ -3,6 +3,7 @@ import { type PullRequest } from '../../src/clients/gheTypes';
 import { type ResolvedContext } from '../../src/context/zuulContext';
 import { type PrSnapshot } from '../../src/services/prTracker';
 import { pickAndAddDependsOn } from '../../src/views/addDependsOnPick';
+import { createFakeLogger } from '../helpers';
 import { EventEmitter } from '../mocks/vscode';
 
 describe('pickAndAddDependsOn', () => {
@@ -35,7 +36,7 @@ describe('pickAndAddDependsOn', () => {
       zuul: { listProjects: vi.fn(async () => []) },
     } as unknown as ResolvedContext;
     const snapshot: PrSnapshot = { pr, statuses: [], builds: [], fetchedAt: 0 };
-    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const logger = createFakeLogger();
     const onUpdated = vi.fn();
 
     const done = await pickAndAddDependsOn({

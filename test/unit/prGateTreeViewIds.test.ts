@@ -5,6 +5,7 @@ import { type ResolvedContext } from '../../src/context/zuulContext';
 import { type GateReport } from '../../src/services/gateReadiness';
 import { type PrSnapshot } from '../../src/services/prTracker';
 import { PrGateTreeDataProvider } from '../../src/views/prGateTreeView';
+import { createFakeLogger } from '../helpers';
 
 const REPORT: GateReport = {
   ready: true,
@@ -51,7 +52,7 @@ describe('PrGateTreeDataProvider ids', () => {
         blockingLabels: [],
         gateStatusChecks: [],
       }),
-      { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      createFakeLogger(),
     );
 
     const [header, ...prs] = await provider.getChildren();

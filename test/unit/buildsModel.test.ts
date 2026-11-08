@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
 import * as vscode from 'vscode';
-import { type PullRequest } from '../../src/clients/gheTypes';
 import { type Build } from '../../src/clients/zuulTypes';
 import {
   buildTree,
@@ -16,30 +15,7 @@ import {
   OPEN_BUILD_LOG_COMMAND,
   openBuildLogExternally,
 } from '../../src/views/buildsTreeView';
-
-function makePr(overrides?: Partial<PullRequest>): PullRequest {
-  return {
-    number: 42,
-    html_url: 'https://ghe.example.com/org/repo/pull/42',
-    title: 'Test PR',
-    state: 'open',
-    draft: false,
-    merged: false,
-    body: '',
-    head: {
-      sha: 'abcdef1234567890',
-      ref: 'feature-branch',
-      repo: { full_name: 'org/repo' },
-    },
-    base: {
-      ref: 'main',
-      repo: { full_name: 'org/repo' },
-    },
-    user: { login: 'alice' },
-    labels: [],
-    ...overrides,
-  };
-}
+import { makePr } from '../helpers';
 
 function makeSnapshot(overrides?: Partial<PrSnapshot>): PrSnapshot {
   return {

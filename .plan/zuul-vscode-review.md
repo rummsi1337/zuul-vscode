@@ -559,17 +559,29 @@ the code, and the pre-commit checks run.
 
 - **Tier:** sonnet
 - **Risk:** low
-- **Status:** todo
-- **Files:** `test/helpers/*` (new), `test/unit/*`, `test/mocks/vscode.ts`, `vitest.config.mts`
+- **Status:** done (`dependsOnService` and `gateFacts` tests keep a local `makePr`; four view tests keep partial contexts; the mock's `window` and `workspace` are only partly type-checked)
+- **Files:** `test/helpers/*` (new), `test/unit/*`, `test/unit/concurrency.test.ts` (new),
+  `test/mocks/vscode.ts`, `vitest.config.mts`
 - **Do:**
   - Add `test/helpers` with `createFakeLogger`, `makePr`, `makeResolvedContext`, and use them everywhere.
   - `prTracker`: stale response after a context change (deferred promise), and `refresh()` racing a timer.
-  - Replace the real `setTimeout(10)` at `dependsOnService.test.ts:228` and `gateFacts.test.ts:679`.
+  - Replace the real `setTimeout(10)` in `dependsOnService.test.ts` (now line 233) and
+    `gateFacts.test.ts` (now line 1036).
   - Split the omnibus tests at `triggerService.test.ts:402` and `prTracker.test.ts:418`.
   - Add a fixture-driven test: `collectGateFacts` over the real-shaped fixtures, then `evaluateGate`.
   - Add `thresholds.perFile: true`, and type the mock with `satisfies Pick<typeof import('vscode'), ...>`.
+  - Added before implementation: per-file limits fail today on two files (measured 2026-11-08, 80 %
+    branches): `src/util/concurrency.ts` 1/2 and `src/services/prTracker.ts` 85/107.
+    - `concurrency.test.ts`: an empty list returns `[]` without calling the worker; results keep input
+      order when workers finish out of order; never more than `limit` workers run at once; a `limit`
+      of `0` still processes every item.
+    - `prTracker.ts` needs at least 86/107. The two tests above should cover it. If not, add tests for
+      the uncovered branches.
+- **Don't:** lower a threshold, add coverage excludes, or add `/* v8 ignore */` comments to reach the
+  per-file limits. Don't change anything in `src/`.
 - **Done when:**
   - `npm run check` passes with per-file thresholds on
+  - `git diff --stat -- src/` shows nothing
 
 ### Step 13: Show review status on upstream PRs
 

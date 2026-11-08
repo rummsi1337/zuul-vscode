@@ -1033,7 +1033,7 @@ describe('collectUpstreamFacts', () => {
     const getPr = vi.fn(async (_owner: string, _repo: string, num: number) => {
       active += 1;
       maxActive = Math.max(maxActive, active);
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await Promise.resolve();
       active -= 1;
       return makePr({ number: num });
     });

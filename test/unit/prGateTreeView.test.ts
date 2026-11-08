@@ -8,6 +8,7 @@ import {
   GATE_REFRESH_MIN_INTERVAL_MS,
   PrGateTreeDataProvider,
 } from '../../src/views/prGateTreeView';
+import { createFakeLogger } from '../helpers';
 
 const PR: PullRequest = {
   number: 42,
@@ -69,7 +70,7 @@ function setup() {
     { snapshot, onDidChange: new EventEmitter<PrSnapshot | undefined>().event },
     ctx,
     () => rules,
-    { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    createFakeLogger(),
     () => time,
   );
 

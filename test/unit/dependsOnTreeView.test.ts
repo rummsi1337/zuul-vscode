@@ -7,6 +7,7 @@ import {
   DependsOnTreeDataProvider,
   openDependencyPrExternally,
 } from '../../src/views/dependsOnTreeView';
+import { createFakeLogger } from '../helpers';
 import { EventEmitter, window } from '../mocks/vscode';
 
 describe('openDependencyPrExternally URL schemes', () => {
@@ -54,7 +55,7 @@ describe('DependsOnTreeDataProvider.removeDependsOn', () => {
     } as unknown as ResolvedContext;
     const snapshot: PrSnapshot = { pr, statuses: [], builds: [], fetchedAt: 0 };
     const refresh = vi.fn(async () => undefined);
-    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const logger = createFakeLogger();
     const provider = new DependsOnTreeDataProvider(
       { current: ctx, onDidChange: new EventEmitter<ResolvedContext | undefined>().event },
       { snapshot, onDidChange: new EventEmitter<PrSnapshot | undefined>().event, refresh },
@@ -98,7 +99,7 @@ describe('DependsOnTreeDataProvider load failures', () => {
       zuul: { listProjects: vi.fn(async () => []), getChangeStatus: vi.fn(async () => []) },
     } as unknown as ResolvedContext;
     const snapshot: PrSnapshot = { pr, statuses: [], builds: [], fetchedAt: 0 };
-    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const logger = createFakeLogger();
     const provider = new DependsOnTreeDataProvider(
       { current: ctx, onDidChange: new EventEmitter<ResolvedContext | undefined>().event },
       {
