@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { type GheClient } from '../../src/clients/gheClient';
 import { HttpError } from '../../src/clients/http';
 import { type ZuulClient } from '../../src/clients/zuulClient';
 import {
@@ -222,6 +223,29 @@ describe('ZuulContextService', () => {
     expect(service.zuulProblem).toBeUndefined();
 
     service.dispose();
+  });
+
+  it('clearClientCaches clears the GitHub and Zuul clients', async () => {
+    const { source } = createFakeGitSource(sampleGitCtx);
+    const auth: AuthLike = {
+      getToken: vi.fn(async () => 'token-1'),
+      reportUnauthorized: vi.fn(async () => undefined),
+    };
+    const gheClear = vi.fn();
+    const zuulClear = vi.fn();
+    const service = new ZuulContextService(source, auth, createFakeLogger(), undefined, {
+      getSettings: () => ({ url: 'https://zuul.example.com', tenant: 't' }),
+      onSettingsChange: () => ({ dispose: () => undefined }),
+      resolveTenantFn: vi.fn(async () => 't'),
+      createGheClient: () => ({ clearCache: gheClear }) as unknown as GheClient,
+      createZuulClient: () => ({ clearCache: zuulClear }) as unknown as ZuulClient,
+    });
+    await service.ready;
+
+    service.clearClientCaches();
+
+    expect(gheClear).toHaveBeenCalledTimes(1);
+    expect(zuulClear).toHaveBeenCalledTimes(1);
   });
 
   it('resolves context and recomputes when git context or settings change', async () => {

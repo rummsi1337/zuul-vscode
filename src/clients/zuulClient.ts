@@ -1,5 +1,6 @@
 import { HttpClient, HttpError } from './http';
 import { type Logger } from '../util/logger';
+import { TtlCache } from '../util/ttlCache';
 import {
   type Build,
   type Buildset,
@@ -19,11 +20,8 @@ import {
 } from './zuulTypes';
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
-
-interface CacheEntry<T> {
-  value: T;
-  expiresAt: number;
-}
+// Below the 10 s minimum poll interval, so a poll never gets the previous poll's answer.
+const SHORT_REUSE_MS = 5 * 1000;
 
 interface RawJobStatus {
   name?: string;
@@ -262,8 +260,7 @@ export class ZuulClient {
   private readonly getToken?: (tenant?: string) => Promise<string | string[] | undefined>;
   private readonly fetchFn?: typeof fetch;
   private readonly http: HttpClient;
-  private readonly now: () => number;
-  private readonly cache = new Map<string, CacheEntry<unknown>>();
+  private readonly cache: TtlCache;
   private readonly logger?: Pick<Logger, 'info' | 'warn'>;
   private readonly workingTokens = new Map<string, string>();
 
@@ -277,7 +274,7 @@ export class ZuulClient {
     this.baseUrl = baseUrl.replace(/\/+$/, '');
     this.getToken = getToken;
     this.fetchFn = fetchFn;
-    this.now = now;
+    this.cache = new TtlCache(now);
     this.logger = logger;
     this.http = new HttpClient({
       baseUrl: this.baseUrl,
@@ -332,19 +329,8 @@ export class ZuulClient {
     throw lastError;
   }
 
-  private async cached<T>(key: string, loader: () => Promise<T>): Promise<T> {
-    const existing = this.cache.get(key) as CacheEntry<T> | undefined;
-    const currentTime = this.now();
-    if (existing !== undefined && currentTime < existing.expiresAt) {
-      return existing.value;
-    }
-
-    const value = await loader();
-    this.cache.set(key, {
-      value,
-      expiresAt: this.now() + CACHE_TTL_MS,
-    });
-    return value;
+  private cached<T>(key: string, loader: () => Promise<T>, ttlMs = CACHE_TTL_MS): Promise<T> {
+    return this.cache.get(key, ttlMs, loader);
   }
 
   async listTenants(): Promise<ZuulTenant[]> {
@@ -368,24 +354,30 @@ export class ZuulClient {
     this.logger?.info(
       `[Zuul] Getting change status for tenant="${tenant}" change=${pr} patchset=${sha}`,
     );
-    try {
-      const raw = await this.withAuth(tenant, (headers) =>
-        this.http.getJson<RawChangeStatusItem[]>(
-          this.tenantPath(tenant, `/status/change/${pr},${sha}`),
-          undefined,
-          headers,
-        ),
-      );
-      return raw.map((item) => normalizeChangeStatus(item));
-    } catch (err) {
-      if (err instanceof HttpError && err.status === 404) {
-        this.logger?.info(
-          `[Zuul] Change status not found (404) for tenant="${tenant}" change=${pr} patchset=${sha}; returning empty status`,
-        );
-        return [];
-      }
-      throw err;
-    }
+    return this.cached(
+      `changeStatus:${tenant}:${pr},${sha}`,
+      async () => {
+        try {
+          const raw = await this.withAuth(tenant, (headers) =>
+            this.http.getJson<RawChangeStatusItem[]>(
+              this.tenantPath(tenant, `/status/change/${pr},${sha}`),
+              undefined,
+              headers,
+            ),
+          );
+          return raw.map((item) => normalizeChangeStatus(item));
+        } catch (err) {
+          if (err instanceof HttpError && err.status === 404) {
+            this.logger?.info(
+              `[Zuul] Change status not found (404) for tenant="${tenant}" change=${pr} patchset=${sha}; returning empty status`,
+            );
+            return [];
+          }
+          throw err;
+        }
+      },
+      SHORT_REUSE_MS,
+    );
   }
 
   async getQueueAhead(
@@ -459,19 +451,27 @@ export class ZuulClient {
     this.logger?.info(
       `[Zuul] Listing builds for tenant="${tenant}" project="${opts.project ?? '*'}" change=${opts.change ?? '*'} patchset=${opts.patchset ?? '*'} (limit=${opts.limit ?? 50})`,
     );
-    const raw = await this.withAuth(tenant, (headers) =>
-      this.http.getJson<RawBuild[]>(
-        this.tenantPath(tenant, '/builds'),
-        {
-          project: opts.project,
-          change: opts.change,
-          patchset: opts.patchset,
-          limit: opts.limit ?? 50,
-        },
-        headers,
-      ),
+    // The poll uses the project from the git remote and the gate uses GitHub's, which can differ in case.
+    const key = `builds:${tenant}:${(opts.project ?? '').toLowerCase()}:${opts.change ?? ''}:${opts.patchset ?? ''}:${opts.limit ?? 50}`;
+    return this.cached(
+      key,
+      async () => {
+        const raw = await this.withAuth(tenant, (headers) =>
+          this.http.getJson<RawBuild[]>(
+            this.tenantPath(tenant, '/builds'),
+            {
+              project: opts.project,
+              change: opts.change,
+              patchset: opts.patchset,
+              limit: opts.limit ?? 50,
+            },
+            headers,
+          ),
+        );
+        return raw.map(normalizeBuild);
+      },
+      SHORT_REUSE_MS,
     );
-    return raw.map(normalizeBuild);
   }
 
   async listBuildsets(tenant: string, opts: ListBuildsetsOptions = {}): Promise<Buildset[]> {

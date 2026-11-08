@@ -294,11 +294,8 @@ export class DependsOnTreeDataProvider
       this.loadFailed = false;
     }
 
+    // No fetch here: a hidden view never calls getChildren, so it loads nothing.
     this.emitter.fire();
-
-    if (this.needsFetch(snapshot)) {
-      void this.ensureDataLoaded(snapshot);
-    }
   }
 
   private ensureDataLoaded(snapshot: PrSnapshot): Promise<void> {

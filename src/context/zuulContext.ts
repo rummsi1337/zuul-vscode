@@ -207,6 +207,12 @@ export class ZuulContextService implements vscode.Disposable {
     return this._zuulProblem;
   }
 
+  /** Clears the cached answers of the current GitHub and Zuul clients. */
+  clearClientCaches(): void {
+    this.cachedGheClient?.clearCache();
+    this.cachedRawZuulClient?.clearCache();
+  }
+
   private async init(): Promise<void> {
     await (this.gitContext.ready ?? Promise.resolve());
     if (this.disposed) {

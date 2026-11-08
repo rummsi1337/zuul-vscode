@@ -79,7 +79,8 @@ Source: GitHub's REST best-practices and rate-limit pages, API version 2026-03-1
 - `ZuulClient.withAuth` tries each candidate token on a 401 or 403, so a refused call costs one
   request per candidate.
 - `TreeView.message` exists in `@types/vscode` 1.101 (checked).
-- **Assumed:** VS Code does not call `getChildren` for a hidden view. Step 8 checks this by hand.
+- VS Code does not call `getChildren` for a hidden view. Checked by hand by the user on 2026-11-08
+  (Step 8): with the sidebar closed, no gate or search lines appeared in the output channel.
 - **Not verified:** whether Zuul answers 304. This plan uses time-based caching for Zuul only.
 
 Already correct, keep it: polling pauses when the window is not focused, and stale poll results are
@@ -123,6 +124,7 @@ Already made. Implementers must not change these.
 | Intervals | Build running: the setting. Nothing running: 5 times the setting (5 min by default). After posting a trigger: every 15 s for 45 s (3 polls, was 15), or at the setting if that is lower. |
 | Short reuse window | 5 s for Zuul `getChangeStatus` and `listBuilds`, which is below the 10 s minimum interval, so a poll never gets the previous poll's answer. |
 | GitHub PR fetches | No time-based reuse. Step 1 already makes repeat GETs a free 304. |
+| Required checks | GraphQL `refUpdateRule` only, which GitHub's schema describes as viewable by non-admins. The REST branch protection fallback is removed. Decided by the user on 2026-11-08. |
 | One request at a time | Not added. The gate sends 5 at once and GitHub allows 100. A queue saves no requests and slows the views. |
 | Token caches | Not added. They save local keychain and file reads, not API calls, and Step 6 cuts those by about 80%. |
 | View refresh | The gate keeps its 30 s limit and dependencies keep 60 s. A visible view reloads on a poll once its limit has passed. |
@@ -465,9 +467,10 @@ When polling resumes:
 
 - **Tier:** sonnet
 - **Risk:** medium
-- **Status:** todo
+- **Status:** done
 - **Files:** `src/util/ttlCache.ts` (new), `test/unit/ttlCache.test.ts` (new),
-  `src/clients/gheClient.ts`, `src/clients/zuulClient.ts`, `src/context/zuulContext.ts`,
+  `src/clients/gheClient.ts`, `src/clients/gheTypes.ts`, `src/clients/zuulClient.ts`,
+  `src/context/zuulContext.ts`,
   `src/views/dependsOnTreeView.ts`, `src/extension.ts`, and their tests (edit)
 - **Do:**
   - Move `ZuulClient.cached` into `class TtlCache` with `get<T>(key, ttlMs, load)` and `clear()`. It
@@ -476,6 +479,12 @@ When polling resumes:
     Store "this branch has no rule", but never a failed request. `getBranchMergeRules` turns every
     failure into `undefined` today, so put only the query inside the cached load and keep that `catch`
     outside it. Otherwise one network blip hides a merge rule for an hour.
+  - Remove the REST fallback from `getRequiredContexts`. Delete `loadRequiredContexts`,
+    `UnconfirmedNoRulesError`, `getRequiredStatusChecks` and the `RequiredStatusChecks` type. Shape
+    `getRequiredContexts` like `getBranchMergeRules`: only the GraphQL query goes inside the cached
+    load. A query answer with no contexts array is `undefined` and is stored ("no rule"). The `catch`
+    outside the load rethrows `RateLimitedError`, logs the failure with `logger.info` and returns
+    `undefined`, so a failed query is not stored.
   - Add `GheClient.clearCache()`.
   - `ZuulClient`: `getChangeStatus` and `listBuilds` reuse their answer for 5 s, so the gate and
     dependencies reuse the poll's result from the same tick. Other cached calls keep their 5 min.
@@ -490,7 +499,8 @@ When polling resumes:
   `searchPrs`.
 - **Done when:**
   - `npm run check` passes
-  - Tests show: one rules query per hour; a failed rules query is not stored; poll and gate share one
+  - Tests show: one rules query per hour; a failed rules query is not stored; `getRequiredContexts`
+    sends no request to `protection/required_status_checks`; poll and gate share one
     `getChangeStatus` and one `listBuilds`; Refresh clears the caches; no `search/issues` without
     `getChildren`
   - Checked by hand in the Extension Development Host: with the Zuul sidebar closed, the Zuul output

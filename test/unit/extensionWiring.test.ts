@@ -13,6 +13,7 @@ vi.mock('../../src/auth/zuulTokenProvider', () => ({
   }),
 }));
 
+import { ZuulContextService } from '../../src/context/zuulContext';
 import { activate } from '../../src/extension';
 
 type Handler = (...args: unknown[]) => Promise<unknown>;
@@ -99,5 +100,16 @@ describe('extension wiring: token changes run Refresh', () => {
   it('changing zuul.pollIntervalSeconds does not run refresh', () => {
     fireConfigChange('zuul.pollIntervalSeconds');
     expect(refreshCalls()).toHaveLength(0);
+  });
+});
+
+describe('extension wiring: Refresh clears client caches', () => {
+  it('zuul.refresh calls clearClientCaches', async () => {
+    vi.clearAllMocks();
+    activate(fakeContext());
+    const spy = vi.spyOn(ZuulContextService.prototype, 'clearClientCaches');
+    await commandHandler('zuul.refresh')();
+    expect(spy).toHaveBeenCalledTimes(1);
+    spy.mockRestore();
   });
 });

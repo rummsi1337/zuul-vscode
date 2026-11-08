@@ -286,4 +286,56 @@ describe('DependsOnTreeDataProvider load failures', () => {
     expect(getChangeStatus).toHaveBeenCalledTimes(1);
     provider.dispose();
   });
+
+  it('fetches nothing on a snapshot change until getChildren is called', async () => {
+    const searchPrs = vi.fn(async () => []);
+    const getPr = vi.fn();
+    const pr = {
+      number: 5,
+      html_url: 'https://ghe.example.com/acme/service/pull/5',
+      body: '',
+      state: 'open',
+      merged: false,
+      base: { ref: 'main', repo: { full_name: 'acme/service' } },
+      head: { sha: 'x', ref: 'f', repo: { full_name: 'acme/service' } },
+    } as unknown as PullRequest;
+    const ctx = {
+      host: 'ghe.example.com',
+      owner: 'acme',
+      repo: 'service',
+      project: 'acme/service',
+      ghe: { getPr, searchPrs },
+      zuul: {
+        url: 'https://zuul.example.com',
+        tenant: 't',
+        client: { listProjects: vi.fn(async () => []), getChangeStatus: vi.fn(async () => []) },
+      },
+    } as unknown as ResolvedContext;
+    const emitter = new EventEmitter<PrSnapshot | undefined>();
+    const snapshot = {
+      pr,
+      statuses: [],
+      builds: [],
+      fetchedAt: 0,
+      zuul: { kind: 'ok' },
+    } as PrSnapshot;
+    const tracker = {
+      snapshot,
+      onDidChange: emitter.event,
+      refresh: vi.fn(async () => undefined),
+    };
+    const provider = new DependsOnTreeDataProvider(
+      { current: ctx, onDidChange: new EventEmitter<ResolvedContext | undefined>().event },
+      tracker,
+      createFakeLogger(),
+    );
+
+    emitter.fire(snapshot);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(searchPrs).not.toHaveBeenCalled();
+
+    await provider.getChildren();
+    expect(searchPrs).toHaveBeenCalled();
+    provider.dispose();
+  });
 });

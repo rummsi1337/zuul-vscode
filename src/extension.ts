@@ -262,6 +262,7 @@ export function activate(context: vscode.ExtensionContext): void {
       guard(
         () => 'refresh Zuul data',
         async () => {
+          zuulContext.clearClientCaches();
           await zuulContext.recompute();
           dependsOnTree.invalidateCache();
           gateTree.invalidateCache();
