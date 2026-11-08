@@ -1,35 +1,24 @@
 import * as vscode from 'vscode';
 import { type SearchItem } from '../clients/gheTypes';
-import { type ZuulProject } from '../clients/zuulTypes';
 import { readWorkspaceSettings } from '../config/settings';
 import { getGitApi } from '../git/gitApi';
 import { computeGitContext, type GitContext } from '../git/gitContext';
 import { normalizeHost } from '../git/remoteUrl';
 import {
-  addDependsOn,
-  formatPrRef,
-  parseDependsOn,
-  prRefKey,
-  toPrUrl,
-} from '../services/dependsOnParser';
-import { DependsOnService, isInTenant, normalizeProjectName } from '../services/dependsOnService';
+  buildSectionedQuickPickItems,
+  buildTenantProjectSet,
+  type CandidateRow,
+  type DependsOnCandidate,
+  parsePrUrlCandidate,
+  searchItemToCandidate,
+} from '../services/dependsOnCandidates';
+import { formatPrRef, prRefKey, toPrUrl } from '../services/dependsOnParser';
+import { applyAddDependsOn, DependsOnService, isInTenant } from '../services/dependsOnService';
 import { type PrSnapshot, type ZuulContextSource } from '../services/prTracker';
 import { type Logger } from '../util/logger';
 
 export const SEARCH_DEBOUNCE_MS = 300;
 export const CYCLE_ERROR_MESSAGE = 'Would create a dependency cycle';
-
-const HTTP_PR_URL_RE =
-  /^https?:\/\/([^/?#\s]+)\/([^/?#\s]+)\/([^/?#\s]+)\/pull\/([1-9]\d*)(?:\/(?:files\/?)?)?(?:#\S*)?$/i;
-
-export interface DependsOnCandidate {
-  host: string;
-  owner: string;
-  repo: string;
-  number: number;
-  url: string;
-  title?: string;
-}
 
 export interface DependsOnQuickPickItem extends vscode.QuickPickItem {
   readonly candidate?: DependsOnCandidate;
@@ -47,102 +36,6 @@ export interface AddDependsOnOptions {
   getWorkspaceContexts?: () => Promise<GitContext[]>;
   onUpdated?: () => void;
   targetArg?: unknown;
-}
-
-export function parsePrUrlCandidate(
-  input: string,
-  fallbackHost?: string,
-): DependsOnCandidate | undefined {
-  const trimmed = input.trim();
-  if (!trimmed) {
-    return undefined;
-  }
-
-  const parsed = parseDependsOn(`Depends-On: ${trimmed}`)[0];
-  if (parsed?.kind === 'url' && parsed.host && parsed.owner && parsed.repo && parsed.number) {
-    return {
-      host: parsed.host,
-      owner: parsed.owner,
-      repo: parsed.repo,
-      number: parsed.number,
-      url: toPrUrl(parsed.host, parsed.owner, parsed.repo, parsed.number),
-    };
-  }
-
-  const match = HTTP_PR_URL_RE.exec(trimmed);
-  if (!match) {
-    return undefined;
-  }
-
-  const [, rawHost, owner, repo, numStr] = match;
-  const prNumber = Number(numStr);
-  if (!Number.isSafeInteger(prNumber) || prNumber <= 0) {
-    return undefined;
-  }
-  const host = normalizeHost(fallbackHost?.trim() || rawHost);
-
-  return {
-    host,
-    owner,
-    repo,
-    number: prNumber,
-    url: toPrUrl(host, owner, repo, prNumber),
-  };
-}
-
-export function searchItemToCandidate(
-  item: SearchItem,
-  defaultHost: string,
-): DependsOnCandidate | undefined {
-  if (item.html_url) {
-    const fromHtml = parsePrUrlCandidate(item.html_url, defaultHost);
-    if (fromHtml) {
-      return {
-        ...fromHtml,
-        title: item.title,
-      };
-    }
-  }
-
-  return undefined;
-}
-
-export function buildTenantProjectSet(
-  projects: readonly ZuulProject[],
-  currentProject?: string,
-): Set<string> {
-  const set = new Set<string>();
-  if (currentProject) {
-    set.add(normalizeProjectName(currentProject).toLowerCase());
-  }
-  for (const project of projects) {
-    set.add(normalizeProjectName(project.name).toLowerCase());
-    if (project.canonical_name) {
-      set.add(normalizeProjectName(project.canonical_name).toLowerCase());
-    }
-  }
-  return set;
-}
-
-function toQuickPickItem(
-  candidate: DependsOnCandidate,
-  alwaysShow = false,
-): DependsOnQuickPickItem {
-  const ref = formatPrRef(candidate);
-  return {
-    label: ref,
-    description: candidate.title ?? candidate.url,
-    detail: candidate.title ? candidate.url : undefined,
-    alwaysShow,
-    candidate,
-  };
-}
-
-function makeSeparator(label: string): DependsOnQuickPickItem {
-  return {
-    label,
-    kind: vscode.QuickPickItemKind.Separator,
-  };
 }
 
 async function defaultGetWorkspaceContexts(): Promise<GitContext[]> {
@@ -178,46 +71,12 @@ function coerceDirectCandidate(arg: unknown, defaultHost: string): DependsOnCand
   return undefined;
 }
 
-export function buildSectionedQuickPickItems(params: {
-  myPrs: readonly DependsOnCandidate[];
-  workspacePrs: readonly DependsOnCandidate[];
-  searchPrs?: readonly DependsOnCandidate[];
-  pastedCandidate?: DependsOnCandidate;
-}): DependsOnQuickPickItem[] {
-  const items: DependsOnQuickPickItem[] = [];
-
-  if (params.pastedCandidate) {
-    items.push(makeSeparator('Pasted URL'));
-    items.push({
-      label: `$(link) ${formatPrRef(params.pastedCandidate)}`,
-      description: params.pastedCandidate.url,
-      alwaysShow: true,
-      candidate: params.pastedCandidate,
-    });
-  }
-
-  if (params.searchPrs && params.searchPrs.length > 0) {
-    items.push(makeSeparator('Search results'));
-    for (const candidate of params.searchPrs) {
-      items.push(toQuickPickItem(candidate, true));
-    }
-  }
-
-  if (params.myPrs.length > 0) {
-    items.push(makeSeparator('My open PRs'));
-    for (const candidate of params.myPrs) {
-      items.push(toQuickPickItem(candidate, false));
-    }
-  }
-
-  if (params.workspacePrs.length > 0) {
-    items.push(makeSeparator('Workspace repositories'));
-    for (const candidate of params.workspacePrs) {
-      items.push(toQuickPickItem(candidate, false));
-    }
-  }
-
-  return items;
+function toVscodeItems(rows: readonly CandidateRow[]): DependsOnQuickPickItem[] {
+  return rows.map((row) =>
+    row.separator
+      ? { label: row.label, kind: vscode.QuickPickItemKind.Separator }
+      : (row as DependsOnQuickPickItem),
+  );
 }
 
 async function promptForCandidate(params: {
@@ -261,12 +120,9 @@ async function promptForCandidate(params: {
       if (settled) {
         return;
       }
-      qp.items = buildSectionedQuickPickItems({
-        myPrs,
-        workspacePrs,
-        searchPrs,
-        pastedCandidate,
-      });
+      qp.items = toVscodeItems(
+        buildSectionedQuickPickItems({ myPrs, workspacePrs, searchPrs, pastedCandidate }),
+      );
     };
 
     qp.title = 'Add Depends-On';
@@ -508,15 +364,11 @@ export async function pickAndAddDependsOn(options: AddDependsOnOptions): Promise
     return false;
   }
 
-  const freshPr = await currentCtx.ghe.getPr(currentCtx.owner, currentCtx.repo, snapshot.pr.number);
   const canonicalUrl = toPrUrl(currentCtx.host, candidate.owner, candidate.repo, candidate.number);
-  const nextBody = addDependsOn(freshPr.body, canonicalUrl);
-
-  await currentCtx.ghe.updatePrBody(
-    currentCtx.owner,
-    currentCtx.repo,
-    snapshot.pr.number,
-    nextBody,
+  await applyAddDependsOn(
+    currentCtx.ghe,
+    { owner: currentCtx.owner, repo: currentCtx.repo, number: snapshot.pr.number },
+    canonicalUrl,
   );
 
   options.logger.info(

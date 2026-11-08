@@ -1,32 +1,17 @@
 import * as vscode from 'vscode';
 import { type ResolvedContext } from '../context/zuulContext';
 import { collectGateFacts, collectUpstreamFacts } from '../services/gateFacts';
+import {
+  buildGateChildren,
+  formatGateHeader,
+  type GateTreeNode,
+} from '../services/gatePresentation';
 import { evaluateGate, type GateReport, type GateRules } from '../services/gateReadiness';
+import { KeyedAsyncCache } from '../services/keyedAsyncCache';
 import { type PrSnapshot } from '../services/prTracker';
 import { type Logger } from '../util/logger';
 
 export const GATE_REFRESH_MIN_INTERVAL_MS = 30_000;
-
-interface GateHeaderNode {
-  readonly kind: 'header';
-  readonly report: GateReport;
-}
-
-interface GatePrNode {
-  readonly kind: 'pr';
-  readonly pr: string;
-  readonly isRoot: boolean;
-  readonly report: GateReport;
-}
-
-export interface GateCheckNode {
-  readonly kind: 'check';
-  readonly label: string;
-  readonly ok: boolean;
-  readonly message?: string;
-}
-
-export type GateTreeNode = GateHeaderNode | GatePrNode | GateCheckNode;
 
 export interface GateTrackerSource {
   readonly snapshot: PrSnapshot | undefined;
@@ -37,58 +22,12 @@ export interface GateContextSource {
   readonly current: ResolvedContext | undefined;
 }
 
-export function formatGateHeader(report: GateReport): { label: string; icon: string } {
-  if (report.ready) {
-    return { label: 'Ready for gate', icon: 'pass-filled' };
-  }
-  const n = report.blockers.length;
-  return { label: `Not ready: ${n} blocker(s)`, icon: 'circle-slash' };
-}
-
-export function buildGateChildren(
-  element: GateTreeNode | undefined,
-  report: GateReport,
-): GateTreeNode[] {
-  if (!element) {
-    const nodes: GateTreeNode[] = [{ kind: 'header', report }];
-    report.items.forEach((item, index) => {
-      nodes.push({ kind: 'pr', pr: item.pr, isRoot: index === 0, report });
-    });
-    return nodes;
-  }
-  if (element.kind !== 'pr') {
-    return [];
-  }
-  const item = element.report.items.find((i) => i.pr === element.pr);
-  const children: GateCheckNode[] = (item?.checks ?? []).map((c) => ({
-    kind: 'check',
-    label: c.label,
-    ok: c.ok,
-    ...(c.message !== undefined ? { message: c.message } : {}),
-  }));
-  if (element.isRoot) {
-    for (const b of element.report.blockers) {
-      if (b.kind === 'upstream') {
-        children.push({ kind: 'check', label: b.pr, ok: false, message: b.message });
-      }
-    }
-  }
-  return children;
-}
-
-interface CachedReport {
-  readonly key: string;
-  readonly at: number;
-  readonly report: GateReport;
-}
-
 export class PrGateTreeDataProvider
   implements vscode.TreeDataProvider<GateTreeNode>, vscode.Disposable
 {
   private readonly emitter = new vscode.EventEmitter<GateTreeNode | undefined>();
   private readonly disposables: vscode.Disposable[] = [];
-  private cached: CachedReport | undefined;
-  private inflight: { key: string; promise: Promise<GateReport | undefined> } | undefined;
+  private readonly cache: KeyedAsyncCache<GateReport>;
 
   readonly onDidChangeTreeData: vscode.Event<GateTreeNode | undefined> = this.emitter.event;
 
@@ -97,8 +36,9 @@ export class PrGateTreeDataProvider
     private readonly ctx: GateContextSource,
     private readonly getRules: () => GateRules,
     private readonly logger: Logger,
-    private readonly now: () => number = Date.now,
+    now: () => number = Date.now,
   ) {
+    this.cache = new KeyedAsyncCache<GateReport>(GATE_REFRESH_MIN_INTERVAL_MS, now);
     this.disposables.push(
       this.tracker.onDidChange(() => {
         this.emitter.fire(undefined);
@@ -107,7 +47,7 @@ export class PrGateTreeDataProvider
   }
 
   invalidateCache(): void {
-    this.cached = undefined;
+    this.cache.invalidate();
   }
 
   private async getReport(): Promise<GateReport | undefined> {
@@ -117,36 +57,24 @@ export class PrGateTreeDataProvider
       return undefined;
     }
     const key = `${rc.tenant}|${snapshot.pr.number}|${snapshot.pr.head.sha}|${snapshot.pr.updated_at ?? ''}`;
-    if (
-      this.cached &&
-      this.cached.key === key &&
-      this.now() - this.cached.at < GATE_REFRESH_MIN_INTERVAL_MS
-    ) {
-      return this.cached.report;
+    try {
+      return await this.cache.get(key, async () => {
+        try {
+          const [root, upstream] = await Promise.all([
+            collectGateFacts(rc.ghe, rc.zuul, rc.tenant, snapshot.pr),
+            collectUpstreamFacts(rc.ghe, rc.zuul, rc.tenant, snapshot.pr),
+          ]);
+          return evaluateGate(root, upstream, this.getRules());
+        } catch (err) {
+          this.logger.warn(
+            `[Gate] Failed to collect gate facts: ${err instanceof Error ? err.message : String(err)}`,
+          );
+          throw err;
+        }
+      });
+    } catch {
+      return this.cache.peek(key);
     }
-    if (this.inflight?.key === key) {
-      return this.inflight.promise;
-    }
-    const promise = (async (): Promise<GateReport | undefined> => {
-      try {
-        const [root, upstream] = await Promise.all([
-          collectGateFacts(rc.ghe, rc.zuul, rc.tenant, snapshot.pr),
-          collectUpstreamFacts(rc.ghe, rc.zuul, rc.tenant, snapshot.pr),
-        ]);
-        const report = evaluateGate(root, upstream, this.getRules());
-        this.cached = { key, at: this.now(), report };
-        return report;
-      } catch (err) {
-        this.logger.warn(
-          `[Gate] Failed to collect gate facts: ${err instanceof Error ? err.message : String(err)}`,
-        );
-        return this.cached?.key === key ? this.cached.report : undefined;
-      } finally {
-        this.inflight = undefined;
-      }
-    })();
-    this.inflight = { key, promise };
-    return promise;
   }
 
   getTreeItem(element: GateTreeNode): vscode.TreeItem {

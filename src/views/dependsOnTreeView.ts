@@ -1,24 +1,26 @@
 import * as vscode from 'vscode';
 import { type SearchItem } from '../clients/gheTypes';
-import { type ChangeStatus } from '../clients/zuulTypes';
-import { classifyJobResult, pickPrimary } from '../services/buildsModel';
+import { buildTenantProjectSet } from '../services/dependsOnCandidates';
+import { type DependsOnRef, formatPrRef, parseDependsOn } from '../services/dependsOnParser';
 import {
-  type DependsOnRef,
-  formatPrRef,
-  parseDependsOn,
-  removeDependsOn,
-  toPrUrl,
-} from '../services/dependsOnParser';
+  formatDownstreamLabel,
+  extractRemovalCoordinates,
+  formatUpstreamDescription,
+  formatUpstreamLabel,
+  formatUpstreamTooltip,
+  getUpstreamIconId,
+  resolveUpstreamUrl,
+} from '../services/dependsOnPresentation';
 import {
+  applyRemoveDependsOn,
   DependsOnService,
   type SyncState,
   syncState,
   type UpstreamDep,
-  type UpstreamState,
 } from '../services/dependsOnService';
+import { KeyedAsyncCache } from '../services/keyedAsyncCache';
 import { type PrSnapshot, type ZuulContextSource } from '../services/prTracker';
 import { type Logger } from '../util/logger';
-import { buildTenantProjectSet, searchItemToCandidate } from './addDependsOnPick';
 
 export const DEPENDS_ON_REFRESH_TTL_MS = 60_000;
 export const OPEN_DEPENDENCY_PR_COMMAND = 'zuul.openDependencyPr';
@@ -73,102 +75,6 @@ export interface DependsOnTrackerSource {
   refresh(): Promise<void>;
 }
 
-export function getUpstreamIconId(state: UpstreamState): string {
-  switch (state) {
-    case 'open':
-      return 'git-pull-request';
-    case 'merged':
-      return 'git-merge';
-    case 'closed':
-      return 'git-pull-request-closed';
-    case 'missing':
-      return 'warning';
-  }
-}
-
-export function formatUpstreamLabel(dep: UpstreamDep): string {
-  if (dep.ref.owner && dep.ref.repo && dep.ref.number !== undefined) {
-    return formatPrRef({ owner: dep.ref.owner, repo: dep.ref.repo, number: dep.ref.number });
-  }
-  return dep.ref.raw;
-}
-
-export function formatUpstreamZuulSummary(zuul: readonly ChangeStatus[] | undefined): string {
-  if (!zuul || zuul.length === 0) {
-    return 'not in Zuul';
-  }
-
-  const status = pickPrimary(zuul, (st) => st.pipeline);
-  if (!status) {
-    return 'not in Zuul';
-  }
-
-  const pipeline = status.pipeline || 'check';
-  const jobs = status.jobs ?? [];
-  if (jobs.length === 0) {
-    return `${pipeline}: queued`;
-  }
-
-  let doneCount = 0;
-  for (const job of jobs) {
-    const trimmed = job.result?.trim();
-    if (trimmed) {
-      doneCount += 1;
-      if (classifyJobResult(trimmed) === 'failure') {
-        return `${pipeline}: FAILURE`;
-      }
-    }
-  }
-
-  if (doneCount === jobs.length) {
-    return `${pipeline}: SUCCESS`;
-  }
-
-  return `${pipeline}: ${doneCount}/${jobs.length}`;
-}
-
-export function formatUpstreamDescription(dep: UpstreamDep): string {
-  return `${dep.state} · ${formatUpstreamZuulSummary(dep.zuul)}`;
-}
-
-export function formatUpstreamTooltip(dep: UpstreamDep): string {
-  const lines: string[] = [];
-  const label = formatUpstreamLabel(dep);
-  if (dep.pr?.title) {
-    lines.push(`${label}: ${dep.pr.title}`);
-  } else {
-    lines.push(label);
-  }
-  lines.push(`State: ${dep.state}`);
-  lines.push(`Zuul: ${formatUpstreamZuulSummary(dep.zuul)}`);
-  if (dep.warning) {
-    lines.push(`Warning: ${dep.warning}`);
-  }
-  return lines.join('\n');
-}
-
-export function resolveUpstreamUrl(dep: UpstreamDep, fallbackHost?: string): string | undefined {
-  if (dep.pr?.html_url) {
-    return dep.pr.html_url;
-  }
-  if (dep.ref.url) {
-    return dep.ref.url;
-  }
-  const host = dep.ref.host ?? fallbackHost;
-  if (host && dep.ref.owner && dep.ref.repo && dep.ref.number !== undefined) {
-    return toPrUrl(host, dep.ref.owner, dep.ref.repo, dep.ref.number);
-  }
-  return undefined;
-}
-
-export function formatDownstreamLabel(item: SearchItem, fallbackHost = 'github.com'): string {
-  const candidate = searchItemToCandidate(item, fallbackHost);
-  if (candidate) {
-    return formatPrRef(candidate);
-  }
-  return `#${item.number}`;
-}
-
 export async function openDependencyPrExternally(
   target?: string | UpstreamDepNode | DownstreamDepNode,
   openExternal: (uri: vscode.Uri) => Thenable<boolean> = (uri) => vscode.env.openExternal(uri),
@@ -187,33 +93,6 @@ export async function openDependencyPrExternally(
   await openExternal(vscode.Uri.parse(url));
 }
 
-function extractRemovalCoordinates(
-  target: unknown,
-): { owner: string; repo: string; number: number } | undefined {
-  if (!target || typeof target !== 'object') {
-    return undefined;
-  }
-  const obj = target as Record<string, unknown>;
-  if (obj.kind === 'upstream-dep' && obj.dep && typeof obj.dep === 'object') {
-    return extractRemovalCoordinates(obj.dep);
-  }
-  if (obj.ref && typeof obj.ref === 'object') {
-    return extractRemovalCoordinates(obj.ref);
-  }
-  if (
-    typeof obj.owner === 'string' &&
-    typeof obj.repo === 'string' &&
-    typeof obj.number === 'number'
-  ) {
-    return {
-      owner: obj.owner,
-      repo: obj.repo,
-      number: obj.number,
-    };
-  }
-  return undefined;
-}
-
 export class DependsOnTreeDataProvider
   implements vscode.TreeDataProvider<DependsOnTreeNode>, vscode.Disposable
 {
@@ -222,17 +101,14 @@ export class DependsOnTreeDataProvider
   private readonly ctx: ZuulContextSource;
   private readonly tracker: DependsOnTrackerSource;
   private readonly logger: Logger;
-  private readonly now: () => number;
+  private readonly cache: KeyedAsyncCache<void>;
   private readonly openExternal: (uri: vscode.Uri) => Thenable<boolean>;
 
   private cachedPrKey: string | undefined;
   private cachedBody: string | undefined;
-  private lastFetchedAt: number | undefined;
   private upstream: UpstreamDep[] = [];
   private downstream: SearchItem[] = [];
   private hasLoadedOnceForPr = false;
-  private inFlightPromise: Promise<void> | undefined;
-  private fetchSeq = 0;
   private disposed = false;
 
   readonly onDidChangeTreeData: vscode.Event<DependsOnTreeNode | undefined | void> =
@@ -248,7 +124,7 @@ export class DependsOnTreeDataProvider
     this.ctx = ctx;
     this.tracker = tracker;
     this.logger = logger;
-    this.now = now;
+    this.cache = new KeyedAsyncCache<void>(DEPENDS_ON_REFRESH_TTL_MS, now);
     this.openExternal = openExternal;
 
     this.disposables.push(
@@ -263,7 +139,7 @@ export class DependsOnTreeDataProvider
   }
 
   invalidateCache(): void {
-    this.lastFetchedAt = undefined;
+    this.cache.invalidate();
     this.cachedBody = undefined;
   }
 
@@ -322,21 +198,10 @@ export class DependsOnTreeDataProvider
       return false;
     }
 
-    const freshPr = await currentCtx.ghe.getPr(
-      currentCtx.owner,
-      currentCtx.repo,
-      snapshot.pr.number,
-    );
-    if (this.disposed) {
-      return false;
-    }
-
-    const nextBody = removeDependsOn(freshPr.body, coords);
-    await currentCtx.ghe.updatePrBody(
-      currentCtx.owner,
-      currentCtx.repo,
-      snapshot.pr.number,
-      nextBody,
+    await applyRemoveDependsOn(
+      currentCtx.ghe,
+      { owner: currentCtx.owner, repo: currentCtx.repo, number: snapshot.pr.number },
+      coords,
     );
 
     this.logger.info(
@@ -356,20 +221,14 @@ export class DependsOnTreeDataProvider
     return `${currentCtx.tenant}:${currentCtx.project}#${snapshot.pr.number}`;
   }
 
-  private needsFetch(snapshot: PrSnapshot): boolean {
+  private getCacheKey(snapshot: PrSnapshot): string | undefined {
     const prKey = this.getPrKey(snapshot);
-    if (!prKey) {
-      return false;
-    }
-    const body = snapshot.pr.body ?? '';
-    if (
-      this.cachedPrKey !== prKey ||
-      this.cachedBody !== body ||
-      this.lastFetchedAt === undefined
-    ) {
-      return true;
-    }
-    return this.now() - this.lastFetchedAt >= DEPENDS_ON_REFRESH_TTL_MS;
+    return prKey === undefined ? undefined : `${prKey}\n${snapshot.pr.body ?? ''}`;
+  }
+
+  private needsFetch(snapshot: PrSnapshot): boolean {
+    const key = this.getCacheKey(snapshot);
+    return key !== undefined && !this.cache.isFresh(key);
   }
 
   private handleSnapshotChange(): void {
@@ -380,11 +239,9 @@ export class DependsOnTreeDataProvider
     const snapshot = this.tracker.snapshot;
     const currentCtx = this.ctx.current;
     if (!snapshot || !currentCtx) {
-      this.fetchSeq += 1;
-      this.inFlightPromise = undefined;
+      this.cache.invalidate();
       this.cachedPrKey = undefined;
       this.cachedBody = undefined;
-      this.lastFetchedAt = undefined;
       this.upstream = [];
       this.downstream = [];
       this.hasLoadedOnceForPr = false;
@@ -408,26 +265,16 @@ export class DependsOnTreeDataProvider
 
   private ensureDataLoaded(snapshot: PrSnapshot): Promise<void> {
     const currentCtx = this.ctx.current;
-    if (!currentCtx || this.disposed) {
+    const key = this.getCacheKey(snapshot);
+    if (!currentCtx || this.disposed || key === undefined) {
       return Promise.resolve();
     }
-
-    if (!this.needsFetch(snapshot)) {
-      return Promise.resolve();
-    }
-
     const prKey = this.getPrKey(snapshot);
     const body = snapshot.pr.body ?? '';
-    if (this.inFlightPromise && this.cachedPrKey === prKey && this.cachedBody === body) {
-      return this.inFlightPromise;
-    }
 
-    this.cachedPrKey = prKey;
-    this.cachedBody = body;
-    this.lastFetchedAt = this.now();
-    const seq = ++this.fetchSeq;
-
-    const promise = (async () => {
+    return this.cache.get(key, async (isCurrent) => {
+      this.cachedPrKey = prKey;
+      this.cachedBody = body;
       try {
         const service = new DependsOnService(
           currentCtx.ghe,
@@ -444,7 +291,7 @@ export class DependsOnTreeDataProvider
           service.getDownstream(snapshot.pr),
         ]);
 
-        if (this.disposed || seq !== this.fetchSeq) {
+        if (this.disposed || !isCurrent()) {
           return;
         }
 
@@ -453,19 +300,12 @@ export class DependsOnTreeDataProvider
         this.hasLoadedOnceForPr = true;
         this.emitter.fire();
       } catch (err) {
-        if (this.disposed || seq !== this.fetchSeq) {
+        if (this.disposed || !isCurrent()) {
           return;
         }
         this.logger.error('[DependsOn] Failed to load dependencies', err);
-      } finally {
-        if (seq === this.fetchSeq) {
-          this.inFlightPromise = undefined;
-        }
       }
-    })();
-
-    this.inFlightPromise = promise;
-    return promise;
+    });
   }
 
   private computeSyncState(snapshot: PrSnapshot): SyncState {
@@ -578,8 +418,6 @@ export class DependsOnTreeDataProvider
     if (!element) {
       if (this.needsFetch(snapshot)) {
         await this.ensureDataLoaded(snapshot);
-      } else if (this.inFlightPromise) {
-        await this.inFlightPromise;
       }
 
       const nodes: DependsOnTreeNode[] = [];
