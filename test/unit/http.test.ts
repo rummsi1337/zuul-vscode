@@ -185,4 +185,57 @@ describe('HttpClient', () => {
     const rawUnzipped = await client.getBytes('https://logs.example.com/42/job-output.txt.gz');
     expect(new TextDecoder().decode(rawUnzipped)).toBe(plainText);
   });
+
+  it('logs outgoing requests and responses when logger is provided', async () => {
+    const infos: string[] = [];
+    const warns: string[] = [];
+    const fakeLogger = {
+      info: (msg: string) => infos.push(msg),
+      warn: (msg: string) => warns.push(msg),
+      error: vi.fn(),
+    };
+
+    const fetchFn = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response('{"ok":true}', { status: 200 }))
+      .mockResolvedValueOnce(new Response('{"message":"Not found"}', { status: 404 }))
+      .mockResolvedValueOnce(new Response('Internal Server Error', { status: 500 }));
+
+    const client = new HttpClient({
+      baseUrl: 'https://zuul.example.com',
+      fetchFn,
+      logger: fakeLogger,
+    });
+
+    await client.getJson('/api/tenants');
+    expect(infos).toContain('[HTTP] GET https://zuul.example.com/api/tenants');
+    expect(infos).toContain('[HTTP] GET https://zuul.example.com/api/tenants -> 200');
+
+    let httpErr: HttpError | undefined;
+    try {
+      await client.getJson('/api/tenant/acme/builds', { project: 'org/repo', change: 123 });
+      expect.fail('Expected HttpError to be thrown');
+    } catch (err) {
+      expect(err).toBeInstanceOf(HttpError);
+      httpErr = err as HttpError;
+    }
+    expect(httpErr.url).toBe(
+      'https://zuul.example.com/api/tenant/acme/builds?project=org%2Frepo&change=123',
+    );
+    expect(httpErr.method).toBe('GET');
+    expect(httpErr.message).toContain(
+      'HTTP 404 (GET https://zuul.example.com/api/tenant/acme/builds?project=org%2Frepo&change=123): {"message":"Not found"}',
+    );
+    expect(infos).toContain(
+      '[HTTP] GET https://zuul.example.com/api/tenant/acme/builds?project=org%2Frepo&change=123 -> 404: {"message":"Not found"}',
+    );
+    expect(warns).not.toContain(
+      '[HTTP] GET https://zuul.example.com/api/tenant/acme/builds?project=org%2Frepo&change=123 -> 404: {"message":"Not found"}',
+    );
+
+    await expect(client.getJson('/api/broken')).rejects.toThrow(HttpError);
+    expect(warns).toContain(
+      '[HTTP] GET https://zuul.example.com/api/broken -> 500: Internal Server Error',
+    );
+  });
 });

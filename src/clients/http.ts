@@ -1,23 +1,34 @@
 import { gunzipSync } from 'node:zlib';
+import { type Logger } from '../util/logger';
 
 export type QueryParams = Record<string, string | number | boolean | undefined>;
 
-interface HttpClientOptions {
+export type HttpLogger = Pick<Logger, 'info' | 'warn'>;
+
+export interface HttpClientOptions {
   baseUrl: string;
   getAuthHeader?: () => Promise<string | undefined>;
   fetchFn?: typeof fetch;
   userAgent?: string;
+  logger?: HttpLogger;
 }
 
 export class HttpError extends Error {
   readonly status: number;
   readonly body: string;
+  readonly url?: string;
+  readonly method?: string;
 
-  constructor(status: number, body: string, message?: string) {
-    super(message ?? `HTTP ${status}: ${body}`);
+  constructor(status: number, body: string, message?: string, url?: string, method?: string) {
+    const defaultMessage = url
+      ? `HTTP ${status} (${method ? `${method} ` : ''}${url}): ${body}`
+      : `HTTP ${status}: ${body}`;
+    super(message ?? defaultMessage);
     this.name = 'HttpError';
     this.status = status;
     this.body = body;
+    this.url = url;
+    this.method = method;
   }
 }
 
@@ -34,12 +45,14 @@ export class HttpClient {
   private readonly getAuthHeader?: () => Promise<string | undefined>;
   private readonly fetchFn: typeof fetch;
   private readonly userAgent: string;
+  private readonly logger?: HttpLogger;
 
   constructor(opts: HttpClientOptions) {
     this.baseUrl = opts.baseUrl.replace(/\/+$/, '');
     this.getAuthHeader = opts.getAuthHeader;
     this.fetchFn = opts.fetchFn ?? globalThis.fetch;
     this.userAgent = opts.userAgent ?? DEFAULT_USER_AGENT;
+    this.logger = opts.logger;
   }
 
   resolveUrl(path: string, query?: QueryParams): string {
@@ -93,20 +106,34 @@ export class HttpClient {
     },
   ): Promise<Response> {
     const url = this.resolveUrl(path, opts?.query);
+    this.logger?.info(`[HTTP] ${method} ${url}`);
     const headers = await this.buildHeaders(opts?.headers);
 
-    const res = await this.fetchFn(url, {
-      method,
-      headers,
-      body: opts?.body,
-      signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
-    });
+    let res: Response;
+    try {
+      res = await this.fetchFn(url, {
+        method,
+        headers,
+        body: opts?.body,
+        signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
+      });
+    } catch (err) {
+      this.logger?.warn(`[HTTP] ${method} ${url} failed with error: ${String(err)}`);
+      throw err;
+    }
 
     if (!res.ok) {
       const text = await res.text();
-      throw new HttpError(res.status, text);
+      const message = `[HTTP] ${method} ${url} -> ${res.status}: ${text}`;
+      if (res.status === 404) {
+        this.logger?.info(message);
+      } else {
+        this.logger?.warn(message);
+      }
+      throw new HttpError(res.status, text, undefined, url, method);
     }
 
+    this.logger?.info(`[HTTP] ${method} ${url} -> ${res.status}`);
     return res;
   }
 
@@ -152,14 +179,17 @@ export class HttpClient {
   }
 
   async graphql<T>(url: string, query: string, variables?: Record<string, unknown>): Promise<T> {
+    this.logger?.info(`[GraphQL] POST ${url} (variables=${JSON.stringify(variables ?? {})})`);
     const payload = await this.postJson<GraphQLPayload<T>>(url, { query, variables });
     if (payload.errors && payload.errors.length > 0) {
       const message =
         payload.errors.map((e) => e.message ?? 'Unknown GraphQL error').join('; ') ||
         'GraphQL error';
+      this.logger?.warn(`[GraphQL] POST ${url} errors: ${message}`);
       throw new Error(message);
     }
     if (payload.data === undefined) {
+      this.logger?.warn(`[GraphQL] POST ${url} response missing data`);
       throw new Error('GraphQL response missing data');
     }
     return payload.data;

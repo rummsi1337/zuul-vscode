@@ -1,4 +1,5 @@
 import { HttpClient, HttpError } from './http';
+import { type Logger } from '../util/logger';
 import {
   type Build,
   type Buildset,
@@ -261,15 +262,18 @@ export class ZuulClient {
   private readonly http: HttpClient;
   private readonly now: () => number;
   private readonly cache = new Map<string, CacheEntry<unknown>>();
+  private readonly logger?: Pick<Logger, 'info' | 'warn'>;
 
   constructor(
     baseUrl: string,
     getToken?: () => Promise<string | undefined>,
     fetchFn?: typeof fetch,
     now: () => number = Date.now,
+    logger?: Pick<Logger, 'info' | 'warn'>,
   ) {
     this.baseUrl = baseUrl.replace(/\/+$/, '');
     this.now = now;
+    this.logger = logger;
     this.http = new HttpClient({
       baseUrl: this.baseUrl,
       getAuthHeader: getToken
@@ -279,6 +283,7 @@ export class ZuulClient {
           }
         : undefined,
       fetchFn,
+      logger: this.logger,
     });
   }
 
@@ -306,17 +311,22 @@ export class ZuulClient {
   }
 
   async listTenants(): Promise<ZuulTenant[]> {
+    this.logger?.info(`[Zuul] Listing tenants on ${this.baseUrl}`);
     const raw = await this.http.getJson<(ZuulTenant | string)[]>('/api/tenants');
     return raw.map((item) => (typeof item === 'string' ? { name: item } : item));
   }
 
   async listProjects(tenant: string): Promise<ZuulProject[]> {
+    this.logger?.info(`[Zuul] Listing projects for tenant="${tenant}"`);
     return this.cached(`projects:${tenant}`, () =>
       this.http.getJson<ZuulProject[]>(this.tenantPath(tenant, '/projects')),
     );
   }
 
   async getChangeStatus(tenant: string, pr: number | string, sha: string): Promise<ChangeStatus[]> {
+    this.logger?.info(
+      `[Zuul] Getting change status for tenant="${tenant}" change=${pr} patchset=${sha}`,
+    );
     try {
       const raw = await this.http.getJson<RawChangeStatusItem[]>(
         this.tenantPath(tenant, `/status/change/${pr},${sha}`),
@@ -324,6 +334,9 @@ export class ZuulClient {
       return raw.map((item) => normalizeChangeStatus(item));
     } catch (err) {
       if (err instanceof HttpError && err.status === 404) {
+        this.logger?.info(
+          `[Zuul] Change status not found (404) for tenant="${tenant}" change=${pr} patchset=${sha}; returning empty status`,
+        );
         return [];
       }
       throw err;
@@ -335,6 +348,9 @@ export class ZuulClient {
     pr: number | string,
     sha: string,
   ): Promise<QueuedRef[] | undefined> {
+    this.logger?.info(
+      `[Zuul] Getting queue ahead for tenant="${tenant}" change=${pr} patchset=${sha}`,
+    );
     const raw = await this.http.getJson<RawTenantStatus>(this.tenantPath(tenant, '/status'));
     const byId = new Map<string, RawQueueItem>();
     const targets: RawQueueItem[] = [];
@@ -393,6 +409,9 @@ export class ZuulClient {
   }
 
   async listBuilds(tenant: string, opts: ListBuildsOptions = {}): Promise<Build[]> {
+    this.logger?.info(
+      `[Zuul] Listing builds for tenant="${tenant}" project="${opts.project ?? '*'}" change=${opts.change ?? '*'} patchset=${opts.patchset ?? '*'} (limit=${opts.limit ?? 50})`,
+    );
     const raw = await this.http.getJson<RawBuild[]>(this.tenantPath(tenant, '/builds'), {
       project: opts.project,
       change: opts.change,
@@ -403,6 +422,9 @@ export class ZuulClient {
   }
 
   async listBuildsets(tenant: string, opts: ListBuildsetsOptions = {}): Promise<Buildset[]> {
+    this.logger?.info(
+      `[Zuul] Listing buildsets for tenant="${tenant}" project="${opts.project ?? '*'}" change=${opts.change ?? '*'} patchset=${opts.patchset ?? '*'} (limit=${opts.limit ?? 10})`,
+    );
     const raw = await this.http.getJson<RawBuildset[]>(this.tenantPath(tenant, '/buildsets'), {
       project: opts.project,
       change: opts.change,
@@ -413,12 +435,14 @@ export class ZuulClient {
   }
 
   async listJobs(tenant: string): Promise<ZuulJobSummary[]> {
+    this.logger?.info(`[Zuul] Listing jobs for tenant="${tenant}"`);
     return this.cached(`jobs:${tenant}`, () =>
       this.http.getJson<ZuulJobSummary[]>(this.tenantPath(tenant, '/jobs')),
     );
   }
 
   async getJob(tenant: string, name: string): Promise<ZuulJobVariant[]> {
+    this.logger?.info(`[Zuul] Getting job "${name}" for tenant="${tenant}"`);
     const raw = await this.http.getJson<ZuulJobVariant[] | ZuulJobVariant>(
       this.tenantPath(tenant, `/job/${encodeURIComponent(name)}`),
     );
@@ -426,12 +450,14 @@ export class ZuulClient {
   }
 
   async listNodesets(tenant: string): Promise<ZuulNodeset[]> {
+    this.logger?.info(`[Zuul] Listing nodesets for tenant="${tenant}"`);
     return this.cached(`nodesets:${tenant}`, () =>
       this.http.getJson<ZuulNodeset[]>(this.tenantPath(tenant, '/nodesets')),
     );
   }
 
   async listProjectTemplates(tenant: string): Promise<ZuulProjectTemplate[]> {
+    this.logger?.info(`[Zuul] Listing project templates for tenant="${tenant}"`);
     return this.cached(`projectTemplates:${tenant}`, async () => {
       try {
         const raw = await this.http.getJson<(ZuulProjectTemplate | string)[]>(
@@ -448,17 +474,20 @@ export class ZuulClient {
   }
 
   async listSemaphores(tenant: string): Promise<ZuulSemaphore[]> {
+    this.logger?.info(`[Zuul] Listing semaphores for tenant="${tenant}"`);
     return this.cached(`semaphores:${tenant}`, () =>
       this.http.getJson<ZuulSemaphore[]>(this.tenantPath(tenant, '/semaphores')),
     );
   }
 
   async getProjectKey(tenant: string, project: string): Promise<string> {
+    this.logger?.info(`[Zuul] Getting project key for tenant="${tenant}" project="${project}"`);
     const encodedProject = project.split('/').map(encodeURIComponent).join('/');
     return this.http.getText(this.tenantPath(tenant, `/key/${encodedProject}.pub`));
   }
 
   async getInfo(tenant: string): Promise<ZuulInfo> {
+    this.logger?.info(`[Zuul] Getting info for tenant="${tenant}"`);
     return this.http.getJson<ZuulInfo>(this.tenantPath(tenant, '/info'));
   }
 }

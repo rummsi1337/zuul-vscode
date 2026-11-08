@@ -10,6 +10,7 @@ import {
   type SearchItem,
 } from './gheTypes';
 import { normalizeHost } from '../git/remoteUrl';
+import { type Logger } from '../util/logger';
 import { HttpClient, HttpError, type QueryParams } from './http';
 
 const MAX_PAGINATION_PAGES = 10;
@@ -77,10 +78,17 @@ export class GheClient {
   readonly restBaseUrl: string;
   readonly graphqlUrl: string;
   private readonly http: HttpClient;
+  private readonly logger?: Pick<Logger, 'info' | 'warn'>;
 
-  constructor(host: string, getToken: () => Promise<string | undefined>, fetchFn?: typeof fetch) {
+  constructor(
+    host: string,
+    getToken: () => Promise<string | undefined>,
+    fetchFn?: typeof fetch,
+    logger?: Pick<Logger, 'info' | 'warn'>,
+  ) {
     const normalizedHost = normalizeHost(host);
     this.host = normalizedHost;
+    this.logger = logger;
     if (normalizedHost === 'github.com') {
       this.restBaseUrl = 'https://api.github.com';
       this.graphqlUrl = 'https://api.github.com/graphql';
@@ -96,6 +104,7 @@ export class GheClient {
         return token ? `Bearer ${token}` : undefined;
       },
       fetchFn,
+      logger: this.logger,
     });
   }
 
@@ -129,30 +138,42 @@ export class GheClient {
     repo: string,
     branch: string,
   ): Promise<PullRequest | undefined> {
+    this.logger?.info(`[GHE] Finding open PR for owner=${owner} repo=${repo} branch=${branch}`);
     const prs = await this.http.getJson<PullRequest[]>(`/repos/${owner}/${repo}/pulls`, {
       state: 'open',
       head: `${owner}:${branch}`,
     });
-    return prs[0];
+    const pr = prs[0];
+    this.logger?.info(
+      pr
+        ? `[GHE] Found open PR #${pr.number} (head=${pr.head.sha}) for ${owner}/${repo} branch=${branch}`
+        : `[GHE] No open PR found for ${owner}/${repo} branch=${branch}`,
+    );
+    return pr;
   }
 
   async getPr(owner: string, repo: string, num: number): Promise<PullRequest> {
+    this.logger?.info(`[GHE] Fetching PR #${num} for ${owner}/${repo}`);
     return this.http.getJson<PullRequest>(`/repos/${owner}/${repo}/pulls/${num}`);
   }
 
   async updatePrBody(owner: string, repo: string, num: number, body: string): Promise<PullRequest> {
+    this.logger?.info(`[GHE] Updating body of PR #${num} for ${owner}/${repo}`);
     return this.http.patchJson<PullRequest>(`/repos/${owner}/${repo}/pulls/${num}`, { body });
   }
 
   async listReviews(owner: string, repo: string, num: number): Promise<Review[]> {
+    this.logger?.info(`[GHE] Listing reviews for PR #${num} on ${owner}/${repo}`);
     return this.paginate<Review>(`/repos/${owner}/${repo}/pulls/${num}/reviews`);
   }
 
   async listCommitStatuses(owner: string, repo: string, sha: string): Promise<CombinedStatus> {
+    this.logger?.info(`[GHE] Listing commit statuses for commit=${sha} on ${owner}/${repo}`);
     return this.http.getJson<CombinedStatus>(`/repos/${owner}/${repo}/commits/${sha}/status`);
   }
 
   async listCheckRuns(owner: string, repo: string, sha: string): Promise<CheckRun[]> {
+    this.logger?.info(`[GHE] Listing check runs for commit=${sha} on ${owner}/${repo}`);
     const res = await this.http.getJson<{ check_runs?: CheckRun[] } | CheckRun[]>(
       `/repos/${owner}/${repo}/commits/${sha}/check-runs`,
     );
@@ -164,12 +185,18 @@ export class GheClient {
     repo: string,
     branch: string,
   ): Promise<RequiredStatusChecks | undefined> {
+    this.logger?.info(
+      `[GHE] Querying required status checks for branch="${branch}" on ${owner}/${repo}`,
+    );
     try {
       return await this.http.getJson<RequiredStatusChecks>(
         `/repos/${owner}/${repo}/branches/${encodeURIComponent(branch)}/protection/required_status_checks`,
       );
     } catch (err) {
       if (err instanceof HttpError && (err.status === 403 || err.status === 404)) {
+        this.logger?.info(
+          `[GHE] Required status checks returned ${err.status} for branch="${branch}" on ${owner}/${repo}`,
+        );
         return undefined;
       }
       throw err;
@@ -177,13 +204,17 @@ export class GheClient {
   }
 
   async getPrRollup(owner: string, repo: string, num: number): Promise<PrRollup | undefined> {
+    this.logger?.info(`[GHE] Querying PR rollup GraphQL for PR #${num} on ${owner}/${repo}`);
     try {
       const data = await this.http.graphql<{
         repository?: { pullRequest?: PrRollup | null } | null;
         pullRequest?: PrRollup | null;
       }>(this.graphqlUrl, PR_ROLLUP_QUERY, { owner, repo, num });
       return data.repository?.pullRequest ?? data.pullRequest ?? undefined;
-    } catch {
+    } catch (err) {
+      this.logger?.warn(
+        `[GHE] Failed to fetch PR rollup for PR #${num} on ${owner}/${repo}: ${String(err)}`,
+      );
       return undefined;
     }
   }
@@ -194,12 +225,14 @@ export class GheClient {
     num: number,
     body: string,
   ): Promise<IssueComment> {
+    this.logger?.info(`[GHE] Posting issue comment on PR #${num} for ${owner}/${repo}`);
     return this.http.postJson<IssueComment>(`/repos/${owner}/${repo}/issues/${num}/comments`, {
       body,
     });
   }
 
   async searchPrs(query: string, perPage = 20): Promise<SearchItem[]> {
+    this.logger?.info(`[GHE] Searching PRs with query="${query}"`);
     const q = /\bis:pr\b/.test(query) ? query : `${query} is:pr`;
     const res = await this.http.getJson<{ total_count?: number; items?: SearchItem[] }>(
       '/search/issues',

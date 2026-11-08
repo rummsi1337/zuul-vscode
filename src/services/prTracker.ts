@@ -221,6 +221,9 @@ export class PrTracker implements vscode.Disposable {
 
       let pr = this.currentPr;
       if (shouldFetchPr) {
+        this.logger.info(
+          `[Poll] Polling open PR for branch="${currentCtx.branch}" on ${currentCtx.owner}/${currentCtx.repo}`,
+        );
         pr = await currentCtx.ghe.findOpenPrForBranch(
           currentCtx.owner,
           currentCtx.repo,
@@ -233,10 +236,16 @@ export class PrTracker implements vscode.Disposable {
       }
 
       if (!pr) {
+        this.logger.info(
+          `[Poll] No open PR found for branch="${currentCtx.branch}" on ${currentCtx.owner}/${currentCtx.repo}`,
+        );
         this.updateSnapshot(undefined);
         return;
       }
 
+      this.logger.info(
+        `[Poll] Fetching change status for PR #${pr.number} (head=${pr.head.sha}) on tenant="${currentCtx.tenant}"`,
+      );
       const statuses = await currentCtx.zuul.getChangeStatus(
         currentCtx.tenant,
         pr.number,
@@ -248,6 +257,9 @@ export class PrTracker implements vscode.Disposable {
 
       let builds: Build[] = [];
       if (statuses.every((s) => !s.live)) {
+        this.logger.info(
+          `[Poll] No live pipeline for PR #${pr.number}; fetching completed builds for project="${currentCtx.project}" change=${pr.number} patchset=${pr.head.sha}`,
+        );
         builds = await currentCtx.zuul.listBuilds(currentCtx.tenant, {
           project: currentCtx.project,
           change: pr.number,
@@ -269,7 +281,10 @@ export class PrTracker implements vscode.Disposable {
       if (this.disposed || seq !== this.sessionSeq || pollRunId !== this.pollRunSeq) {
         return;
       }
-      this.logger.error('[Poll] Failed to poll PR status', err);
+      this.logger.error(
+        `[Poll] Failed to poll PR status for branch="${currentCtx.branch}" on ${currentCtx.owner}/${currentCtx.repo} (PR #${this.currentPr?.number ?? 'none'})`,
+        err,
+      );
     } finally {
       if (!this.disposed && seq === this.sessionSeq && pollRunId === this.pollRunSeq) {
         this.polling = false;
