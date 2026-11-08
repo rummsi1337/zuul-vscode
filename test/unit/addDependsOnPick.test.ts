@@ -38,7 +38,13 @@ describe('pickAndAddDependsOn', () => {
         client: { listProjects: vi.fn(async () => []) },
       },
     } as unknown as ResolvedContext;
-    const snapshot: PrSnapshot = { pr, statuses: [], builds: [], fetchedAt: 0 };
+    const snapshot: PrSnapshot = {
+      pr,
+      statuses: [],
+      builds: [],
+      fetchedAt: 0,
+      zuul: { kind: 'ok' },
+    };
     const logger = createFakeLogger();
     const onUpdated = vi.fn();
 
@@ -56,7 +62,7 @@ describe('pickAndAddDependsOn', () => {
     expect(logger.info).not.toHaveBeenCalledWith(expect.stringContaining('Added'));
   });
 
-  it('refuses without writing when the context has no Zuul', async () => {
+  it('still writes the Depends-On, with a warning, when the context has no Zuul', async () => {
     const url = 'https://ghe.example.com/acme/service/pull/7';
     const pr = {
       number: 5,
@@ -71,9 +77,19 @@ describe('pickAndAddDependsOn', () => {
       owner: 'acme',
       repo: 'service',
       project: 'acme/service',
-      ghe: { getPr: vi.fn(async () => pr), updatePrBody, searchPrs: vi.fn(async () => []) },
+      ghe: {
+        getPr: vi.fn(async (_o: string, _r: string, n: number) => ({ ...pr, number: n })),
+        updatePrBody,
+        searchPrs: vi.fn(async () => []),
+      },
     } as unknown as ResolvedContext;
-    const snapshot: PrSnapshot = { pr, statuses: [], builds: [], fetchedAt: 0 };
+    const snapshot: PrSnapshot = {
+      pr,
+      statuses: [],
+      builds: [],
+      fetchedAt: 0,
+      zuul: { kind: 'ok' },
+    };
 
     const done = await pickAndAddDependsOn({
       ctx: { current: ctx, onDidChange: new EventEmitter<ResolvedContext | undefined>().event },
@@ -82,7 +98,62 @@ describe('pickAndAddDependsOn', () => {
       targetArg: url,
     });
 
-    expect(done).toBe(false);
-    expect(updatePrBody).not.toHaveBeenCalled();
+    expect(done).toBe(true);
+    expect(updatePrBody).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['listProjects fails', 'fails', 1],
+    ['the snapshot says Zuul failed', 'unavailable', 0],
+  ])('still writes the Depends-On when %s', async (_name, mode, listCalls) => {
+    const url = 'https://ghe.example.com/acme/service/pull/7';
+    const pr = {
+      number: 5,
+      html_url: 'https://ghe.example.com/acme/service/pull/5',
+      body: null,
+      head: { sha: 'x', ref: 'f', repo: { full_name: 'acme/service' } },
+      base: { ref: 'main', repo: { full_name: 'acme/service' } },
+    } as unknown as PullRequest;
+    const updatePrBody = vi.fn();
+    const listProjects = vi.fn(async () => {
+      throw new Error('HTTP 401');
+    });
+    const ctx = {
+      host: 'ghe.example.com',
+      owner: 'acme',
+      repo: 'service',
+      project: 'acme/service',
+      ghe: {
+        getPr: vi.fn(async (_o: string, _r: string, n: number) => ({ ...pr, number: n })),
+        updatePrBody,
+        searchPrs: vi.fn(async () => []),
+      },
+      zuul: {
+        url: 'https://zuul.example.com',
+        tenant: 't',
+        client: { listProjects, getChangeStatus: vi.fn(async () => []) },
+      },
+    } as unknown as ResolvedContext;
+    const snapshot: PrSnapshot = {
+      pr,
+      statuses: [],
+      builds: [],
+      fetchedAt: 0,
+      zuul:
+        mode === 'fails'
+          ? { kind: 'ok' }
+          : { kind: 'unavailable', reason: 'needs-token', message: 'HTTP 401' },
+    };
+
+    const done = await pickAndAddDependsOn({
+      ctx: { current: ctx, onDidChange: new EventEmitter<ResolvedContext | undefined>().event },
+      tracker: { snapshot, refresh: vi.fn(async () => undefined) },
+      logger: createFakeLogger(),
+      targetArg: url,
+    });
+
+    expect(done).toBe(true);
+    expect(updatePrBody).toHaveBeenCalledTimes(1);
+    expect(listProjects).toHaveBeenCalledTimes(listCalls);
   });
 });

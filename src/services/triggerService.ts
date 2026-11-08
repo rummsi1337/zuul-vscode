@@ -154,6 +154,11 @@ export class TriggerService implements vscode.Disposable {
       return true;
     }
 
+    if (this.tracker.snapshot.zuul.kind !== 'ok') {
+      // Zuul can't report a reaction, so there is nothing to wait for.
+      return true;
+    }
+
     this.rememberBaseline(this.tracker.snapshot ?? snapshot);
     this.watchedComment = trimmed;
     this.watchDeadline = this.now() + WATCH_DURATION_MS;
@@ -266,7 +271,7 @@ export class TriggerService implements vscode.Disposable {
       return;
     }
 
-    if (snapshot === undefined) {
+    if (snapshot === undefined || snapshot.zuul.kind !== 'ok') {
       this.stopWaiting();
       return;
     }

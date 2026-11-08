@@ -271,7 +271,7 @@ When polling resumes:
 
 - **Tier:** sonnet
 - **Risk:** high
-- **Status:** todo
+- **Status:** done
 - **Files:** `src/services/prTracker.ts`, `src/services/gateFacts.ts`,
   `src/services/gateReadiness.ts`, `src/services/dependsOnService.ts`,
   `src/views/addDependsOnPick.ts`, `src/views/prGateTreeView.ts`, `src/views/dependsOnTreeView.ts`,

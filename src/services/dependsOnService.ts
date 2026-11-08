@@ -241,14 +241,14 @@ export async function applyRemoveDependsOn(
 
 export class DependsOnService {
   private readonly ghe: GheDependsOnClient;
-  private readonly zuul: ZuulDependsOnClient;
-  private readonly tenant: string;
+  private readonly zuul: ZuulDependsOnClient | undefined;
+  private readonly tenant: string | undefined;
   private readonly tenantProjects: () => Promise<Set<string>>;
 
   constructor(
     ghe: GheDependsOnClient,
-    zuul: ZuulDependsOnClient,
-    tenant: string,
+    zuul: ZuulDependsOnClient | undefined,
+    tenant: string | undefined,
     tenantProjects?: () => Promise<Set<string>>,
   ) {
     this.ghe = ghe;
@@ -257,6 +257,9 @@ export class DependsOnService {
     this.tenantProjects =
       tenantProjects ??
       (async () => {
+        if (!this.zuul || this.tenant === undefined) {
+          throw new Error('Zuul is not available');
+        }
         if (!this.zuul.listProjects) {
           return new Set<string>();
         }
@@ -282,7 +285,8 @@ export class DependsOnService {
       return [];
     }
 
-    const projects = await this.tenantProjects();
+    // When the projects can't be read, treat every repo as in the tenant and skip Zuul.
+    const projects: Set<string> | undefined = await this.tenantProjects().catch(() => undefined);
 
     return mapWithConcurrency(parsedRefs, MAX_UPSTREAM_CONCURRENCY, async (ref) => {
       if (ref.host && ref.host !== prHost) {
@@ -293,7 +297,7 @@ export class DependsOnService {
           warning: `Depends-On points to another host (${ref.host}), which this extension does not read`,
         } satisfies UpstreamDep;
       }
-      const inTenant = isInTenant(ref.owner, ref.repo, projects);
+      const inTenant = projects === undefined || isInTenant(ref.owner, ref.repo, projects);
       let warning: string | undefined;
       if (ref.kind === 'shorthand') {
         warning = `Zuul ignores \`${ref.owner}/${ref.repo}#${ref.number}\` — use the full URL`;
@@ -317,10 +321,18 @@ export class DependsOnService {
           }
         }
 
-        if (inTenant && upstreamPr.head?.sha) {
+        const zuul = this.zuul;
+        const tenant = this.tenant;
+        if (
+          zuul &&
+          tenant !== undefined &&
+          projects !== undefined &&
+          inTenant &&
+          upstreamPr.head?.sha
+        ) {
           try {
-            zuulStatuses = await this.zuul.getChangeStatus(
-              this.tenant,
+            zuulStatuses = await zuul.getChangeStatus(
+              tenant,
               upstreamPr.number,
               upstreamPr.head.sha,
             );
@@ -383,7 +395,7 @@ export class DependsOnService {
 
   /** Items ahead of the PR in its Zuul queue, or undefined when it cannot be read. */
   async getQueueAhead(pr: Pick<PullRequest, 'number' | 'head'>): Promise<QueuedRef[] | undefined> {
-    if (!this.zuul.getQueueAhead || !pr.head?.sha) {
+    if (!this.zuul?.getQueueAhead || this.tenant === undefined || !pr.head?.sha) {
       return undefined;
     }
     return this.zuul.getQueueAhead(this.tenant, pr.number, pr.head.sha);

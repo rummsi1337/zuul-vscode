@@ -1,15 +1,28 @@
 import * as vscode from 'vscode';
 import { type PullRequest } from '../clients/gheTypes';
 import { type Build, type ChangeStatus } from '../clients/zuulTypes';
-import { type ResolvedContext } from '../context/zuulContext';
+import { HttpError } from '../clients/http';
+import { type ResolvedContext, type ZuulProblem } from '../context/zuulContext';
 import { type Logger } from '../util/logger';
 import { nextPollDelayMs } from './pollSchedule';
+
+export type ZuulAvailability =
+  | { kind: 'ok' }
+  | { kind: 'unavailable'; reason: 'needs-token' | 'no-access' | 'unreachable'; message: string };
 
 export interface PrSnapshot {
   pr: PullRequest;
   statuses: ChangeStatus[];
   builds: Build[];
   fetchedAt: number;
+  zuul: ZuulAvailability;
+}
+
+function zuulUnavailable(err: unknown): ZuulAvailability {
+  const message = err instanceof Error ? err.message : String(err);
+  const status = err instanceof HttpError ? err.status : undefined;
+  const reason = status === 401 ? 'needs-token' : status === 403 ? 'no-access' : 'unreachable';
+  return { kind: 'unavailable', reason, message };
 }
 
 export interface PollError {
@@ -20,6 +33,7 @@ export interface PollError {
 
 export interface ZuulContextSource {
   readonly current: ResolvedContext | undefined;
+  readonly zuulProblem?: ZuulProblem | undefined;
   readonly onDidChange: vscode.Event<ResolvedContext | undefined>;
 }
 
@@ -283,28 +297,54 @@ export class PrTracker implements vscode.Disposable {
 
       let statuses: ChangeStatus[] = [];
       let builds: Build[] = [];
+      let zuulState: ZuulAvailability = { kind: 'ok' };
       const zuul = currentCtx.zuul;
-      if (zuul) {
-        this.logger.info(
-          `[Poll] Fetching change status for PR #${pr.number} (head=${pr.head.sha}) on tenant="${zuul.tenant}"`,
-        );
-        statuses = await zuul.client.getChangeStatus(zuul.tenant, pr.number, pr.head.sha);
-        if (this.disposed || seq !== this.sessionSeq || pollRunId !== this.pollRunSeq) {
-          return;
-        }
-
-        if (statuses.every((s) => !s.live)) {
+      if (!zuul) {
+        zuulState =
+          this.ctx.zuulProblem === 'zuul-auth'
+            ? {
+                kind: 'unavailable',
+                reason: 'needs-token',
+                message: 'Zuul did not accept the token',
+              }
+            : {
+                kind: 'unavailable',
+                reason: 'unreachable',
+                message: 'Zuul could not be reached',
+              };
+      } else {
+        try {
           this.logger.info(
-            `[Poll] No live pipeline for PR #${pr.number}; fetching completed builds for project="${currentCtx.project}" change=${pr.number} patchset=${pr.head.sha}`,
+            `[Poll] Fetching change status for PR #${pr.number} (head=${pr.head.sha}) on tenant="${zuul.tenant}"`,
           );
-          builds = await zuul.client.listBuilds(zuul.tenant, {
-            project: currentCtx.project,
-            change: pr.number,
-            patchset: pr.head.sha,
-          });
+          statuses = await zuul.client.getChangeStatus(zuul.tenant, pr.number, pr.head.sha);
           if (this.disposed || seq !== this.sessionSeq || pollRunId !== this.pollRunSeq) {
             return;
           }
+
+          if (statuses.every((s) => !s.live)) {
+            this.logger.info(
+              `[Poll] No live pipeline for PR #${pr.number}; fetching completed builds for project="${currentCtx.project}" change=${pr.number} patchset=${pr.head.sha}`,
+            );
+            builds = await zuul.client.listBuilds(zuul.tenant, {
+              project: currentCtx.project,
+              change: pr.number,
+              patchset: pr.head.sha,
+            });
+            if (this.disposed || seq !== this.sessionSeq || pollRunId !== this.pollRunSeq) {
+              return;
+            }
+          }
+        } catch (zuulErr) {
+          if (this.disposed || seq !== this.sessionSeq || pollRunId !== this.pollRunSeq) {
+            return;
+          }
+          this.logger.warn(
+            `[Poll] Zuul is unavailable for PR #${pr.number}: ${zuulErr instanceof Error ? zuulErr.message : String(zuulErr)}`,
+          );
+          statuses = [];
+          builds = [];
+          zuulState = zuulUnavailable(zuulErr);
         }
       }
 
@@ -313,6 +353,7 @@ export class PrTracker implements vscode.Disposable {
         statuses,
         builds,
         fetchedAt: this.now(),
+        zuul: zuulState,
       };
       this.lastSuccessAt = this.now();
       this.setPollError(undefined);

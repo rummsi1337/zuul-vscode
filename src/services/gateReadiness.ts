@@ -2,7 +2,7 @@ import { type BranchMergeRules } from '../clients/gheTypes';
 
 export type CheckState = 'success' | 'pending' | 'failure' | 'error' | 'missing';
 export type ReviewDecision = 'APPROVED' | 'CHANGES_REQUESTED' | 'REVIEW_REQUIRED';
-export type ZuulCheckState = 'success' | 'failure' | 'running' | 'none';
+export type ZuulCheckState = 'success' | 'failure' | 'running' | 'none' | 'unknown';
 export type BlockerKind =
   | 'zuul-check'
   | 'status-check'
@@ -202,7 +202,8 @@ function evaluatePr(
       message: 'Zuul check is success on HEAD',
     });
   } else {
-    const message = `Zuul check is ${zuulState} on HEAD`;
+    const message =
+      zuulState === 'unknown' ? "Zuul check can't be read" : `Zuul check is ${zuulState} on HEAD`;
     checks.push({
       label: 'Zuul check',
       ok: false,

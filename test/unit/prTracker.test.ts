@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type GheClient } from '../../src/clients/gheClient';
+import { HttpError } from '../../src/clients/http';
 import { type PullRequest } from '../../src/clients/gheTypes';
 import { type ZuulClient } from '../../src/clients/zuulClient';
 import { type Build, type ChangeStatus } from '../../src/clients/zuulTypes';
@@ -154,6 +155,7 @@ describe('PrTracker', () => {
       statuses: [status],
       builds: [],
       fetchedAt: 1_000_000,
+      zuul: { kind: 'ok' },
     });
     expect(snapshots).toHaveLength(1);
 
@@ -181,9 +183,45 @@ describe('PrTracker', () => {
 
     expect(getChangeStatus).not.toHaveBeenCalled();
     expect(listBuilds).not.toHaveBeenCalled();
-    expect(tracker.snapshot).toEqual({ pr, statuses: [], builds: [], fetchedAt: 1_000_000 });
+    expect(tracker.snapshot).toEqual({
+      pr,
+      statuses: [],
+      builds: [],
+      fetchedAt: 1_000_000,
+      zuul: { kind: 'unavailable', reason: 'unreachable', message: 'Zuul could not be reached' },
+    });
     tracker.dispose();
   });
+
+  it.each([
+    [401, 'needs-token'],
+    [403, 'no-access'],
+    [500, 'unreachable'],
+  ] as const)(
+    'still makes a snapshot with empty Zuul data when Zuul answers %i',
+    async (status, reason) => {
+      const { findOpenPrForBranch, getChangeStatus, makeResolvedContext } = createMockClients();
+      const pr = makePr();
+      findOpenPrForBranch.mockResolvedValue(pr);
+      getChangeStatus.mockRejectedValue(new HttpError(status, 'nope'));
+
+      const { source } = createFakeContextSource(makeResolvedContext());
+      const { focusEvents } = createFakeFocusEvents(true);
+      const logger = createFakeLogger();
+      const tracker = new PrTracker(source, logger, setTimeout, Date.now, focusEvents);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(tracker.snapshot).toMatchObject({
+        pr,
+        statuses: [],
+        builds: [],
+        zuul: { kind: 'unavailable', reason },
+      });
+      expect(tracker.pollError).toBeUndefined();
+      expect(logger.errors).toHaveLength(0);
+      tracker.dispose();
+    },
+  );
 
   it('falls back to listBuilds when every status is non-live', async () => {
     const { findOpenPrForBranch, getChangeStatus, listBuilds, makeResolvedContext } =
@@ -249,6 +287,7 @@ describe('PrTracker', () => {
       statuses: [],
       builds: [build],
       fetchedAt: 1_000_000,
+      zuul: { kind: 'ok' },
     });
 
     // Should not poll at 15s (idle cadence is 60s)
@@ -358,11 +397,10 @@ describe('PrTracker', () => {
     const pr = makePr();
     const status = makeStatus();
 
-    findOpenPrForBranch.mockResolvedValue(pr);
-    getChangeStatus
-      .mockResolvedValueOnce([status])
-      .mockRejectedValueOnce(new Error('Zuul 502 Bad Gateway'))
-      .mockResolvedValueOnce([status]);
+    findOpenPrForBranch
+      .mockRejectedValueOnce(new Error('GitHub 502 Bad Gateway'))
+      .mockResolvedValue(pr);
+    getChangeStatus.mockResolvedValue([status]);
     listBuilds.mockResolvedValue([]);
 
     const { source } = createFakeContextSource(makeResolvedContext());
@@ -371,18 +409,15 @@ describe('PrTracker', () => {
 
     const tracker = new PrTracker(source, logger, setTimeout, Date.now, focusEvents);
 
-    // Initial tick succeeds
+    // Initial tick fails -> logged with [Poll], loop continues
     await vi.advanceTimersByTimeAsync(0);
-    expect(logger.errors).toHaveLength(0);
-
-    // Next tick (15s) fails -> logged with [Poll], loop continues
-    await vi.advanceTimersByTimeAsync(15_000);
     expect(logger.errors).toHaveLength(1);
     expect(logger.errors[0].msg).toContain('[Poll]');
+    expect(getChangeStatus).not.toHaveBeenCalled();
 
-    // Next tick (another 15s) succeeds
-    await vi.advanceTimersByTimeAsync(15_000);
-    expect(getChangeStatus).toHaveBeenCalledTimes(3);
+    // Next tick (idle cadence, no snapshot yet) succeeds
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(getChangeStatus).toHaveBeenCalledTimes(1);
     expect(logger.errors).toHaveLength(1);
 
     tracker.dispose();

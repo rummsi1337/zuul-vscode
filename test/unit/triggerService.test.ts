@@ -108,12 +108,57 @@ describe('TriggerService', () => {
     vi.useRealTimers();
   });
 
+  it('posts the comment but does not watch when Zuul is unavailable', async () => {
+    const snapshot: PrSnapshot = {
+      pr: makePr(),
+      statuses: [],
+      builds: [],
+      fetchedAt: 1_000_000,
+      zuul: { kind: 'unavailable', reason: 'needs-token', message: 'HTTP 401' },
+    };
+    const { ctx, tracker, postIssueComment, watchFor } = createHarness(snapshot);
+    const service = new TriggerService(ctx, tracker, createFakeLogger(), Date.now);
+
+    const posted = await service.post('recheck');
+
+    expect(posted).toBe(true);
+    expect(postIssueComment).toHaveBeenCalledTimes(1);
+    expect(service.waiting).toBe(false);
+    expect(watchFor).not.toHaveBeenCalled();
+    service.dispose();
+  });
+
+  it('stops waiting when Zuul becomes unavailable during a watch', async () => {
+    const okSnapshot: PrSnapshot = {
+      pr: makePr(),
+      statuses: [makeStatus()],
+      builds: [],
+      fetchedAt: 1_000_000,
+      zuul: { kind: 'ok' },
+    };
+    const { ctx, tracker, emitSnapshot } = createHarness(okSnapshot);
+    const service = new TriggerService(ctx, tracker, createFakeLogger(), Date.now);
+
+    await service.post('recheck');
+    expect(service.waiting).toBe(true);
+
+    emitSnapshot({
+      ...okSnapshot,
+      statuses: [],
+      zuul: { kind: 'unavailable', reason: 'unreachable', message: 'down' },
+    });
+
+    expect(service.waiting).toBe(false);
+    service.dispose();
+  });
+
   it('posts comment after modal confirmation, starts 45s watch, and stops waiting on a new enqueueTime', async () => {
     const initialSnapshot: PrSnapshot = {
       pr: makePr(),
       statuses: [makeStatus({ enqueueTime: 1_700_000_000_000 })],
       builds: [],
       fetchedAt: 1_000_000,
+      zuul: { kind: 'ok' },
     };
     const { ctx, tracker, postIssueComment, watchFor, emitSnapshot } =
       createHarness(initialSnapshot);
@@ -142,6 +187,7 @@ describe('TriggerService', () => {
       statuses: [makeStatus({ enqueueTime: 1_700_000_000_000 })],
       builds: [],
       fetchedAt: 1_003_000,
+      zuul: { kind: 'ok' },
     });
     expect(service.waiting).toBe(true);
 
@@ -151,6 +197,7 @@ describe('TriggerService', () => {
       statuses: [makeStatus({ enqueueTime: 1_700_000_005_000 })],
       builds: [],
       fetchedAt: 1_006_000,
+      zuul: { kind: 'ok' },
     });
     expect(service.waiting).toBe(false);
     expect(waitingEvents).toEqual([true, false]);
@@ -171,6 +218,7 @@ describe('TriggerService', () => {
       statuses: [],
       builds: [],
       fetchedAt: 1_000_000,
+      zuul: { kind: 'ok' },
     };
     const { ctx, tracker, postIssueComment } = createHarness(snapshot);
     const service = new TriggerService(ctx, tracker, createFakeLogger(), Date.now);
@@ -186,6 +234,7 @@ describe('TriggerService', () => {
       statuses: [],
       builds: [],
       fetchedAt: 1_000_000,
+      zuul: { kind: 'ok' },
     };
     const { ctx, tracker, postIssueComment } = createHarness(snapshot);
     const service = new TriggerService(ctx, tracker, createFakeLogger(), Date.now);
@@ -197,7 +246,13 @@ describe('TriggerService', () => {
   });
 
   it('does not start waiting when the snapshot goes away while posting', async () => {
-    const snapshot: PrSnapshot = { pr: makePr(), statuses: [], builds: [], fetchedAt: 1_000_000 };
+    const snapshot: PrSnapshot = {
+      pr: makePr(),
+      statuses: [],
+      builds: [],
+      fetchedAt: 1_000_000,
+      zuul: { kind: 'ok' },
+    };
     const { ctx, tracker, postIssueComment, emitSnapshot, watchFor } = createHarness(snapshot);
     const service = new TriggerService(ctx, tracker, createFakeLogger(), Date.now);
     postIssueComment.mockImplementation(async () => {
@@ -215,7 +270,13 @@ describe('TriggerService', () => {
   });
 
   it('stops waiting when the snapshot becomes undefined', async () => {
-    const snapshot: PrSnapshot = { pr: makePr(), statuses: [], builds: [], fetchedAt: 1_000_000 };
+    const snapshot: PrSnapshot = {
+      pr: makePr(),
+      statuses: [],
+      builds: [],
+      fetchedAt: 1_000_000,
+      zuul: { kind: 'ok' },
+    };
     const { ctx, tracker, emitSnapshot } = createHarness(snapshot);
     const service = new TriggerService(ctx, tracker, createFakeLogger(), Date.now);
 
@@ -236,6 +297,7 @@ describe('TriggerService', () => {
       statuses: [],
       builds: [makeBuild({ uuid: 'build-old' })],
       fetchedAt: 1_000_000,
+      zuul: { kind: 'ok' },
     };
     const { ctx, tracker, emitSnapshot } = createHarness(initialSnapshot);
     const logger = createFakeLogger();
@@ -253,6 +315,7 @@ describe('TriggerService', () => {
       statuses: [],
       builds: [makeBuild({ uuid: 'build-old' })],
       fetchedAt: 1_003_000,
+      zuul: { kind: 'ok' },
     });
     expect(service.waiting).toBe(true);
 
@@ -262,6 +325,7 @@ describe('TriggerService', () => {
       statuses: [],
       builds: [makeBuild({ uuid: 'build-old' }), makeBuild({ uuid: 'build-new' })],
       fetchedAt: 1_006_000,
+      zuul: { kind: 'ok' },
     });
     expect(service.waiting).toBe(false);
     expect(waitingEvents).toEqual([true, false]);
@@ -278,6 +342,7 @@ describe('TriggerService', () => {
       statuses: [],
       builds: [makeBuild({ uuid: 'build-1' })],
       fetchedAt: 1_000_000,
+      zuul: { kind: 'ok' },
     };
     const { ctx, tracker, emitSnapshot } = createHarness(initialSnapshot);
     const logger = createFakeLogger();
@@ -296,6 +361,7 @@ describe('TriggerService', () => {
       statuses: [],
       builds: [makeBuild({ uuid: 'build-1' })],
       fetchedAt: 1_044_900,
+      zuul: { kind: 'ok' },
     });
     expect(service.waiting).toBe(true);
     expect(window.showInformationMessage).not.toHaveBeenCalled();
@@ -323,6 +389,7 @@ describe('TriggerService', () => {
       statuses: [],
       builds: [],
       fetchedAt: 1_000_000,
+      zuul: { kind: 'ok' },
     };
     const { ctx, tracker, postIssueComment, watchFor } = createHarness(initialSnapshot);
     const logger = createFakeLogger();
@@ -344,6 +411,7 @@ describe('TriggerService', () => {
       statuses: [],
       builds: [],
       fetchedAt: 1_000_000,
+      zuul: { kind: 'ok' },
     };
     const { ctx, tracker, postIssueComment } = createHarness(initialSnapshot);
     const logger = createFakeLogger();
@@ -380,6 +448,7 @@ describe('TriggerService', () => {
       statuses: [],
       builds: [],
       fetchedAt: 1_000_000,
+      zuul: { kind: 'ok' },
     };
     const { ctx, tracker, postIssueComment } = createHarness(initialSnapshot);
     const logger = createFakeLogger();
@@ -418,6 +487,7 @@ describe('TriggerService', () => {
       statuses: [],
       builds: [],
       fetchedAt: 1_000_000,
+      zuul: { kind: 'ok' },
     });
     expect(commands.executeCommand).toHaveBeenLastCalledWith(
       'setContext',
@@ -441,6 +511,7 @@ describe('TriggerService', () => {
       statuses: [makeStatus({ enqueueTime: undefined })],
       builds: [],
       fetchedAt: 1_000_000,
+      zuul: { kind: 'ok' },
     });
 
     it('returns false for an empty comment', async () => {
@@ -483,6 +554,7 @@ describe('TriggerService', () => {
         ],
         builds: [],
         fetchedAt: 1_003_000,
+        zuul: { kind: 'ok' },
       });
       expect(service.waiting).toBe(false);
 

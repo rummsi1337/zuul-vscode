@@ -1117,4 +1117,29 @@ describe('collectUpstreamFacts', () => {
       },
     ]);
   });
+
+  it.each([
+    ['Zuul answers 401', 'zuul-401'],
+    ['Zuul is absent', 'absent'],
+  ])('reads an upstream PR without a loadError when %s', async (_name, mode) => {
+    const ghe = makeMockGhe();
+    const zuul = makeMockZuul({
+      getChangeStatus: vi.fn(async () => {
+        throw new Error('HTTP 401');
+      }),
+    });
+    const facts = await collectUpstreamFacts(
+      ghe,
+      mode === 'absent' ? undefined : zuul,
+      mode === 'absent' ? undefined : 'tenant',
+      makePr({
+        number: 1,
+        body: 'Depends-On: https://ghe.example.com/acme/service/pull/2',
+      }),
+    );
+
+    expect(facts).toHaveLength(1);
+    expect(facts[0]?.zuulCheck).toBe('unknown');
+    expect(facts[0]?.loadError).toBeUndefined();
+  });
 });

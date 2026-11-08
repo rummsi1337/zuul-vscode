@@ -330,10 +330,28 @@ async function resolveZuulCheckState(
   return 'none';
 }
 
+/** Zuul problems must not fail the GitHub side of the gate, so they become 'unknown'. */
+async function safeZuulCheckState(
+  zuul: ZuulGateClient | undefined,
+  tenant: string | undefined,
+  project: string,
+  prNumber: number,
+  sha: string,
+): Promise<ZuulCheckState> {
+  if (!zuul || tenant === undefined) {
+    return 'unknown';
+  }
+  try {
+    return await resolveZuulCheckState(zuul, tenant, project, prNumber, sha);
+  } catch {
+    return 'unknown';
+  }
+}
+
 async function collectGateFactsInternal(
   ghe: GheGateClient,
-  zuul: ZuulGateClient,
-  tenant: string,
+  zuul: ZuulGateClient | undefined,
+  tenant: string | undefined,
   pr: PullRequest,
   fetchFreshPr: boolean,
 ): Promise<PrGateFacts> {
@@ -356,7 +374,7 @@ async function collectGateFactsInternal(
   const [rollup, reviews, zuulCheck, requiredContexts, mergeRules] = await Promise.all([
     ghe.getPrRollup(owner, repo, prNumber),
     ghe.listReviews(owner, repo, prNumber),
-    resolveZuulCheckState(zuul, tenant, project, prNumber, sha),
+    safeZuulCheckState(zuul, tenant, project, prNumber, sha),
     ghe.getRequiredContexts(owner, repo, baseBranch),
     ghe.getBranchMergeRules(owner, repo, baseBranch),
   ]);
@@ -426,8 +444,8 @@ async function collectGateFactsInternal(
 
 export async function collectGateFacts(
   ghe: GheGateClient,
-  zuul: ZuulGateClient,
-  tenant: string,
+  zuul: ZuulGateClient | undefined,
+  tenant: string | undefined,
   pr: PullRequest,
 ): Promise<PrGateFacts> {
   return collectGateFactsInternal(ghe, zuul, tenant, pr, true);
@@ -490,8 +508,8 @@ function blockingUpstreamFacts(ref: string, reason: string): PrGateFacts {
 
 export async function collectUpstreamFacts(
   ghe: GheGateClient,
-  zuul: ZuulGateClient,
-  tenant: string,
+  zuul: ZuulGateClient | undefined,
+  tenant: string | undefined,
   rootPr: PullRequest,
   maxDepth = MAX_UPSTREAM_FACTS_DEPTH,
   concurrency = MAX_UPSTREAM_FACTS_CONCURRENCY,

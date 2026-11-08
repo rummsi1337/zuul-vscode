@@ -70,19 +70,14 @@ export class PrGateTreeDataProvider
       return undefined;
     }
     const rules = resolveGateRules(this.getRules(), rc.zuul?.tenant);
-    const zuul = rc.zuul;
-    if (!zuul) {
-      // Without Zuul the gate can't be judged, so never report "Ready".
-      return gateLoadFailureReport(
-        `${snapshot.pr.base.repo.full_name}#${snapshot.pr.number}`,
-        'Zuul is not available',
-      );
-    }
+    // When Zuul is failing, only the poll talks to it.
+    const zuul = snapshot.zuul.kind === 'ok' ? rc.zuul : undefined;
     const key = JSON.stringify([
       rc.host,
       rc.owner,
       rc.repo,
-      zuul.tenant,
+      rc.zuul?.tenant ?? '',
+      zuul ? 'zuul' : 'no-zuul',
       snapshot.pr.number,
       snapshot.pr.head.sha,
       snapshot.pr.updated_at ?? '',
@@ -92,8 +87,8 @@ export class PrGateTreeDataProvider
       return await this.cache.get(key, async () => {
         try {
           const [root, upstream] = await Promise.all([
-            collectGateFacts(rc.ghe, zuul.client, zuul.tenant, snapshot.pr),
-            collectUpstreamFacts(rc.ghe, zuul.client, zuul.tenant, snapshot.pr),
+            collectGateFacts(rc.ghe, zuul?.client, zuul?.tenant, snapshot.pr),
+            collectUpstreamFacts(rc.ghe, zuul?.client, zuul?.tenant, snapshot.pr),
           ]);
           return evaluateGate(root, upstream, rules);
         } catch (err) {

@@ -251,7 +251,11 @@ export class DependsOnTreeDataProvider
 
   private getCacheKey(snapshot: PrSnapshot): string | undefined {
     const prKey = this.getPrKey(snapshot);
-    return prKey === undefined ? undefined : `${prKey}\n${snapshot.pr.body ?? ''}`;
+    if (prKey === undefined) {
+      return undefined;
+    }
+    const zuulPart = snapshot.zuul.kind === 'ok' && this.ctx.current?.zuul ? 'zuul' : 'no-zuul';
+    return `${prKey}\n${zuulPart}\n${snapshot.pr.body ?? ''}`;
   }
 
   private needsFetch(snapshot: PrSnapshot): boolean {
@@ -310,14 +314,19 @@ export class DependsOnTreeDataProvider
       this.cachedPrKey = prKey;
       this.cachedBody = body;
       try {
-        const zuul = currentCtx.zuul;
-        if (!zuul) {
-          throw new Error('Zuul is not available');
-        }
-        const service = new DependsOnService(currentCtx.ghe, zuul.client, zuul.tenant, async () => {
-          const projects = await zuul.client.listProjects(zuul.tenant);
-          return buildTenantProjectSet(projects, currentCtx.project);
-        });
+        // When Zuul is failing, only the poll talks to it.
+        const zuul = snapshot.zuul.kind === 'ok' ? currentCtx.zuul : undefined;
+        const service = new DependsOnService(
+          currentCtx.ghe,
+          zuul?.client,
+          zuul?.tenant,
+          zuul
+            ? async () => {
+                const projects = await zuul.client.listProjects(zuul.tenant);
+                return buildTenantProjectSet(projects, currentCtx.project);
+              }
+            : undefined,
+        );
 
         const [upstream, downstream] = await Promise.all([
           service.getUpstream(snapshot.pr),
@@ -327,7 +336,7 @@ export class DependsOnTreeDataProvider
         // Only ask Zuul for the queue when there is something to compare it with.
         let queueAhead: QueuedRef[] | undefined;
         let transitiveUpstream: Set<string> | undefined;
-        if (parseDependsOn(snapshot.pr.body).length > 0 && snapshot.statuses.length > 0) {
+        if (parseDependsOn(snapshot.pr.body).length > 0 && snapshot.statuses.length > 0 && zuul) {
           try {
             [queueAhead, transitiveUpstream] = await Promise.all([
               service.getQueueAhead(snapshot.pr),
