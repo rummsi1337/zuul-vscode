@@ -18,6 +18,8 @@ export interface GateSettings {
 export interface ZuulSettings {
   url: string;
   tenant: string;
+  tokens: Record<string, string>;
+  tokenFile: string;
   gheHost: string;
   authMethod: AuthMethodSetting;
   oauthClientId: string;
@@ -46,6 +48,19 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 function readString(value: unknown, fallback: string): string {
   return typeof value === 'string' ? value : fallback;
+}
+
+function readTokens(value: unknown): Record<string, string> {
+  if (!isPlainObject(value)) {
+    return {};
+  }
+  const result: Record<string, string> = {};
+  for (const [key, token] of Object.entries(value)) {
+    if (typeof token === 'string' && token.trim().length > 0) {
+      result[key] = token.trim();
+    }
+  }
+  return result;
 }
 
 function readAuthMethod(value: unknown): AuthMethodSetting {
@@ -115,6 +130,8 @@ export function readSettings(get: (key: string) => unknown): ZuulSettings {
   return {
     url,
     tenant: readString(get('tenant'), ''),
+    tokens: readTokens(get('tokens')),
+    tokenFile: readString(get('tokenFile'), ''),
     gheHost: readString(get('ghe.host'), ''),
     authMethod: readAuthMethod(get('auth.method')),
     oauthClientId: readString(get('ghe.oauthClientId'), ''),

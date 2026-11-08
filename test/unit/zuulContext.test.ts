@@ -8,7 +8,9 @@ import {
   SIGN_IN_ACTION,
   SIGN_IN_COMMAND,
   ZuulContextService,
+  type ZuulContextServiceOptions,
 } from '../../src/context/zuulContext';
+import { resolveTenant } from '../../src/context/tenantResolver';
 import { type GitContext } from '../../src/git/gitContext';
 import { type Logger } from '../../src/util/logger';
 import { commands, EventEmitter, window } from '../mocks/vscode';
@@ -296,5 +298,180 @@ describe('ZuulContextService', () => {
     expect(isSameResolvedContext(a, { ...a })).toBe(true);
     expect(isSameResolvedContext(a, { ...a, tenant: 'other' })).toBe(false);
     expect(isSameResolvedContext(a, { ...a, zuulUrl: 'https://zuul2.example.com' })).toBe(false);
+  });
+
+  it('prompts user to set Zuul token when a Zuul client request returns 401', async () => {
+    const { source } = createFakeGitSource(sampleGitCtx);
+    const auth: AuthLike = {
+      getToken: vi.fn(async () => 'ghe-token'),
+      reportUnauthorized: vi.fn(async () => undefined),
+    };
+    const logger = createFakeLogger();
+    const executeCommand = vi.fn();
+    const showErrorMessage = vi.fn(async (_msg: string, ..._items: string[]) => 'Set Zuul Token');
+
+    const service = new ZuulContextService({
+      gitContext: source,
+      auth,
+      logger,
+      getSettings: () => ({ url: 'https://zuul.example.com', tenant: 'ddad' }),
+      createZuulClient: () =>
+        ({
+          listBuilds: vi.fn(async () => {
+            throw new HttpError(401, 'Unauthorized');
+          }),
+        }) as unknown as ResolvedContext['zuul'],
+      showErrorMessage,
+      executeCommand,
+    });
+
+    await service.ready;
+    expect(service.current).toBeDefined();
+
+    await expect(service.current!.zuul.listBuilds('ddad')).rejects.toThrow(HttpError);
+    expect(showErrorMessage).toHaveBeenCalledWith(
+      expect.stringContaining('Zuul authentication failed for tenant "ddad"'),
+      'Set Zuul Token',
+    );
+    expect(executeCommand).toHaveBeenCalledWith('zuul.setTenantToken', 'ddad');
+
+    service.dispose();
+  });
+
+  function createZuulAuthService(opts: {
+    listBuilds: () => Promise<unknown>;
+    candidates?: () => Promise<string[]>;
+    tenant?: string;
+    url?: string;
+    showErrorMessage?: (message: string, ...items: string[]) => Promise<string | undefined>;
+    resolveTenantFn?: ZuulContextServiceOptions['resolveTenantFn'];
+    createZuulClient?: ZuulContextServiceOptions['createZuulClient'];
+    logger?: Logger;
+  }) {
+    const { source } = createFakeGitSource(sampleGitCtx);
+    const showErrorMessage = vi.fn(
+      opts.showErrorMessage ?? (async (_message: string, ..._items: string[]) => undefined),
+    );
+    const service = new ZuulContextService({
+      gitContext: source,
+      auth: { getToken: vi.fn(async () => 't'), reportUnauthorized: vi.fn(async () => undefined) },
+      zuulAuth: { getTokenCandidates: vi.fn(opts.candidates ?? (async () => ['a'])) },
+      logger: opts.logger ?? createFakeLogger(),
+      getSettings: () => ({
+        url: opts.url ?? 'https://zuul.example.com',
+        tenant: opts.tenant ?? 'ddad',
+      }),
+      resolveTenantFn: opts.resolveTenantFn,
+      createZuulClient:
+        opts.createZuulClient ??
+        (() => ({ listBuilds: opts.listBuilds }) as unknown as ResolvedContext['zuul']),
+      showErrorMessage,
+      executeCommand: vi.fn(),
+    });
+    return { service, showErrorMessage };
+  }
+
+  it('shows one popup for repeated 401s with the same candidates', async () => {
+    const { service, showErrorMessage } = createZuulAuthService({
+      listBuilds: async () => {
+        throw new HttpError(401, 'Unauthorized');
+      },
+    });
+    await service.ready;
+    for (let i = 0; i < 3; i++) {
+      await expect(service.current!.zuul.listBuilds('ddad')).rejects.toThrow(HttpError);
+    }
+    expect(showErrorMessage).toHaveBeenCalledTimes(1);
+    service.dispose();
+  });
+
+  it('shows a second popup when the candidate list changed', async () => {
+    let candidates = ['a'];
+    const { service, showErrorMessage } = createZuulAuthService({
+      candidates: async () => candidates,
+      listBuilds: async () => {
+        throw new HttpError(401, 'Unauthorized');
+      },
+    });
+    await service.ready;
+    await expect(service.current!.zuul.listBuilds('ddad')).rejects.toThrow(HttpError);
+    candidates = ['a', 'b'];
+    await expect(service.current!.zuul.listBuilds('ddad')).rejects.toThrow(HttpError);
+    expect(showErrorMessage).toHaveBeenCalledTimes(2);
+    service.dispose();
+  });
+
+  it('shows the no-access popup for a 403', async () => {
+    const { service, showErrorMessage } = createZuulAuthService({
+      tenant: 'swh',
+      listBuilds: async () => {
+        throw new HttpError(403, 'Forbidden');
+      },
+    });
+    await service.ready;
+    await expect(service.current!.zuul.listBuilds('swh')).rejects.toThrow(HttpError);
+    expect(showErrorMessage).toHaveBeenCalledWith(
+      'Your Zuul token has no access to tenant "swh".',
+      'Set Zuul Token',
+    );
+    service.dispose();
+  });
+
+  it('gives no-tenant and one popup when detection gets 401 for all tenants', async () => {
+    const raw = {
+      baseUrl: 'https://zuul.example.com',
+      listTenants: vi.fn(async () => [{ name: 'alpha' }, { name: 'beta' }]),
+      listProjects: vi.fn(async () => {
+        throw new HttpError(401, 'Unauthorized');
+      }),
+    };
+    const { service, showErrorMessage } = createZuulAuthService({
+      tenant: '',
+      listBuilds: async () => [],
+      resolveTenantFn: resolveTenant,
+      createZuulClient: () => raw as unknown as ResolvedContext['zuul'],
+    });
+    await service.ready;
+    expect(service.problem).toBe('no-tenant');
+    expect(showErrorMessage).toHaveBeenCalledTimes(1);
+    expect(showErrorMessage).toHaveBeenCalledWith('Zuul authentication failed.', 'Set Zuul Token');
+    service.dispose();
+  });
+
+  it('resolves without a popup when detection skips a forbidden tenant', async () => {
+    const raw = {
+      baseUrl: 'https://zuul.example.com',
+      listTenants: vi.fn(async () => [{ name: 'alpha' }, { name: 'beta' }]),
+      listProjects: vi.fn(async (tenant: string) => {
+        if (tenant === 'alpha') {
+          throw new HttpError(403, 'Forbidden');
+        }
+        return [{ name: 'acme/service' }];
+      }),
+    };
+    const { service, showErrorMessage } = createZuulAuthService({
+      tenant: '',
+      listBuilds: async () => [],
+      resolveTenantFn: resolveTenant,
+      createZuulClient: () => raw as unknown as ResolvedContext['zuul'],
+    });
+    await service.ready;
+    expect(service.current?.tenant).toBe('beta');
+    expect(showErrorMessage).not.toHaveBeenCalled();
+    service.dispose();
+  });
+
+  it('warns when zuul.url uses http://', async () => {
+    const logger = createFakeLogger();
+    const { service } = createZuulAuthService({
+      url: 'HTTP://zuul.example.com',
+      listBuilds: async () => [],
+      logger,
+    });
+    await service.ready;
+    expect(logger.messages).toContain(
+      'WARN: [Zuul] zuul.url uses http://, so Zuul tokens are sent unencrypted',
+    );
+    service.dispose();
   });
 });

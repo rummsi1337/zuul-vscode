@@ -7,6 +7,7 @@ interface Manifest {
     commands: { command: string }[];
     menus: Record<string, { command: string }[]>;
     viewsWelcome: { contents: string }[];
+    configuration: { properties: Record<string, { scope?: string }> };
   };
 }
 
@@ -28,6 +29,16 @@ function findRegisteredCommands(): string[] {
     (m) => m[1] ?? constants.get(m[2]) ?? m[2],
   );
 }
+
+describe('package.json configuration', () => {
+  it('marks url, tokens and tokenFile as machine scoped', () => {
+    const properties = manifest.contributes.configuration.properties;
+
+    for (const key of ['zuul.url', 'zuul.tokens', 'zuul.tokenFile']) {
+      expect(properties[key]?.scope, key).toBe('machine');
+    }
+  });
+});
 
 describe('package.json commands', () => {
   const registered = findRegisteredCommands();

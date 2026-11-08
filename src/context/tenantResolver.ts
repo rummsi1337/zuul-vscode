@@ -1,3 +1,4 @@
+import { HttpError } from '../clients/http';
 import { type ZuulClient } from '../clients/zuulClient';
 import { type ZuulProject } from '../clients/zuulTypes';
 
@@ -43,8 +44,18 @@ export async function resolveTenant(
   }
 
   const tenants = await zuul.listTenants();
+  let authError: HttpError | undefined;
   for (const tenant of tenants) {
-    const projects = await zuul.listProjects(tenant.name);
+    let projects: ZuulProject[];
+    try {
+      projects = await zuul.listProjects(tenant.name);
+    } catch (err) {
+      if (err instanceof HttpError && (err.status === 401 || err.status === 403)) {
+        authError ??= err;
+        continue;
+      }
+      throw err;
+    }
     if (projects.some((p) => matchesProject(p, project))) {
       if (cache) {
         await cache.update(cacheKey, tenant.name);
@@ -53,5 +64,8 @@ export async function resolveTenant(
     }
   }
 
+  if (authError) {
+    throw authError;
+  }
   return undefined;
 }

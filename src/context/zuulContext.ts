@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { type ZuulTokenProvider } from '../auth/zuulTokenProvider';
 import { GheClient } from '../clients/gheClient';
 import { HttpError } from '../clients/http';
 import { ZuulClient } from '../clients/zuulClient';
@@ -35,6 +36,7 @@ export interface AuthLike {
 export interface ZuulContextServiceOptions {
   gitContext: GitContextSource;
   auth: AuthLike;
+  zuulAuth?: Pick<ZuulTokenProvider, 'getTokenCandidates'>;
   logger: Logger;
   cache?: KeyValueStore;
   getSettings?: () => Pick<ZuulSettings, 'url' | 'tenant'>;
@@ -77,6 +79,7 @@ export class ZuulContextService implements vscode.Disposable {
   private readonly disposables: vscode.Disposable[] = [];
   private readonly gitContext: GitContextSource;
   private readonly auth: AuthLike;
+  private readonly zuulAuth?: Pick<ZuulTokenProvider, 'getTokenCandidates'>;
   private readonly logger: Logger;
   private readonly cache?: KeyValueStore;
   private readonly getSettings: () => Pick<ZuulSettings, 'url' | 'tenant'>;
@@ -97,6 +100,7 @@ export class ZuulContextService implements vscode.Disposable {
     ...rest: unknown[]
   ) => Thenable<unknown> | Promise<unknown>;
   private readonly handledErrors = new WeakSet<HttpError>();
+  private readonly zuulAuthNotices = new Map<string, string>();
 
   private _current: ResolvedContext | undefined;
   private _problem: ContextProblem | undefined;
@@ -104,6 +108,7 @@ export class ZuulContextService implements vscode.Disposable {
   private cachedGheClient: GheClient | undefined;
   private cachedZuulUrl: string | undefined;
   private cachedZuulClient: ZuulClient | undefined;
+  private cachedRawZuulClient: ZuulClient | undefined;
   private recomputeSeq = 0;
   private disposed = false;
 
@@ -138,6 +143,7 @@ export class ZuulContextService implements vscode.Disposable {
 
     this.gitContext = options.gitContext;
     this.auth = options.auth;
+    this.zuulAuth = options.zuulAuth;
     this.logger = options.logger;
     this.cache = options.cache;
     this.getSettings = options.getSettings ?? readWorkspaceSettings;
@@ -147,7 +153,14 @@ export class ZuulContextService implements vscode.Disposable {
       ((host, getToken, fetchFn) => new GheClient(host, getToken, fetchFn, this.logger));
     this.createZuulClient =
       options.createZuulClient ??
-      ((baseUrl, fetchFn) => new ZuulClient(baseUrl, undefined, fetchFn, undefined, this.logger));
+      ((baseUrl, fetchFn) =>
+        new ZuulClient(
+          baseUrl,
+          (tenant) => this.zuulAuth?.getTokenCandidates(tenant) ?? Promise.resolve(undefined),
+          fetchFn,
+          undefined,
+          this.logger,
+        ));
     this.fetchFn = options.fetchFn;
     this.showErrorMessage =
       options.showErrorMessage ??
@@ -267,14 +280,89 @@ export class ZuulContextService implements vscode.Disposable {
     return proxied;
   }
 
-  private getOrCreateZuulClient(zuulUrl: string): ZuulClient {
-    if (this.cachedZuulClient && this.cachedZuulUrl === zuulUrl) {
-      return this.cachedZuulClient;
+  async handleZuulError(err: unknown, tenant?: string): Promise<void> {
+    if (!(err instanceof HttpError) || (err.status !== 401 && err.status !== 403)) {
+      return;
     }
-    const client = this.createZuulClient(zuulUrl, this.fetchFn);
+    if (this.handledErrors.has(err)) {
+      return;
+    }
+    this.handledErrors.add(err);
+    await this.handleUnauthorizedZuul(err.status, tenant);
+  }
+
+  private async handleUnauthorizedZuul(status: 401 | 403, tenant?: string): Promise<void> {
+    let noticeValue: string;
+    try {
+      noticeValue = (await this.zuulAuth?.getTokenCandidates(tenant))?.join('\n') ?? '';
+    } catch {
+      noticeValue = '';
+    }
+    const key = tenant ?? '';
+    if (this.zuulAuthNotices.get(key) === noticeValue) {
+      return;
+    }
+    this.zuulAuthNotices.set(key, noticeValue);
+
+    const tenantLabel = tenant ? `tenant "${tenant}"` : 'Zuul';
+    this.logger.warn(`[Zuul] Authentication failed (${status}) for ${tenantLabel}`);
+    let message: string;
+    if (status === 401) {
+      message = tenant
+        ? `Zuul authentication failed for tenant "${tenant}".`
+        : 'Zuul authentication failed.';
+    } else {
+      message = tenant
+        ? `Your Zuul token has no access to tenant "${tenant}".`
+        : 'Your Zuul token was refused.';
+    }
+    void Promise.resolve(this.showErrorMessage(message, 'Set Zuul Token')).then(async (action) => {
+      if (action === 'Set Zuul Token') {
+        await this.executeCommand('zuul.setTenantToken', tenant);
+      }
+    });
+  }
+
+  private wrapZuulClient(client: ZuulClient): ZuulClient {
+    return new Proxy(client, {
+      get: (target, prop, receiver) => {
+        const value = Reflect.get(target, prop, receiver);
+        if (typeof value !== 'function') {
+          return value;
+        }
+        return (...args: unknown[]) => {
+          const tenant = typeof args[0] === 'string' ? args[0] : undefined;
+          try {
+            const result = value.apply(target, args);
+            if (result && typeof (result as PromiseLike<unknown>).then === 'function') {
+              return (result as Promise<unknown>).catch(async (err: unknown) => {
+                await this.handleZuulError(err, tenant);
+                throw err;
+              });
+            }
+            return result;
+          } catch (err) {
+            void this.handleZuulError(err, tenant);
+            throw err;
+          }
+        };
+      },
+    });
+  }
+
+  private getOrCreateZuulClient(zuulUrl: string): { proxied: ZuulClient; raw: ZuulClient } {
+    if (this.cachedZuulClient && this.cachedRawZuulClient && this.cachedZuulUrl === zuulUrl) {
+      return { proxied: this.cachedZuulClient, raw: this.cachedRawZuulClient };
+    }
+    if (/^http:\/\//i.test(zuulUrl)) {
+      this.logger.warn('[Zuul] zuul.url uses http://, so Zuul tokens are sent unencrypted');
+    }
+    const rawClient = this.createZuulClient(zuulUrl, this.fetchFn);
+    const proxied = this.wrapZuulClient(rawClient);
     this.cachedZuulUrl = zuulUrl;
-    this.cachedZuulClient = client;
-    return client;
+    this.cachedZuulClient = proxied;
+    this.cachedRawZuulClient = rawClient;
+    return { proxied, raw: rawClient };
   }
 
   private updateState(
@@ -321,18 +409,19 @@ export class ZuulContextService implements vscode.Disposable {
     this.logger.info(
       `[Zuul] Resolving context for owner=${gitCtx.owner} repo=${gitCtx.repo} branch=${gitCtx.branch ?? 'none'} host=${gitCtx.host} (zuulUrl=${zuulUrl})`,
     );
-    const zuul = this.getOrCreateZuulClient(zuulUrl);
+    const { proxied: zuul, raw: rawZuul } = this.getOrCreateZuulClient(zuulUrl);
     const ghe = this.getOrCreateGheClient(gitCtx.host);
 
     let tenant: string | undefined;
     try {
-      tenant = await this.resolveTenantFn(zuul, project, settings.tenant, this.cache);
+      tenant = await this.resolveTenantFn(rawZuul, project, settings.tenant, this.cache);
     } catch (err) {
       if (this.disposed || seq !== this.recomputeSeq) {
         return;
       }
       this.logger.error(`[Zuul] Failed to resolve tenant for ${project}`, err);
       this.updateState(undefined, 'no-tenant');
+      await this.handleZuulError(err);
       return;
     }
 
