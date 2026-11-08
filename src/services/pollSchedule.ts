@@ -2,6 +2,8 @@ import { type ChangeStatus } from '../clients/zuulTypes';
 
 export const TRIGGER_POLL_DELAY_MS = 15_000;
 export const IDLE_POLL_MULTIPLIER = 5;
+/** Wait before each retry after a failure. One more failure after the last entry stops polling. */
+export const RETRY_DELAYS_MS = [30_000, 60_000, 120_000];
 
 export interface PollSnapshotLike {
   readonly statuses: readonly ChangeStatus[];

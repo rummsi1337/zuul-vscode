@@ -142,7 +142,7 @@ describe('pickAndAddDependsOn', () => {
       zuul:
         mode === 'fails'
           ? { kind: 'ok' }
-          : { kind: 'unavailable', reason: 'needs-token', message: 'HTTP 401' },
+          : { kind: 'unavailable', reason: 'needs-token', message: 'HTTP 401', stopped: true },
     };
 
     const done = await pickAndAddDependsOn({

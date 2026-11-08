@@ -114,7 +114,7 @@ describe('TriggerService', () => {
       statuses: [],
       builds: [],
       fetchedAt: 1_000_000,
-      zuul: { kind: 'unavailable', reason: 'needs-token', message: 'HTTP 401' },
+      zuul: { kind: 'unavailable', reason: 'needs-token', message: 'HTTP 401', stopped: true },
     };
     const { ctx, tracker, postIssueComment, watchFor } = createHarness(snapshot);
     const service = new TriggerService(ctx, tracker, createFakeLogger(), Date.now);
@@ -145,7 +145,7 @@ describe('TriggerService', () => {
     emitSnapshot({
       ...okSnapshot,
       statuses: [],
-      zuul: { kind: 'unavailable', reason: 'unreachable', message: 'down' },
+      zuul: { kind: 'unavailable', reason: 'unreachable', message: 'down', stopped: false },
     });
 
     expect(service.waiting).toBe(false);

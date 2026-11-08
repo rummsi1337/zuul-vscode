@@ -3,7 +3,7 @@ import { AuthService } from './auth/authService';
 import { GhCliAuthProvider } from './auth/ghCliAuthProvider';
 import { PatAuthProvider, validatePatWithGhe } from './auth/patAuthProvider';
 import { ZuulTokenProvider } from './auth/zuulTokenProvider';
-import { readWorkspaceSettings } from './config/settings';
+import { onTokenSettingsChanged, readWorkspaceSettings } from './config/settings';
 import { ZuulContextService } from './context/zuulContext';
 import { GitContextService } from './git/gitContext';
 import { normalizeHost } from './git/remoteUrl';
@@ -179,6 +179,9 @@ export function activate(context: vscode.ExtensionContext): void {
     zuulContext.onDidChange(() => {
       checkZuulContextProblem();
     }),
+    onTokenSettingsChanged(() => {
+      void vscode.commands.executeCommand('zuul.refresh');
+    }),
     vscode.commands.registerCommand('zuul.setGhePat', async (hostArg?: unknown) => {
       const host = await resolveTargetHost(gitContext, hostArg);
       if (!host) {
@@ -208,8 +211,7 @@ export function activate(context: vscode.ExtensionContext): void {
         zuulContext.current?.zuul?.tenant || readWorkspaceSettings().tenant || undefined;
       const token = await zuulTokenProvider.setToken(explicit, suggested);
       if (token) {
-        await zuulContext.recompute();
-        await prTracker.refresh();
+        await vscode.commands.executeCommand('zuul.refresh');
       }
     }),
     vscode.commands.registerCommand('zuul.clearTenantToken', async (tenantArg?: unknown) => {
@@ -253,8 +255,7 @@ export function activate(context: vscode.ExtensionContext): void {
           'Tokens from zuul.tokens or zuul.tokenFile still apply.',
         );
       }
-      await zuulContext.recompute();
-      await prTracker.refresh();
+      await vscode.commands.executeCommand('zuul.refresh');
     }),
     vscode.commands.registerCommand(
       'zuul.refresh',

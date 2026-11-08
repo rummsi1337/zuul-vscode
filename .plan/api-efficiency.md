@@ -379,9 +379,11 @@ When polling resumes:
 
 - **Tier:** opus
 - **Risk:** high
-- **Status:** todo
+- **Status:** done
 - **Files:** `src/services/prTracker.ts`, `src/services/pollSchedule.ts`, `src/views/statusBar.ts`,
-  `src/extension.ts`, `README.md`, `test/unit/prTracker.test.ts` (edit)
+  `src/extension.ts`, `src/config/settings.ts`, `README.md`, `test/unit/prTracker.test.ts`,
+  `test/unit/settings.test.ts`, plus the test fixtures the rename and the new `stopped` field touch
+  (edit)
 - **Do:**
   - Replace `_pollError` and `onDidChangePollError` with:
 
@@ -395,7 +397,9 @@ When polling resumes:
 
     with `pollStatus` and `onDidChangePollStatus`. Update `statusBar.ts` so it still compiles.
   - GitHub errors in `poll`:
-    - `RateLimitedError`: `rate-limited`, keep the snapshot, one timer at `retryAt`.
+    - `RateLimitedError`: `rate-limited`, keep the snapshot, one timer at `retryAt`. Set `until` to
+      `Math.max(err.retryAt, now + RETRY_DELAYS_MS[0])`, so `Retry-After: 0` or a reset time already in
+      the past can't make the poll loop with no delay.
     - `HttpError` 401, 403 or 404: `stopped` with `auth`, no timer.
     - Anything else: count it. Retry after 30, 60 and 120 s. The fourth failure in a row is `stopped`
       with `failed`. Keep the last snapshot.
@@ -414,6 +418,9 @@ When polling resumes:
     While `no-pr`, do one lookup if the last one is older than the poll interval.
   - `zuul.setGhePat` and `zuul.clearGhePat` already run `zuul.refresh`. Make `zuul.setTenantToken` and
     `zuul.clearTenantToken` run it too, so a new token applies at once.
+  - Editing the `zuul.tokens` or `zuul.tokenFile` setting counts as "token set or cleared". Add
+    `onTokenSettingsChanged(cb: () => void)` to `settings.ts`, firing only for those two settings.
+    `extension.ts` uses it to run `zuul.refresh`. Other `zuul.*` settings must not trigger it.
   - `README.md`: after "Files are read on every request, so replacing a file takes effect right away."
     add "If Zuul has already refused the old token, run **Zuul: Refresh**."
 - **Don't:** let focus restart a stopped poll or clear the Zuul field. Step 6 removed `refresh()` from
@@ -424,7 +431,35 @@ When polling resumes:
     makes no call for an hour and then resumes; no PR makes 1 call; Refresh and a branch change resume;
     a Zuul 401 makes 1 call per token, then none for an hour, and GitHub keeps polling; Zuul 500s make
     exactly 4 Zuul calls, then none for an hour, and GitHub keeps polling; Refresh and a new token try
-    Zuul again
+    Zuul again; `Retry-After: 0` waits at least 30 s instead of polling at once; `onTokenSettingsChanged`
+    fires for `zuul.tokens` and `zuul.tokenFile` and not for `zuul.pollIntervalSeconds`
+
+### Step 7a: Test that token changes run Refresh
+
+- **Tier:** sonnet
+- **Risk:** low
+- **Status:** done
+- **Files:** `test/unit/extensionWiring.test.ts` (new), `test/mocks/vscode.ts` (edit, only for what
+  `activate` needs)
+- **Do:**
+  - Import `activate` from `src/extension.ts` and call it with a fake `ExtensionContext` that has
+    `subscriptions: []` and whatever else `activate` reads.
+  - Stub `ZuulTokenProvider` with `vi.mock`, so its methods resolve without prompting. Keep every other
+    class real. If the mock can't construct one, add the missing piece to `test/mocks/vscode.ts`.
+  - Get each command handler from the `commands.registerCommand` mock's calls. Clear the
+    `commands.executeCommand` mock after `activate` returns and before each assertion.
+  - Tests, each asserting on `executeCommand('zuul.refresh')`:
+    - `zuul.setTenantToken` runs it when a token is entered.
+    - `zuul.setTenantToken` does not run it when the prompt is cancelled (`setToken` gives `undefined`).
+    - `zuul.clearTenantToken` runs it when the token is cleared.
+    - Changing `zuul.tokens` runs it. Changing `zuul.tokenFile` runs it.
+    - Changing `zuul.pollIntervalSeconds` does not run it.
+- **Don't:** change anything in `src/`. Don't remove `src/extension.ts` from the coverage `exclude`.
+  Don't test other commands.
+- **Done when:**
+  - `npm run check` passes
+  - Each new test was seen to fail with the line it guards removed from `src/extension.ts`. Put each line
+    back by editing, not with git, and confirm `src/extension.ts` is unchanged afterwards
 
 ### Step 8: Cache branch rules, reuse Zuul answers, stop hidden-view requests
 

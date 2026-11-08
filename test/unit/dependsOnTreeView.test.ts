@@ -142,7 +142,12 @@ describe('DependsOnTreeDataProvider load failures', () => {
     ['the context has no Zuul', { kind: 'ok' } as PrSnapshot['zuul'], false],
     [
       'the snapshot says Zuul failed',
-      { kind: 'unavailable', reason: 'needs-token', message: 'HTTP 401' } as PrSnapshot['zuul'],
+      {
+        kind: 'unavailable',
+        reason: 'needs-token',
+        message: 'HTTP 401',
+        stopped: true,
+      } as PrSnapshot['zuul'],
       true,
     ],
   ])('lists both groups and sends no Zuul requests when %s', async (_name, zuulState, hasZuul) => {
@@ -192,7 +197,9 @@ describe('DependsOnTreeDataProvider load failures', () => {
       statuses: [],
       builds: [],
       fetchedAt: 0,
-      zuul: hasZuul ? zuulState : { kind: 'unavailable', reason: 'unreachable', message: 'x' },
+      zuul: hasZuul
+        ? zuulState
+        : { kind: 'unavailable', reason: 'unreachable', message: 'x', stopped: true },
     };
     const provider = new DependsOnTreeDataProvider(
       { current: ctx, onDidChange: new EventEmitter<ResolvedContext | undefined>().event },
@@ -270,7 +277,7 @@ describe('DependsOnTreeDataProvider load failures', () => {
 
     tracker.snapshot = {
       ...tracker.snapshot,
-      zuul: { kind: 'unavailable', reason: 'needs-token', message: 'HTTP 401' },
+      zuul: { kind: 'unavailable', reason: 'needs-token', message: 'HTTP 401', stopped: true },
     };
     emitter.fire(tracker.snapshot);
     await provider.getChildren();

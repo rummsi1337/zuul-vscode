@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import * as vscode from 'vscode';
 import { type Build, type ChangeStatus } from '../../src/clients/zuulTypes';
-import { type PrSnapshot } from '../../src/services/prTracker';
+import { type PollStatus, type PrSnapshot } from '../../src/services/prTracker';
 import { statusBarText } from '../../src/services/statusBarText';
 import { ZuulStatusBar } from '../../src/views/statusBar';
 import { makePr } from '../helpers';
@@ -655,18 +655,20 @@ describe('ZuulStatusBar offline state', () => {
     const emitter = new vscode.EventEmitter<PrSnapshot | undefined>();
     const errorEmitter = new vscode.EventEmitter<void>();
     const lastSuccessAt = new Date(2026, 10, 8, 9, 5).getTime();
-    let pollError: { message: string; at: number; lastSuccessAt?: number } | undefined = {
+    let pollStatus: PollStatus = {
+      kind: 'stopped',
+      reason: 'failed',
       message: 'boom',
       at: lastSuccessAt + 1000,
       lastSuccessAt,
     };
     const tracker = {
       snapshot: undefined,
-      get pollError() {
-        return pollError;
+      get pollStatus() {
+        return pollStatus;
       },
       onDidChange: emitter.event,
-      onDidChangePollError: errorEmitter.event,
+      onDidChangePollStatus: errorEmitter.event,
     };
     const item = {
       text: '',
@@ -687,7 +689,13 @@ describe('ZuulStatusBar offline state', () => {
     expect(item.command).toBe('zuul.refresh');
     expect(item.show).toHaveBeenCalled();
 
-    pollError = undefined;
+    pollStatus = { kind: 'rate-limited', until: lastSuccessAt + 60_000, message: 'slow down' };
+    errorEmitter.fire();
+    expect(item.text).toBe('$(warning) Zuul: offline');
+    expect(item.command).toBe('zuul.refresh');
+    expect(item.tooltip).toContain('slow down');
+
+    pollStatus = { kind: 'active' };
     errorEmitter.fire();
     expect(item.command).toBe('workbench.view.extension.zuul-explorer');
     expect(item.hide).toHaveBeenCalled();

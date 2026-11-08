@@ -181,3 +181,11 @@ export function onSettingsChanged(cb: (settings: ZuulSettings) => void): vscode.
     }
   });
 }
+
+export function onTokenSettingsChanged(cb: () => void): vscode.Disposable {
+  return vscode.workspace.onDidChangeConfiguration((event) => {
+    if (event.affectsConfiguration('zuul.tokens') || event.affectsConfiguration('zuul.tokenFile')) {
+      cb();
+    }
+  });
+}

@@ -144,7 +144,12 @@ describe('PrGateTreeDataProvider', () => {
   });
 
   it('sends no Zuul requests and is not ready when the snapshot says Zuul failed', async () => {
-    const t = setup({ kind: 'unavailable', reason: 'needs-token', message: 'HTTP 401' });
+    const t = setup({
+      kind: 'unavailable',
+      reason: 'needs-token',
+      message: 'HTTP 401',
+      stopped: true,
+    });
 
     const report = await currentReport(t.provider);
 
@@ -173,7 +178,12 @@ describe('PrGateTreeDataProvider', () => {
     expect(t.getChangeStatus).toHaveBeenCalledTimes(1);
 
     t.advance(1);
-    t.setZuulState({ kind: 'unavailable', reason: 'needs-token', message: 'HTTP 401' });
+    t.setZuulState({
+      kind: 'unavailable',
+      reason: 'needs-token',
+      message: 'HTTP 401',
+      stopped: true,
+    });
 
     const report = await currentReport(t.provider);
     expect(report.ready).toBe(false);

@@ -2,13 +2,20 @@ import * as vscode from 'vscode';
 import { type PullRequest } from '../clients/gheTypes';
 import { type Build, type ChangeStatus } from '../clients/zuulTypes';
 import { HttpError } from '../clients/http';
+import { RateLimitedError } from '../clients/rateLimit';
 import { type ResolvedContext, type ZuulProblem } from '../context/zuulContext';
 import { type Logger } from '../util/logger';
-import { nextPollDelayMs } from './pollSchedule';
+import { nextPollDelayMs, RETRY_DELAYS_MS } from './pollSchedule';
 
-export type ZuulAvailability =
-  | { kind: 'ok' }
-  | { kind: 'unavailable'; reason: 'needs-token' | 'no-access' | 'unreachable'; message: string };
+export interface ZuulUnavailable {
+  kind: 'unavailable';
+  reason: 'needs-token' | 'no-access' | 'unreachable';
+  message: string;
+  /** True once the poll has given up on Zuul, and when the context has no Zuul at all. */
+  stopped: boolean;
+}
+
+export type ZuulAvailability = { kind: 'ok' } | ZuulUnavailable;
 
 export interface PrSnapshot {
   pr: PullRequest;
@@ -18,18 +25,24 @@ export interface PrSnapshot {
   zuul: ZuulAvailability;
 }
 
-function zuulUnavailable(err: unknown): ZuulAvailability {
+function zuulUnavailable(err: unknown, stopped: boolean): ZuulUnavailable {
   const message = err instanceof Error ? err.message : String(err);
   const status = err instanceof HttpError ? err.status : undefined;
   const reason = status === 401 ? 'needs-token' : status === 403 ? 'no-access' : 'unreachable';
-  return { kind: 'unavailable', reason, message };
+  return { kind: 'unavailable', reason, message, stopped };
 }
 
-export interface PollError {
-  message: string;
-  at: number;
-  lastSuccessAt?: number;
-}
+export type PollStatus =
+  | { kind: 'active' }
+  | { kind: 'no-pr' }
+  | { kind: 'rate-limited'; until: number; message: string }
+  | {
+      kind: 'stopped';
+      reason: 'auth' | 'failed';
+      message: string;
+      at: number;
+      lastSuccessAt?: number;
+    };
 
 export interface ZuulContextSource {
   readonly current: ResolvedContext | undefined;
@@ -57,7 +70,7 @@ const DEFAULT_POLL_INTERVAL_MS = 60_000;
 
 export class PrTracker implements vscode.Disposable {
   private readonly emitter = new vscode.EventEmitter<PrSnapshot | undefined>();
-  private readonly pollErrorEmitter = new vscode.EventEmitter<void>();
+  private readonly pollStatusEmitter = new vscode.EventEmitter<void>();
   private readonly disposables: vscode.Disposable[] = [];
   private readonly ctx: ZuulContextSource;
   private readonly logger: Logger;
@@ -68,7 +81,11 @@ export class PrTracker implements vscode.Disposable {
   private readonly getPollIntervalMs: () => number;
 
   private _snapshot: PrSnapshot | undefined;
-  private _pollError: PollError | undefined;
+  private _pollStatus: PollStatus = { kind: 'active' };
+  private gheFailures = 0;
+  private zuulFailures = 0;
+  /** Set once Zuul has stopped: `poll` then skips Zuul and reuses this result. */
+  private stoppedZuul: ZuulUnavailable | undefined;
   private lastSuccessAt: number | undefined;
   private currentPr: PullRequest | undefined;
   private fastUntil: number | undefined;
@@ -85,7 +102,7 @@ export class PrTracker implements vscode.Disposable {
   private disposed = false;
 
   readonly onDidChange: vscode.Event<PrSnapshot | undefined> = this.emitter.event;
-  readonly onDidChangePollError: vscode.Event<void> = this.pollErrorEmitter.event;
+  readonly onDidChangePollStatus: vscode.Event<void> = this.pollStatusEmitter.event;
 
   constructor(ctx: ZuulContextSource, logger: Logger, options: PrTrackerOptions = {}) {
     this.getPollIntervalMs = options.getPollIntervalMs ?? (() => DEFAULT_POLL_INTERVAL_MS);
@@ -117,16 +134,23 @@ export class PrTracker implements vscode.Disposable {
     return this._snapshot;
   }
 
-  get pollError(): PollError | undefined {
-    return this._pollError;
+  get pollStatus(): PollStatus {
+    return this._pollStatus;
   }
 
-  private setPollError(next: PollError | undefined): void {
-    if (next === undefined && this._pollError === undefined) {
+  private setPollStatus(next: PollStatus): void {
+    if (next.kind === this._pollStatus.kind && (next.kind === 'active' || next.kind === 'no-pr')) {
       return;
     }
-    this._pollError = next;
-    this.pollErrorEmitter.fire();
+    this._pollStatus = next;
+    this.pollStatusEmitter.fire();
+  }
+
+  private resetPollState(): void {
+    this.gheFailures = 0;
+    this.zuulFailures = 0;
+    this.stoppedZuul = undefined;
+    this.setPollStatus({ kind: 'active' });
   }
 
   watchFor(ms: number): void {
@@ -144,6 +168,7 @@ export class PrTracker implements vscode.Disposable {
       return;
     }
     this.clearPendingTimer();
+    this.resetPollState();
     await this.poll(this.sessionSeq);
   }
 
@@ -170,8 +195,22 @@ export class PrTracker implements vscode.Disposable {
     if (!this.ctx.current?.branch) {
       return;
     }
-    const delay = this.currentDelayMs();
+    const status = this._pollStatus.kind;
+    if (status === 'stopped') {
+      return;
+    }
+    if (status === 'rate-limited') {
+      this.scheduleNext(this.sessionSeq);
+      return;
+    }
     const elapsed = this.lastPollAt === undefined ? Infinity : this.now() - this.lastPollAt;
+    if (status === 'no-pr') {
+      if (elapsed >= this.getPollIntervalMs()) {
+        void this.poll(this.sessionSeq);
+      }
+      return;
+    }
+    const delay = this.currentDelayMs();
     if (elapsed >= delay) {
       void this.poll(this.sessionSeq);
     } else {
@@ -191,7 +230,7 @@ export class PrTracker implements vscode.Disposable {
     this.lastPollAt = undefined;
     this.hasEmittedForContext = false;
     this.lastSuccessAt = undefined;
-    this.setPollError(undefined);
+    this.resetPollState();
 
     const currentCtx = this.ctx.current;
     const contextKey = currentCtx
@@ -234,8 +273,25 @@ export class PrTracker implements vscode.Disposable {
     }
   }
 
+  /** The delay while polling is active: a retry delay after a failure, otherwise the schedule. */
   private currentDelayMs(): number {
+    const failures = this.gheFailures || this.zuulFailures;
+    if (failures > 0) {
+      return RETRY_DELAYS_MS[failures - 1];
+    }
     return nextPollDelayMs(this._snapshot, this.getPollIntervalMs(), this.fastUntil, this.now());
+  }
+
+  /** How long until the next poll, or `undefined` when polling has stopped. */
+  private nextTimerDelayMs(): number | undefined {
+    switch (this._pollStatus.kind) {
+      case 'active':
+        return this.currentDelayMs();
+      case 'rate-limited':
+        return Math.max(0, this._pollStatus.until - this.now());
+      default:
+        return undefined;
+    }
   }
 
   private scheduleNext(seq: number, delayOverride?: number): void {
@@ -249,7 +305,10 @@ export class PrTracker implements vscode.Disposable {
       return;
     }
 
-    const delay = delayOverride ?? this.currentDelayMs();
+    const delay = delayOverride ?? this.nextTimerDelayMs();
+    if (delay === undefined) {
+      return;
+    }
     const token = this.timerSeq;
     this.timerHandle = this.setTimer(() => {
       if (this.disposed || token !== this.timerSeq || seq !== this.sessionSeq) {
@@ -292,13 +351,14 @@ export class PrTracker implements vscode.Disposable {
         return;
       }
       this.currentPr = pr;
+      this.gheFailures = 0;
 
       if (!pr) {
         this.logger.info(
           `[Poll] No open PR found for branch="${currentCtx.branch}" on ${currentCtx.owner}/${currentCtx.repo}`,
         );
         this.lastSuccessAt = this.now();
-        this.setPollError(undefined);
+        this.setPollStatus({ kind: 'no-pr' });
         this.updateSnapshot(undefined);
         return;
       }
@@ -314,12 +374,16 @@ export class PrTracker implements vscode.Disposable {
                 kind: 'unavailable',
                 reason: 'needs-token',
                 message: 'Zuul did not accept the token',
+                stopped: true,
               }
             : {
                 kind: 'unavailable',
                 reason: 'unreachable',
                 message: 'Zuul could not be reached',
+                stopped: true,
               };
+      } else if (this.stoppedZuul) {
+        zuulState = this.stoppedZuul;
       } else {
         try {
           this.logger.info(
@@ -343,6 +407,7 @@ export class PrTracker implements vscode.Disposable {
               return;
             }
           }
+          this.zuulFailures = 0;
         } catch (zuulErr) {
           if (this.disposed || seq !== this.sessionSeq || pollRunId !== this.pollRunSeq) {
             return;
@@ -352,7 +417,7 @@ export class PrTracker implements vscode.Disposable {
           );
           statuses = [];
           builds = [];
-          zuulState = zuulUnavailable(zuulErr);
+          zuulState = this.recordZuulFailure(zuulErr);
         }
       }
 
@@ -364,7 +429,7 @@ export class PrTracker implements vscode.Disposable {
         zuul: zuulState,
       };
       this.lastSuccessAt = this.now();
-      this.setPollError(undefined);
+      this.setPollStatus({ kind: 'active' });
       this.updateSnapshot(snapshot, true);
     } catch (err) {
       if (this.disposed || seq !== this.sessionSeq || pollRunId !== this.pollRunSeq) {
@@ -374,17 +439,54 @@ export class PrTracker implements vscode.Disposable {
         `[Poll] Failed to poll PR status for branch="${currentCtx.branch}" on ${currentCtx.owner}/${currentCtx.repo} (PR #${this.currentPr?.number ?? 'none'})`,
         err,
       );
-      this.setPollError({
-        message: err instanceof Error ? err.message : String(err),
-        at: this.now(),
-        ...(this.lastSuccessAt !== undefined ? { lastSuccessAt: this.lastSuccessAt } : {}),
-      });
+      this.recordGitHubFailure(err);
     } finally {
       if (!this.disposed && seq === this.sessionSeq && pollRunId === this.pollRunSeq) {
         this.polling = false;
         this.scheduleNext(seq);
       }
     }
+  }
+
+  private recordGitHubFailure(err: unknown): void {
+    const message = err instanceof Error ? err.message : String(err);
+    if (err instanceof RateLimitedError) {
+      // Never sooner than the first retry, so `Retry-After: 0` or a past reset time can't loop.
+      const until = Math.max(err.retryAt, this.now() + RETRY_DELAYS_MS[0]);
+      this.setPollStatus({ kind: 'rate-limited', until, message });
+      return;
+    }
+    const stoppedAt = {
+      message,
+      at: this.now(),
+      ...(this.lastSuccessAt !== undefined ? { lastSuccessAt: this.lastSuccessAt } : {}),
+    };
+    if (err instanceof HttpError && [401, 403, 404].includes(err.status)) {
+      this.setPollStatus({ kind: 'stopped', reason: 'auth', ...stoppedAt });
+      return;
+    }
+    this.gheFailures += 1;
+    if (this.gheFailures > RETRY_DELAYS_MS.length) {
+      this.setPollStatus({ kind: 'stopped', reason: 'failed', ...stoppedAt });
+      return;
+    }
+    // A lookup that fails after a rate limit or "no PR" is retried like any other failure.
+    this.setPollStatus({ kind: 'active' });
+  }
+
+  private recordZuulFailure(err: unknown): ZuulUnavailable {
+    const status = err instanceof HttpError ? err.status : undefined;
+    const refused = status === 401 || status === 403;
+    if (!refused) {
+      this.zuulFailures += 1;
+    }
+    const stopped = refused || this.zuulFailures > RETRY_DELAYS_MS.length;
+    const state = zuulUnavailable(err, stopped);
+    if (stopped) {
+      this.stoppedZuul = state;
+      this.zuulFailures = 0;
+    }
+    return state;
   }
 
   dispose(): void {
@@ -395,6 +497,6 @@ export class PrTracker implements vscode.Disposable {
     }
     this.disposables.length = 0;
     this.emitter.dispose();
-    this.pollErrorEmitter.dispose();
+    this.pollStatusEmitter.dispose();
   }
 }

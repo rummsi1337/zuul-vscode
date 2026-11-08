@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   onSettingsChanged,
+  onTokenSettingsChanged,
   readGheHost,
   readSettings,
   readWorkspaceSettings,
@@ -220,6 +221,30 @@ describe('settings', () => {
         url: 'https://zuul.internal',
       }),
     );
+  });
+
+  it('notifies onTokenSettingsChanged only for zuul.tokens and zuul.tokenFile', () => {
+    let capturedListener: Listener<ConfigurationChangeEvent> | undefined;
+    workspace.onDidChangeConfiguration.mockImplementationOnce((listener) => {
+      capturedListener = listener;
+      return new Disposable();
+    });
+    const changed = (setting: string): ConfigurationChangeEvent => ({
+      affectsConfiguration: (section) => section === 'zuul' || section === setting,
+    });
+
+    const cb = vi.fn();
+    const disposable = onTokenSettingsChanged(cb);
+    expect(disposable).toBeInstanceOf(Disposable);
+
+    capturedListener?.(changed('zuul.pollIntervalSeconds'));
+    expect(cb).not.toHaveBeenCalled();
+
+    capturedListener?.(changed('zuul.tokens'));
+    expect(cb).toHaveBeenCalledTimes(1);
+
+    capturedListener?.(changed('zuul.tokenFile'));
+    expect(cb).toHaveBeenCalledTimes(2);
   });
 });
 
