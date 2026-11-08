@@ -55,7 +55,8 @@ describe('PrGateTreeDataProvider ids', () => {
       createFakeLogger(),
     );
 
-    const [header, ...prs] = await provider.getChildren();
+    const [header, ...rest] = await provider.getChildren();
+    const prs = rest.filter((n) => n.kind === 'pr');
 
     expect(prs.map((n) => provider.getTreeItem(n).id)).toEqual([
       'gate/pr/org/repo#1',

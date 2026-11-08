@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { EventEmitter } from 'vscode';
+import { EventEmitter, workspace } from 'vscode';
 import { type PullRequest, type Review } from '../../src/clients/gheTypes';
 import { type ResolvedContext } from '../../src/context/zuulContext';
 import { type GateReport, type GateRules } from '../../src/services/gateReadiness';
@@ -138,5 +138,41 @@ describe('PrGateTreeDataProvider', () => {
     t.moveTo(next);
     await currentReport(t.provider);
     expect(t.listReviews).toHaveBeenCalledTimes(2);
+  });
+
+  it('shows a Triggers row with trigger rows that post the comment', async () => {
+    const t = setup();
+    const nodes = await t.provider.getChildren();
+    const triggers = nodes.find((n) => n.kind === 'triggers');
+    expect(triggers).toBeDefined();
+    expect(t.provider.getTreeItem(triggers!).id).toBe('gate/triggers');
+    const [row] = await t.provider.getChildren(triggers);
+    const item = t.provider.getTreeItem(row);
+    expect(item.label).toBe('Recheck');
+    expect(item.description).toBe('recheck');
+    expect(item.iconPath).toMatchObject({ id: 'refresh' });
+    expect(item.command?.command).toBe('zuul.postTrigger');
+    expect(item.command?.arguments).toEqual(['recheck']);
+    expect(item.id).toBeUndefined();
+  });
+
+  it('fires onDidChangeTreeData when zuul settings change', () => {
+    const t = setup();
+    const listener = vi.fn();
+    t.provider.onDidChangeTreeData(listener);
+    const calls = vi.mocked(workspace.onDidChangeConfiguration).mock.calls;
+    const handler = calls[calls.length - 1][0];
+    handler({ affectsConfiguration: (s: string) => s === 'zuul' });
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows no Triggers node without a snapshot', async () => {
+    const provider = new PrGateTreeDataProvider(
+      { snapshot: undefined, onDidChange: new EventEmitter<PrSnapshot | undefined>().event },
+      { current: undefined },
+      () => RULES,
+      createFakeLogger(),
+    );
+    expect(await provider.getChildren()).toEqual([]);
   });
 });

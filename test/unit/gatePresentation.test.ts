@@ -93,3 +93,28 @@ describe('buildGateChildren urls', () => {
     expect(nodes[2]).not.toHaveProperty('url');
   });
 });
+
+describe('buildGateChildren triggers', () => {
+  const triggers = [
+    { label: 'Recheck', comment: 'recheck' },
+    { label: 'Rebuild', comment: 'rebuild', icon: 'sync' },
+  ];
+
+  it('puts the header and PR nodes before the Triggers node', () => {
+    const nodes = buildGateChildren(undefined, report, triggers);
+    expect(nodes.map((n) => n.kind)).toEqual(['header', 'pr', 'pr', 'triggers']);
+  });
+
+  it('adds no Triggers node for an empty list', () => {
+    const nodes = buildGateChildren(undefined, report, []);
+    expect(nodes.some((n) => n.kind === 'triggers')).toBe(false);
+  });
+
+  it('lists rows in configured order with the default icon and keeps a configured icon', () => {
+    const rows = buildGateChildren({ kind: 'triggers', triggers }, report);
+    expect(rows).toEqual([
+      { kind: 'trigger', label: 'Recheck', comment: 'recheck', icon: 'comment' },
+      { kind: 'trigger', label: 'Rebuild', comment: 'rebuild', icon: 'sync' },
+    ]);
+  });
+});
