@@ -92,7 +92,7 @@ Good points to build, install, and manually test the extension:
 | Checkpoint | After Step | What works |
 |---|---|---|
 | **1 — PR Status & Dependencies** | Step 14 | PAT / `gh` CLI auth (`zuul.auth.method` defaults to `auto`: `pat`, then `gh-cli`), tenant auto-discovery, status bar, **Builds** tree, trigger comments (`recheck`), and **Dependencies** (`Depends-On` / `Needed-By`). **Gate Readiness** is still blank. |
-| **2 — Full Sidebar (recommended first install)** | Step 17 | All 3 sidebar views live: adds **Gate Readiness** checklist and blocker explanations across the PR and its upstream `Depends-On` chain. |
+| **2 — Full Sidebar (recommended first install)** | Step 17 | All 3 sidebar views live: adds **Gate Readiness** checklist and blocker explanations across the PR and its upstream `Depends-On` chain. Full live acceptance test: Step 17a. |
 | **3 — In-Editor Log Inspection** | Step 21 | Failed Ansible task view, pinned artifacts, full log manifest browser, clickable stack traces (`File "...", line N` / `path:line`), and live WebSocket console streaming. |
 | **4 — `.zuul.yaml` Authoring** | Step 28 | JSON schema validation, autocomplete, hover, go-to-definition, effective job preview CodeLens, `files` / `irrelevant-files` diff simulator, and RSA-OAEP secret encryption. |
 | **5 — OAuth Sign-In** | Step 31 | One-click GitHub Enterprise OAuth login (VS Code built-in provider + OAuth Device Flow) as the default auth method. |
@@ -682,7 +682,569 @@ Good points to build, install, and manually test the extension:
 - **Done when:**
   - `npm run check` passes
 
-> **Checkpoint 2 (Full Sidebar — recommended first install):** All three sidebar views (**Gate Readiness**, **Dependencies**, **Builds**) are live. Run `npm run package && code --install-extension zuul-vscode-0.0.1.vsix` to test the full PR workflow.
+> **Checkpoint 2 (Full Sidebar — recommended first install):** All three sidebar views (**Gate Readiness**, **Dependencies**, **Builds**) are live. Run `npm run package && code --install-extension zuul-vscode-0.0.1.vsix` to test the full PR workflow. Step 17a is the full acceptance test for this checkpoint.
+
+### Step 17a: Checkpoint 2 user acceptance test (live, with the user)
+
+- **Tier:** self (needs the user and a live Zuul and GHE)
+- **Risk:** medium (the user posts real comments and edits real PR bodies; no code changes, so no
+  reviewer pass)
+- **Status:** todo
+- **Files:** this step only (the **Result** line of each test)
+- **Start only when:** every step in `.plan/zuul-vscode-review.md` is `done`. The tests describe
+  the intended behaviour after those fixes, not the code as of 2026-11-08.
+- **Do:** run Preparation, then UAT-01 to UAT-35 in order, one test at a time.
+- **Don't:**
+  - Claude only reads from GHE and Zuul. Every write goes through the extension, by the user, on
+    the fixtures below.
+  - Don't fix code during the run. Record the failure and continue, unless it blocks later tests.
+  - Don't write hostnames, org or repo names, PR numbers or tokens in this file. The repo is on
+    GitHub. Use the fixture names.
+  - Not tested here: `zuul.pinnedArtifacts` (Step 19), `zuul.ghe.oauthClientId` (Step 29).
+- **Done when:**
+  - `npm run check` passed on the build under test
+  - Every test's **Result** is `pass`, `pass (user only)`, or `skip` with the user's agreement
+  - The user has signed off the checkpoint. Step 18 does not start before that
+
+Failures: after UAT-35, Claude lists them and the user picks what to fix. Each fix goes into
+`.plan/zuul-vscode-review.md` as a new step. Then repackage, reinstall, and re-run the failed test
+plus any test that uses the same code.
+
+#### How a test runs
+
+Claude cannot see the test window. It is another VS Code window, on a real repository in another
+workspace.
+
+1. Claude notes the time (`date -u +%FT%TZ`) and posts the test: the feature, **Should**,
+   **Should not** and **User**.
+2. The user does it in the test window and replies `pass`, `fail: <what happened>` or
+   `skip: <why>`.
+3. Claude runs the **Verify** and shows expected and actual values side by side.
+4. Claude sets **Result** to `pass`, `pass (user only)`, `fail: <one line>` or `skip: <why>`.
+
+A test passes only if the user says `pass` and **Verify** agrees. If they disagree, it is a `fail`
+with both sides noted. `pass (user only)` is for checks tagged `USER`.
+
+#### How Claude verifies
+
+| Tag | Source | How |
+|---|---|---|
+| `LOG` | The `Zuul` output channel, on disk | Read the log file (below) |
+| `ZUUL` | Zuul REST API | `curl`, no token |
+| `GHE` | GHE REST API | `curl -sS -K ~/.zuul-uat-curlrc <url>` |
+| `SHOT` | A screenshot from the user | Compare it with `ZUUL` and `GHE` data |
+| `USER` | Nothing outside the window shows it (modals, toasts) | The user's report only |
+
+`LOG` details (path checked 2026-11-08 on macOS):
+
+- Each window writes its own log, Claude's window included. Find the test window's file with:
+  ```sh
+  ls -t ~/Library/Application\ Support/Code/logs/*/window*/exthost/output_logging_*/*-Zuul.log |
+    while read -r f; do grep -q "context: .*$OWNER/$REPO@" "$f" && { echo "$f"; break; }; done
+  ```
+- For a window with no repo, take the newest `*-Zuul.log`. A reload starts a new file, so find it
+  again after each reload.
+- Timestamps are UTC. Only lines after the test's start time count.
+- Match the message text, not the `[tag]`. Review Step 11 moves some tags.
+
+`GHE` token:
+
+- The user creates `~/.zuul-uat-curlrc` (`chmod 600`) with one line:
+  `header = "Authorization: Bearer <token>"`. Use the lowest-scope token that can read the PRs.
+- Claude never prints that file, never reads the PAT from VS Code's secret storage or the Keychain,
+  and never asks for a token in chat.
+- If Claude's shell cannot reach GHE or Zuul (sandbox, VPN, no token), Claude gives the user one
+  `curl` command to run in their own terminal, and the user pastes the output.
+
+Endpoints:
+
+- `ZUUL`, under `<zuul>/api`: `tenants`, `tenant/<t>/projects`, `tenant/<t>/status`,
+  `tenant/<t>/status/change/<pr>,<sha>`,
+  `tenant/<t>/builds?project=<o/r>&change=<pr>&patchset=<sha>&limit=50`.
+- `GHE`, base `https://<host>/api/v3` (`https://api.github.com` on github.com), under
+  `repos/<o>/<r>`: `pulls/<n>` (body, draft, labels, `head.sha`, `mergeable_state`, `updated_at`),
+  `pulls?state=open&head=<o>:<branch>`, `pulls/<n>/reviews`, `commits/<sha>/status`,
+  `commits/<sha>/check-runs`, `issues/<n>/comments?per_page=100`,
+  `branches/<b>/protection/required_status_checks` (may be refused for non-admins).
+
+#### Rules for the test window
+
+- **Stay focused:** polling stops when the test window loses focus, and returning forces a refresh.
+  Switching to Claude's window hides timing bugs and starves the 45 s watch. In tests marked
+  **Stay focused**, the user stays in the test window until the test ends, then reports.
+- Keep the Zuul sidebar open. Gate Readiness makes most of the GHE calls that `LOG` shows.
+- Change settings at User level, so the real repo gets no `.vscode/settings.json`.
+- After changing a PR on GHE, click Refresh unless the test says to wait. PR data is otherwise
+  re-read only every 4th poll.
+- Expected texts come from the review plan. Different wording with the same meaning is a pass;
+  correct the text here.
+- Tests marked **Writes** change a real PR or start a real Zuul run. Claude says so before the test.
+
+#### Fixtures
+
+The user supplies these. They stay in the chat and the session scratchpad, never in the repo.
+
+| Name | What it is | Used by |
+|---|---|---|
+| `REPO` | The real repository in the test window: `owner/repo`, local path, GHE host | All |
+| `ZUUL_URL`, `TENANT` | Zuul base URL and the tenant that holds `REPO` | All |
+| `PR-A` | The user's open PR, head branch in `REPO` itself (not a fork, lookup uses `owner:branch`). Safe to comment on, retrigger, label, draft and edit. Body has several lines, last saved in the browser so it has CRLF endings | UAT-14 on |
+| `PR-B` | The user's open PR in the tenant, safe to draft, close and reopen | UAT-24 on |
+| `PR-C` | A merged PR in the tenant | UAT-25, 27, 32 |
+| `PR-D` | An open PR with `Depends-On: <PR-A URL>` in its body | UAT-26, 27 |
+| `PR-X` | An open PR on the same host, in a repo outside the tenant | UAT-26 |
+| `PR-READY` | An open PR in `REPO`, approved with a green Zuul check, head branch can be checked out. Read-only use | UAT-27, 33 |
+| `NO_PR_BRANCH` | A local branch with no open PR | UAT-14 |
+| `PLAIN_FOLDER` | A folder with no git remote | UAT-03 |
+| `OTHER_REPO` | A repo with a GitHub remote, in no Zuul tenant. This repo (`zuul-vscode`) works | UAT-06 |
+
+#### Preparation
+
+1. Claude: `grep -c 'Status:\*\* todo' .plan/zuul-vscode-review.md` must print `0`.
+2. Claude: `npm run check` must pass.
+3. Claude, after the user's go-ahead: `npm run package`, then
+   `code --install-extension zuul-vscode-0.0.1.vsix --force`. Without `--force` the same version
+   number is not replaced.
+4. User: supplies the fixtures and creates `~/.zuul-uat-curlrc`.
+5. Claude: saves `PR-A`'s body as a baseline, `jq -j .body` into a scratchpad file. UAT-28 and
+   UAT-35 compare against it byte for byte.
+
+#### Part A: install and setup states
+
+##### UAT-01: Install, sidebar and activation (Steps 1, 2)
+
+- **Should:** Zuul icon in the activity bar. The sidebar has **Gate Readiness**, **Dependencies**
+  and **Builds**. The Output panel has a `Zuul` channel.
+- **Should not:** Show an error toast at startup.
+- **User:** Reload the test window. Open the Zuul sidebar and Output → `Zuul`.
+- **Verify:** `code --list-extensions --show-versions` lists `zuul-vscode-dev.zuul-vscode@0.0.1`.
+  The `.vsix` is newer than the last commit. `LOG`: `activated` after the start time.
+- **Result:** todo
+
+##### UAT-02: Settings (Step 2, review Steps 7, 11)
+
+- **Should:** Settings → Zuul lists all 12 settings of Step 2's table. `zuul.auth.method` defaults
+  to `auto`. `zuul.gate.gateStatusChecks` defaults to `{tenant}/gate`. `zuul.ghe.oauthClientId`
+  says "Not used yet".
+- **Should not:** Offer `oauth` in `zuul.auth.method`.
+- **User:** Open Settings and search `zuul`.
+- **Verify:** `jq` over `~/.vscode/extensions/zuul-vscode-dev.zuul-vscode-0.0.1/package.json` shows
+  the same keys and defaults. This also proves the install contains the review fixes.
+- **Result:** todo
+
+##### UAT-03: No folder, no git remote (Step 7, review Step 10)
+
+- **Should:** Empty window: all three views say `No folder is open in this window.` with **Open
+  Folder**. `PLAIN_FOLDER`: all three say `No GitHub or GitHub Enterprise git remote found in this
+  folder.`
+- **Should not:** Show two messages in one view. Show a status bar item.
+- **User:** Open a new empty window and take a screenshot. Open `PLAIN_FOLDER` and take another.
+- **Verify:** `SHOT`. `LOG` (newest file): `No git repository with a GitHub remote found`.
+- **Result:** todo
+
+##### UAT-04: `zuul.url` missing (Step 7, review Steps 10, 11)
+
+- **Should:** All three views say `Set zuul.url in settings to connect to Zuul CI.` with **Configure
+  Zuul URL**, which opens that setting. One toast `Set zuul.url to enable Zuul CI` with **Open
+  Settings**, without literal backticks.
+- **Should not:** Repeat the toast in the same window. Show a status bar item.
+- **User:** Clear `zuul.url` and `zuul.tenant`, reload the test window, click the button.
+- **Verify:** `LOG`: `Setting "zuul.url" is not configured`. `USER` for the toast.
+- **Result:** todo
+
+##### UAT-05: Zuul unreachable (review Step 10)
+
+- **Should:** With `zuul.url` set to `https://zuul.invalid`, all three views say `Could not reach
+  Zuul at the configured URL. Check zuul.url and your network, then Refresh.` The **Refresh** link
+  works.
+- **Should not:** Say `Could not resolve a Zuul tenant`. That is only for a Zuul that answered.
+- **User:** Set the URL, wait 5 s, take a screenshot, click **Refresh**.
+- **Verify:** `SHOT`. `LOG`: an error for the tenant lookup with a network reason.
+- **Result:** todo
+
+##### UAT-06: Repo not in any tenant (Step 7, review Steps 8, 10)
+
+- **Should:** With the real `zuul.url`, `OTHER_REPO` shows `Could not resolve a Zuul tenant for
+  this repository.` with a settings link, in all three views.
+- **Should not:** Say `Could not reach Zuul`.
+- **User:** Set the real `zuul.url` and open `OTHER_REPO`.
+- **Verify:** `LOG`: `Could not resolve tenant for`. `ZUUL`: the repo is in no tenant's `projects`.
+- **Result:** todo
+
+##### UAT-07: Tenant discovery and override (Step 7, review Step 8)
+
+- **Should:** With `zuul.tenant` empty, the tenant that holds `REPO` is found. Setting
+  `zuul.tenant` to that name gives the same result.
+- **Should not:** Pick a tenant that does not hold `REPO`.
+- **User:** Open the test window on `PR-A`'s branch and reload. Set `zuul.tenant`, then clear it.
+- **Verify:** `LOG`: `Resolved context: tenant=<t> project=<o/r>`. `ZUUL`: `tenant/<t>/projects`
+  contains `REPO`.
+- **Result:** todo
+
+##### UAT-08: GHE host override (Steps 2, 3, review Step 8)
+
+- **Should:** `zuul.ghe.host` set to `https://<ghe host>/some/path` is treated as the bare host.
+  The views still load.
+- **Should not:** Fail because of the scheme or path.
+- **User:** Set it, reload the window, check the views, clear it.
+- **Verify:** `LOG`: `[Git] context: <ghe host>/<o>/<r>@<branch>`.
+- **Result:** todo
+
+#### Part B: sign-in
+
+##### UAT-09: No token (Steps 6, 17, review Steps 8, 10)
+
+- **Should:** `Zuul: Clear GitHub Enterprise PAT` confirms it. All three views say `No GitHub token
+  available, so the pull request could not be loaded.` with **Set GitHub Enterprise PAT**.
+- **Should not:** Show an authentication error toast. No token was sent.
+- **User:** Run the command and wait 1 minute.
+- **Verify:** `LOG`: `Cleared PAT for <host>` and `No token available for <host> (method=auto)`.
+  `USER` for no toast.
+- **Result:** todo
+
+##### UAT-10: Invalid PAT is rejected (Step 6)
+
+- **Should:** The input is masked. Toast `Invalid Personal Access Token for <host>.` The views stay
+  in the no-token state.
+- **Should not:** Store it.
+- **User:** `Zuul: Set GitHub Enterprise PAT`, enter `not-a-real-token`.
+- **Verify:** `LOG`: no `Stored PAT` after the start time. `not-a-real-token` appears 0 times.
+- **Result:** todo
+
+##### UAT-11: Valid PAT (Steps 4, 6, review Step 8)
+
+- **Should:** A confirmation appears and PR data loads within seconds, with no manual refresh.
+- **Should not:** Write the token to the log.
+- **User:** Enter the real PAT in the input box, not in the chat.
+- **Verify:** `LOG`: `Stored PAT for <host>`, `Resolved token for <host> using pat`.
+  `grep -cE 'gh[pousr]_[A-Za-z0-9]|github_pat_'` on the log prints `0`.
+- **Result:** todo
+
+##### UAT-12: Auth method setting (Step 6, review Step 11)
+
+- **Should:** `pat` uses only the PAT. `gh-cli` uses only `gh`. `auto` tries the PAT, then `gh`.
+  Without `gh` (absent as of 2026-11-08, re-check with `which gh`), `gh-cli` gives the no-token
+  state.
+- **Should not:** Fall back to the PAT when pinned to `gh-cli`. Show an `ENOENT` error.
+- **User:** Set each value, click Refresh, say which one is active. End on `auto`.
+- **Verify:** `LOG`: `Resolved token for <host> using pat`, and for `gh-cli` either
+  `No token available for <host> (method=gh-cli)` or `using gh-cli`.
+- **Result:** todo
+
+##### UAT-13: Revoked token (Step 7, review Step 8)
+
+- **Should:** One toast `GitHub Enterprise authentication failed for <host>.` with **Sign in**,
+  which opens the PAT prompt. The stored token stays.
+- **Should not:** Repeat the toast on every poll. Delete the stored PAT.
+- **Care:** Stay focused.
+- **User:** Create a throwaway PAT on GHE, set it in the extension, delete it on GHE. Stay 2
+  minutes and click Refresh twice. Count the toasts. Click **Sign in** and enter the real PAT.
+- **Verify:** `LOG`: `Unauthorized for <host>`, later lines still say `using pat`, no `Cleared PAT`
+  after the start time. `USER` for the toast count.
+- **Result:** todo
+
+#### Part C: read-only views
+
+##### UAT-14: The PR follows the branch (Steps 3, 4, 8, review Steps 9, 10, 11)
+
+- **Should:** On `PR-A`'s branch, the status bar tooltip is `PR #<A>: <title>`. On `NO_PR_BRANCH`,
+  within seconds, the status bar item hides, `PR-A`'s data is gone, and the views say `No pull
+  request found for the current branch.` Back on `PR-A`'s branch, the data returns.
+- **Should not:** On `NO_PR_BRANCH`, list Post Trigger, Add Depends-On or the other PR commands in
+  the Command Palette, or show any view toolbar button except Refresh.
+- **Care:** Stay focused.
+- **User:** `git switch` both ways in the test window's terminal.
+- **Verify:** `LOG`: one `[Git] context: …@<branch>` per switch. `GHE`:
+  `pulls?state=open&head=<o>:<branch>` returns `PR-A`, then nothing.
+- **Result:** todo
+
+##### UAT-15: Status bar at rest (Steps 5, 9, review Step 11)
+
+- **Should:** The text matches Zuul for `PR-A`'s head: `Zuul <pipeline>: PASSED`, `Zuul <pipeline>:
+  <n> failed` or `Zuul: no builds`. Clicking it opens the Zuul sidebar.
+- **Should not:** Count a non-voting failure as failed.
+- **User:** Read the text, hover over it, click it.
+- **Verify:** `GHE`: `head.sha`. `ZUUL`: builds for that SHA, latest per job, voting failures.
+- **Result:** todo
+
+##### UAT-16: Builds tree (Steps 5, 10, review Step 8)
+
+- **Should:** One expanded node per pipeline. Jobs sorted failures, running, queued, success, and
+  alphabetically within each. Icons match the state. The description is the result or elapsed time.
+  Clicking a job with a log opens the browser. A PR with no builds, if one exists, says `No Zuul
+  builds for this pull request yet.`
+- **Should not:** Show builds of an older commit. List a job twice in one pipeline.
+- **User:** Take a screenshot and click one job.
+- **Verify:** `SHOT` against `ZUUL` builds. `USER` for the browser opening.
+- **Result:** todo
+
+##### UAT-17: Polling pauses without focus (Step 8)
+
+- **Should:** Requests stop while the window is unfocused and resume at once on return.
+- **Should not:** Keep polling in the background.
+- **User:** Click into Claude's window and reply `away`. Wait 3 minutes. Go back to the test window
+  for 30 s. Then reply `back`.
+- **Verify:** `LOG`: the `Resolved token` lines have a gap that starts at `away` and lasts at least
+  3 minutes, and resume within seconds of the return.
+- **Result:** todo
+
+##### UAT-18: Collapsed rows stay collapsed (review Step 10)
+
+- **Should:** A collapsed row stays collapsed across refreshes.
+- **Should not:** Re-expand on every poll.
+- **User:** Collapse a pipeline in Builds, `Needed By` in Dependencies and a PR in Gate Readiness.
+  Click Refresh and wait 1 minute.
+- **Verify:** `USER`.
+- **Result:** todo
+
+##### UAT-19: New push, and local commits are ignored (Step 8, review Step 9)
+
+- **Should:** A local commit that is not pushed changes nothing. After the push, the views move to
+  the new head on Refresh. Without Refresh that takes up to 1 minute while queued, 4 minutes idle.
+- **Should not:** Use local `HEAD` for Zuul lookups. Clear the views on a local-only commit.
+- **Care:** Writes to `PR-A`, starts a real Zuul run.
+- **User:** `git commit --allow-empty -m "uat"`, check the views, `git push`, click Refresh. Let
+  the run finish before UAT-20.
+- **Verify:** `GHE`: `head.sha` before and after. `ZUUL`: status and builds for that SHA.
+- **Result:** todo
+
+#### Part D: trigger comments
+
+##### UAT-20: Recheck (Step 11, review Steps 9, 11)
+
+- **Should:** The QuickPick lists `Recheck` with its comment as detail. The modal says `Post
+  "recheck" on <o/r>#<A>?`. **Cancel** posts nothing. **Post** posts one comment, shows `Posted
+  "recheck" on #<A>`, and the status bar says `Zuul: waiting for enqueue…` until Zuul reacts.
+- **Should not:** Post without the modal. Post twice. Keep waiting after Zuul has reacted.
+- **Care:** Writes to `PR-A`, starts a real Zuul run. Stay focused.
+- **User:** `Zuul: Post Trigger Comment` → Recheck → **Cancel**. Repeat → **Post**. Stay until the
+  status bar text changes.
+- **Verify:** `GHE`: no new comment after Cancel, exactly one `recheck` by the user after Post.
+  `LOG`: `Posted trigger comment "recheck"`, then `Detected Zuul activity after trigger comment`.
+  `ZUUL`: a new `enqueue_time`.
+- **Result:** todo
+
+##### UAT-21: Live run (Steps 5, 8, 9, 10, review Step 11)
+
+- **Should:** `Zuul <pipeline>: queued` before jobs exist. Then `Zuul <pipeline>: <done>/<total>
+  (ETA <m>m)` with running jobs spinning in Builds. A final state when the run ends. The views lag
+  Zuul by at most about 15 s.
+- **Should not:** Show `0/0`. Stay on an old state after the run ends. Count a non-voting failure
+  as failed.
+- **Care:** Stay focused. Take the screenshots now, send them after the run.
+- **User:** Watch the run from UAT-20. Take a screenshot at the start, middle and end.
+- **Verify:** `SHOT` file names carry the time. Compare each with job start and end times from
+  `ZUUL` builds.
+- **Result:** todo
+
+##### UAT-22: Custom comment and timeout (Step 11, review Step 11)
+
+- **Should:** Empty input is refused with `Trigger comment cannot be empty`. `uat: please ignore`
+  gets the same modal and posts. After 45 s, a toast `Zuul has not reacted to "uat: please ignore"
+  yet. It may still be queued.` with **Refresh**, and waiting ends.
+- **Should not:** Post an empty comment. Keep waiting past 45 s.
+- **Care:** Writes to `PR-A`. Run it with no Zuul run active. Stay focused.
+- **User:** `Zuul: Post Custom Trigger Comment...`, try empty, then post the text. Stay 1 minute.
+- **Verify:** `GHE`: one new comment. `LOG`: `Trigger comment watch timed out` about 45 s after
+  `Posted trigger comment`.
+- **Result:** todo
+
+##### UAT-23: Preset list and Triggers rows (Steps 2, 11, review Step 14)
+
+- **Should:** After adding `{ "label": "UAT", "comment": "uat: preset", "icon": "beaker" }` to
+  `zuul.triggerComments`, with no reload, the QuickPick lists both in order with icons. The last
+  root node in Gate Readiness, `Triggers`, lists the same with the comment as description. Clicking
+  a row opens the same modal.
+- **Should not:** Count `Triggers` rows as blockers. Post without the modal.
+- **User:** Add the entry, open the QuickPick, press Escape. Click the `UAT` row, **Cancel**. Take
+  a screenshot. Remove the entry.
+- **Verify:** `SHOT`. `GHE`: no new comment.
+- **Result:** todo
+
+#### Part E: Depends-On
+
+##### UAT-24: Add from the list (Steps 12, 14)
+
+- **Should:** `+` on Dependencies opens the picker with `My open PRs`, plus `Workspace
+  repositories` in a multi-repo workspace. Picking `PR-B` adds `Depends-On:
+  https://<host>/<o>/<r>/pull/<B>`, and the tree shows `Depends On (1)`.
+- **Should not:** List `PR-A` itself. List out-of-tenant PRs under `My open PRs`. Change any other
+  body text.
+- **Care:** Writes to `PR-A`.
+- **User:** Click `+`, pick `PR-B`.
+- **Verify:** `GHE`: body diff against the baseline is additions only (the line, plus a blank
+  separator if needed). `LOG`: `Added Depends-On`.
+- **Result:** todo
+
+##### UAT-25: Add by URL and search, no duplicates (Step 14, review Step 9)
+
+- **Should:** Pasting `PR-C`'s URL and pressing Enter adds it. Typing words from a PR title lists
+  live results. Adding `PR-B` again changes nothing.
+- **Should not:** Add a second line for `PR-B`. Send an update for the duplicate.
+- **Care:** Writes to `PR-A`.
+- **User:** Paste `PR-C`. Type a search and press Escape. Paste `PR-B`.
+- **Verify:** `GHE`: one new line for `PR-C`, one line for `PR-B`, `updated_at` unchanged by the
+  duplicate attempt.
+- **Result:** todo
+
+##### UAT-26: Bad targets are rejected (Steps 13, 14, review Step 9)
+
+- **Should:** Pasted URLs give these errors:
+  - `PR-A` or `PR-D`: `Would create a dependency cycle`
+  - `PR-X`: `Repository <o/r> is not part of tenant <t>`
+  - `https://other.invalid/<o>/<r>/pull/1`: `Repository <o/r> is not part of tenant <t>`
+- **Should not:** Change the body in any of these.
+- **User:** Paste each URL and press Enter.
+- **Verify:** `GHE`: body and `updated_at` unchanged. `LOG`: one rejection per attempt.
+- **Result:** todo
+
+##### UAT-27: Dependencies rows (Steps 13, 14, review Steps 9, 13)
+
+- **Should:**
+  - Rows are labelled `<o>/<r>#<n>`. An open PR reads `open · approved · check: SUCCESS`, without
+    the middle part when there is no review decision. A merged PR has the merged icon. A PR that
+    does not exist has the warning icon.
+  - The tooltip has the title, `State:`, `Zuul:` and, if known, `Review:` and `Warning:`.
+  - The shorthand line's tooltip has `Zuul ignores`. The other-host line is `missing` with a
+    warning.
+  - `Needed By (1)` lists `PR-D` with its title. Clicking a row opens that PR in the browser.
+- **Should not:** List `PR-A` under Needed By. Show review status on a merged PR.
+- **Care:** Writes to `PR-A`.
+- **User:** In the browser, add to `PR-A`'s body: `Depends-On: <o>/<r>#<PR-READY>`, `Depends-On:
+  https://<host>/<o>/<r>/pull/999999`, `Depends-On: https://other.invalid/<o>/<r>/pull/1`. Click
+  Refresh, hover the rows, take screenshots, click one.
+- **Verify:** `SHOT` against `GHE` and `ZUUL` for each PR. `GHE` search
+  `"<PR-A URL>" in:body is:open`.
+- **Result:** todo
+
+##### UAT-28: Remove (Steps 12, 14, review Step 9)
+
+- **Should:** The trash icon opens `Remove Depends-On <ref> from <ref>?`. **Cancel** changes
+  nothing. **Remove** deletes only that line. With every added line removed, the body equals the
+  baseline byte for byte, CRLF included.
+- **Should not:** Touch any other line. Log `Removed` when nothing changed.
+- **Care:** Writes to `PR-A`.
+- **User:** **Cancel** once, then remove every row.
+- **Verify:** `GHE`: `updated_at` unchanged after Cancel. Final body `cmp` against the baseline.
+  `LOG`: one `Removed Depends-On` per row.
+- **Result:** todo
+
+##### UAT-29: Out of sync with Zuul (Steps 13, 14, review Steps 6, 11)
+
+- **Should:** With `PR-A` queued and `Depends-On: PR-B` added after enqueue, a top row `Out of sync
+  with Zuul` appears with child `Missing in Zuul: <B>`. **Sync via Recheck** opens the Post modal.
+  Once re-enqueued with `PR-B` ahead, the row goes away. Removing the line while still queued shows
+  `Extra in Zuul: <B>`.
+- **Should not:** Appear when `PR-A` is not queued or the queue matches. Show literal `$(warning)`.
+- **Care:** Writes to `PR-A`, starts real Zuul runs. Needs a run of a few minutes; `skip` if runs
+  are too short. Stay focused. Updates can take up to 1 minute.
+- **User:** Post `recheck`. While it runs, add `PR-B`. Wait for the row, click **Sync via
+  Recheck**, **Post**. Wait for the row to go. Remove the line. Wait for `Extra in Zuul`.
+- **Verify:** `ZUUL`: non-live items ahead of `PR-A` in `tenant/<t>/status`. `GHE`: comment and
+  body.
+- **Result:** todo
+
+#### Part F: Gate Readiness
+
+##### UAT-30: Gate matches GHE and Zuul (Steps 15, 16, 17, review Steps 7, 11)
+
+- **Should:** The header is `Ready for gate`, `Not ready: 1 blocker` or `Not ready: <n> blockers`.
+  `PR-A` is a node marked `this PR`, with rows `Zuul check`, its required status checks, `Reviews`,
+  `Draft`, `Merge state` and `Zuul gate`. Clicking the PR row opens it in the browser.
+- **Should not:** Say anything GHE and Zuul contradict.
+- **User:** Click Refresh and take a screenshot.
+- **Verify:** Before opening the screenshot, Claude writes down the expected header and rows from
+  `GHE` (`pulls/<n>`, reviews, status, check-runs) and `ZUUL`. Then it compares.
+- **Result:** todo
+
+##### UAT-31: Each blocker appears and clears (Steps 15, 16, review Step 7)
+
+- **Should:** Each change gives the row below. Undoing it clears the row.
+
+  | Change on `PR-A` | Expected row text |
+  |---|---|
+  | Convert to draft | `Pull request is a draft` |
+  | Add label `WIP` (case differs from the setting) | ``Blocking label `WIP` is present`` |
+  | `zuul.gate.requiredLabels` = `["uat-required"]` | ``Missing required label `uat-required` `` |
+  | `zuul.gate.requiredStatusChecks` = `{"*": ["uat/never-reports"]}` | ``Required status check `uat/never-reports` is missing`` |
+  | Same, with key `<o>/<r>` instead of `*` | Same text |
+  | `zuul.gate.requiredApprovals` = `5` (repo without a review rule) | `Requires at least 5 approval(s) (currently <n>)` |
+  | Optional: a second user requests changes | `Changes requested by 1 reviewer(s)` |
+  | Optional: a second user approves, then comments | Still approved |
+  | Optional: merge conflict with the base branch | `Merge state is dirty` |
+  | During a Zuul run | `Zuul check is running on HEAD` |
+  | After a voting job failed | `Zuul check is failure on HEAD` |
+  | Only a non-voting job failed | `Zuul check` ok, not a blocker |
+
+- **Should not:** Keep a row after the undo. Treat labels as case-sensitive.
+- **Care:** Writes to `PR-A`.
+- **User:** One row at a time: make the change, Refresh, read the row, undo, Refresh.
+- **Verify:** `GHE` or `ZUUL` confirms each change before Claude compares the row. `USER` for rows
+  driven only by settings.
+- **Result:** todo
+
+##### UAT-32: Upstream chain (Steps 16, 17, review Step 7)
+
+- **Should:** With `Depends-On: PR-B` and `PR-B` a draft: a node for `PR-B` marked `upstream` with
+  its own failed row, and under `PR-A` a row `Blocked by upstream <B>: Pull request is a draft`. The
+  header counts it once. Closing `PR-B` gives `Pull request is closed without being merged`.
+  Adding `PR-C` (merged) adds no node. Adding `.../pull/999999` gives a failed row `Could not read
+  this pull request`.
+- **Should not:** Count one problem twice. Ignore an unreadable upstream and say `Ready for gate`.
+- **Care:** Writes to `PR-A` and `PR-B`.
+- **User:** Do each change, Refresh, take a screenshot. Undo all, reopen `PR-B`.
+- **Verify:** `SHOT` against `GHE` for `PR-B`.
+- **Result:** todo
+
+##### UAT-33: Ready for gate and the Zuul gate rule (review Step 7)
+
+- **Should:**
+  - On `PR-READY`: header `Ready for gate`, row `Zuul gate` ok with `Starts once everything else is
+    done` (or `Running`). If GHE reports `blocked`, row `Merge state` ok with `Blocked only by the
+    Zuul gate`.
+  - If the required list cannot be read: `Merge is blocked, and this repo's required checks can't be
+    read. List them in zuul.gate.requiredStatusChecks to tell whether only the Zuul gate is left.`
+    Naming them in that setting clears it.
+  - If a PR with a failed gate exists: `Zuul gate failed on this commit. It needs a new trigger.`
+- **Should not:** Excuse `blocked` when another required check is not `success`, or when
+  `zuul.gate.gateStatusChecks` is `[]`.
+- **User:** Check out `PR-READY`'s branch, Refresh, screenshot. Set
+  `zuul.gate.requiredStatusChecks` to `{"*": ["uat/never-reports"]}`, Refresh, screenshot, undo.
+  Set `zuul.gate.gateStatusChecks` to `[]`, Refresh, screenshot, undo.
+- **Verify:** `GHE`: `mergeable_state`, reviews, required checks (REST, or GraphQL
+  `refUpdateRule.requiredStatusCheckContexts`). `ZUUL`: latest `check` builds.
+- **Result:** todo
+
+#### Part G: failures and clean-up
+
+##### UAT-34: Offline behaviour (review Steps 7, 10, 11)
+
+- **Should:** With the network or VPN off: status bar `Zuul: offline, last update HH:MM`, and
+  clicking it refreshes. After Refresh, Gate Readiness has blocker `Could not load gate data:
+  <reason>` and Dependencies shows `Could not load dependencies, click to retry`. Posting `recheck`
+  gives `Could not post "recheck" on <ref>: <reason>`. After reconnecting, Refresh restores all of
+  it.
+- **Should not:** Show a toast per poll. Show a cached `Ready for gate`. Show `Depends On (0)`. Post
+  the comment later.
+- **Care:** Stay focused. Prefer VPN off if GHE and Zuul are VPN-only. Claude cannot answer while
+  the machine is offline, so reconnect before replying.
+- **User:** Disconnect, wait 1 minute, Refresh, try to post, take a screenshot, reconnect, Refresh.
+- **Verify:** `LOG`: `Failed to poll PR status` during the outage, no `Posted trigger comment`.
+  `SHOT`. `GHE` after reconnecting: no new comment.
+- **Result:** todo
+
+##### UAT-35: Final sweep and clean-up (all steps)
+
+- **Should:** No token in any log. No uncaught errors from this extension. The test setup is back
+  to how it was.
+- **Should not:** Leave temporary settings, labels, a draft state or the token file behind.
+- **User:** Remove the temporary settings and labels. Mark `PR-A` ready. Delete the `uat` comments
+  and commit if unwanted. Delete `~/.zuul-uat-curlrc` and revoke its token.
+- **Verify:** `grep -cE 'gh[pousr]_[A-Za-z0-9]|github_pat_'` prints `0` for every Zuul log written
+  since Preparation. `exthost.log` beside the Zuul log has no Zuul errors or exceptions. `GHE`
+  (before the token is revoked): `PR-A`'s body `cmp` against the baseline. `~/.zuul-uat-curlrc` no
+  longer exists.
+- **Result:** todo
 
 ### Step 18: Parse job output and manifests (ArtifactService)
 
