@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type GheClient } from '../../src/clients/gheClient';
-import { HttpError } from '../../src/clients/http';
+import { HttpError, NoTokenError } from '../../src/clients/http';
 import { type PullRequest } from '../../src/clients/gheTypes';
 import { RateLimitGuard, RateLimitedError } from '../../src/clients/rateLimit';
 import { ZuulClient } from '../../src/clients/zuulClient';
@@ -810,6 +810,85 @@ describe('PrTracker races', () => {
 
 const HOUR_MS = 3_600_000;
 
+describe('PrTracker applies a changed poll interval at once', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000_000);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function start(ctx: ResolvedContext, getPollIntervalMs: () => number) {
+    const { source } = createFakeContextSource(ctx);
+    const { focusEvents } = createFakeFocusEvents(true);
+    return new PrTracker(source, createFakeLogger(), {
+      setTimer: setTimeout,
+      now: Date.now,
+      focusEvents,
+      getPollIntervalMs,
+    });
+  }
+
+  it('moves the waiting timer to the new interval', async () => {
+    const { findOpenPrForBranch, getChangeStatus, listBuilds, makeResolvedContext } =
+      createMockClients();
+    findOpenPrForBranch.mockResolvedValue(makePr());
+    getChangeStatus.mockResolvedValue([]);
+    listBuilds.mockResolvedValue([]);
+    let intervalMs = 60_000;
+    const tracker = start(makeResolvedContext(), () => intervalMs);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(findOpenPrForBranch).toHaveBeenCalledTimes(1);
+
+    // Idle, so the next poll was 5 minutes away. With 10 s it is 50 s after the last poll.
+    await vi.advanceTimersByTimeAsync(20_000);
+    intervalMs = 10_000;
+    tracker.applyPollInterval();
+
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(findOpenPrForBranch).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(findOpenPrForBranch).toHaveBeenCalledTimes(2);
+    tracker.dispose();
+  });
+
+  it('polls at once when the new delay has already passed', async () => {
+    const { findOpenPrForBranch, getChangeStatus, listBuilds, makeResolvedContext } =
+      createMockClients();
+    findOpenPrForBranch.mockResolvedValue(makePr());
+    getChangeStatus.mockResolvedValue([]);
+    listBuilds.mockResolvedValue([]);
+    let intervalMs = 60_000;
+    const tracker = start(makeResolvedContext(), () => intervalMs);
+    await vi.advanceTimersByTimeAsync(0);
+
+    await vi.advanceTimersByTimeAsync(100_000);
+    intervalMs = 10_000;
+    tracker.applyPollInterval();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(findOpenPrForBranch).toHaveBeenCalledTimes(2);
+    tracker.dispose();
+  });
+
+  it('does not restart polling that has stopped', async () => {
+    const { findOpenPrForBranch, makeResolvedContext } = createMockClients();
+    findOpenPrForBranch.mockRejectedValue(new HttpError(401, 'nope'));
+    let intervalMs = 60_000;
+    const tracker = start(makeResolvedContext(), () => intervalMs);
+    await vi.advanceTimersByTimeAsync(0);
+
+    intervalMs = 10_000;
+    tracker.applyPollInterval();
+    await vi.advanceTimersByTimeAsync(HOUR_MS);
+
+    expect(findOpenPrForBranch).toHaveBeenCalledTimes(1);
+    tracker.dispose();
+  });
+});
+
 describe('PrTracker stops polling when retrying cannot help', () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -848,7 +927,7 @@ describe('PrTracker stops polling when retrying cannot help', () => {
 
       await vi.advanceTimersByTimeAsync(0);
       expect(findOpenPrForBranch).toHaveBeenCalledTimes(1);
-      expect(tracker.pollStatus).toEqual({ kind: 'active' });
+      expect(tracker.pollStatus).toMatchObject({ kind: 'retrying' });
 
       await vi.advanceTimersByTimeAsync(29_999);
       expect(findOpenPrForBranch).toHaveBeenCalledTimes(1);
@@ -871,7 +950,7 @@ describe('PrTracker stops polling when retrying cannot help', () => {
       tracker.dispose();
     });
 
-    it('keeps the last snapshot and reports when it stopped', async () => {
+    it('keeps the last snapshot and reports why it stopped', async () => {
       const { findOpenPrForBranch, getChangeStatus, makeResolvedContext } = createMockClients();
       const pr = makePr();
       findOpenPrForBranch.mockResolvedValueOnce(pr);
@@ -892,10 +971,41 @@ describe('PrTracker stops polling when retrying cannot help', () => {
         kind: 'stopped',
         reason: 'failed',
         message: 'network down',
-        at: 1_000_000 + 270_000,
-        lastSuccessAt: 1_000_000,
       });
-      expect(changes).toHaveBeenCalledTimes(1);
+      // Three retries, then the stop.
+      expect(changes).toHaveBeenCalledTimes(4);
+      tracker.dispose();
+    });
+
+    it('a missing token is retried, then stops as sign-in needed', async () => {
+      const { findOpenPrForBranch, makeResolvedContext } = createMockClients();
+      findOpenPrForBranch.mockRejectedValue(new NoTokenError());
+      const { tracker } = start(makeResolvedContext());
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(tracker.pollStatus).toMatchObject({ kind: 'retrying' });
+
+      await vi.advanceTimersByTimeAsync(30_000 + 60_000 + 120_000);
+      expect(findOpenPrForBranch).toHaveBeenCalledTimes(4);
+      expect(tracker.pollStatus).toMatchObject({ kind: 'stopped', reason: 'auth' });
+
+      await vi.advanceTimersByTimeAsync(HOUR_MS);
+      expect(findOpenPrForBranch).toHaveBeenCalledTimes(4);
+      tracker.dispose();
+    });
+
+    it('resumes by itself when the token can be read again', async () => {
+      const { findOpenPrForBranch, getChangeStatus, makeResolvedContext } = createMockClients();
+      findOpenPrForBranch.mockRejectedValueOnce(new NoTokenError()).mockResolvedValue(makePr());
+      getChangeStatus.mockResolvedValue([makeStatus()]);
+      const { tracker } = start(makeResolvedContext());
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(tracker.pollStatus).toMatchObject({ kind: 'retrying' });
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(tracker.pollStatus).toEqual({ kind: 'active' });
+      expect(tracker.snapshot?.pr.number).toBe(42);
       tracker.dispose();
     });
 
@@ -922,7 +1032,7 @@ describe('PrTracker stops polling when retrying cannot help', () => {
       await vi.advanceTimersByTimeAsync(30_000);
       await vi.advanceTimersByTimeAsync(60_000);
       expect(findOpenPrForBranch).toHaveBeenCalledTimes(7);
-      expect(tracker.pollStatus).toEqual({ kind: 'active' });
+      expect(tracker.pollStatus).toMatchObject({ kind: 'retrying' });
 
       await vi.advanceTimersByTimeAsync(120_000);
       expect(findOpenPrForBranch).toHaveBeenCalledTimes(8);
@@ -1022,7 +1132,7 @@ describe('PrTracker stops polling when retrying cannot help', () => {
 
       await vi.advanceTimersByTimeAsync(60_000);
       expect(findOpenPrForBranch).toHaveBeenCalledTimes(2);
-      expect(tracker.pollStatus).toEqual({ kind: 'active' });
+      expect(tracker.pollStatus).toMatchObject({ kind: 'retrying' });
 
       await vi.advanceTimersByTimeAsync(29_999);
       expect(findOpenPrForBranch).toHaveBeenCalledTimes(2);
@@ -1119,7 +1229,7 @@ describe('PrTracker stops polling when retrying cannot help', () => {
       // Counting starts over, so the next retry is after 30 s, not 120 s.
       await vi.advanceTimersByTimeAsync(30_000);
       expect(findOpenPrForBranch).toHaveBeenCalledTimes(4);
-      expect(tracker.pollStatus).toEqual({ kind: 'active' });
+      expect(tracker.pollStatus).toMatchObject({ kind: 'retrying' });
       tracker.dispose();
     });
   });

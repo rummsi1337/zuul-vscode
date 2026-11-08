@@ -93,7 +93,8 @@ export class RateLimitGuard {
     }
     const retryAfter = headers.get('retry-after');
     const remaining = headers.get('x-ratelimit-remaining');
-    const isLimit = retryAfter !== null || remaining === '0' || /rate limit/i.test(body);
+    const isLimit =
+      status === 429 || retryAfter !== null || remaining === '0' || /rate limit/i.test(body);
     if (!isLimit) {
       return undefined;
     }

@@ -48,6 +48,14 @@ export class HttpError extends Error {
   }
 }
 
+/** No token could be read, so nothing was sent. Can be brief (a slow `gh`), unlike a refused token. */
+export class NoTokenError extends HttpError {
+  constructor() {
+    super(401, 'No GitHub token available');
+    this.name = 'NoTokenError';
+  }
+}
+
 interface GraphQLPayload<T> {
   data?: T;
   errors?: { message?: string; type?: string }[];
@@ -138,7 +146,7 @@ export class HttpClient {
     }
 
     if (this.requireAuth && !headers.Authorization) {
-      throw new HttpError(401, 'No GitHub token available');
+      throw new NoTokenError();
     }
 
     return headers;
@@ -222,12 +230,7 @@ export class HttpClient {
     headers?: Record<string, string>,
   ): Promise<{ data: T; headers: Headers }> {
     if (!this.conditionalGet) {
-      const res = await this.request('GET', path, {
-        query,
-        headers: { Accept: 'application/json', ...headers },
-      });
-      const data = (await res.json()) as T;
-      return { data, headers: res.headers };
+      return this.getJsonUnconditional<T>(path, query, headers);
     }
 
     const url = this.resolveUrl(path, query);
@@ -268,7 +271,8 @@ export class HttpClient {
     const data = (await res.json()) as T;
     const etag = res.headers.get('etag') ?? undefined;
     const lastModified = res.headers.get('last-modified') ?? undefined;
-    if (res.status === 200 && (etag || lastModified)) {
+    // A token change while this request was in flight makes the answer unsafe to reuse.
+    if (res.status === 200 && (etag || lastModified) && sentAuth === this.lastGetAuth) {
       this.conditionalEntries.delete(url);
       this.conditionalEntries.set(url, { etag, lastModified, data, headers: res.headers });
       while (this.conditionalEntries.size > MAX_CONDITIONAL_ENTRIES) {

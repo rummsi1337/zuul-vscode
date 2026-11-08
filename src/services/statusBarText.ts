@@ -1,4 +1,5 @@
 import { type Build, type ChangeStatus } from '../clients/zuulTypes';
+import { formatClock } from '../util/clock';
 import { classifyJobResult, getLatestBuildsPerJob, pickPrimary } from './buildsModel';
 import { type PollStatus, type PrSnapshot } from './prTracker';
 
@@ -117,14 +118,7 @@ export function statusBarText(
   };
 }
 
-function clock(ms: number): string {
-  const d = new Date(ms);
-  const hh = String(d.getHours()).padStart(2, '0');
-  const mm = String(d.getMinutes()).padStart(2, '0');
-  return `${hh}:${mm}`;
-}
-
-export type PollStateName = 'active' | 'no-pr' | 'failed' | 'auth' | 'rate-limited';
+export type PollStateName = 'active' | 'retrying' | 'no-pr' | 'failed' | 'auth' | 'rate-limited';
 
 export function pollStateName(pollStatus: PollStatus | undefined): PollStateName {
   if (!pollStatus) {
@@ -155,15 +149,22 @@ export function statusBarView(
         ? '$(warning) Zuul: GitHub not responding, updates stopped'
         : '$(warning) Zuul: GitHub sign-in needed, updates stopped',
       tooltip: `GitHub updates have stopped: ${pollStatus.message}\nClick to ${
-        failed ? 'try again' : 'set a GitHub token'
+        failed ? 'try again' : 'set a GitHub token. Signed in with gh? Run Zuul: Refresh'
       }.`,
       command: failed ? 'zuul.refresh' : 'zuul.setGhePat',
     };
   }
+  if (pollStatus?.kind === 'retrying') {
+    return {
+      text: "$(warning) Zuul: can't update from GitHub, retrying",
+      tooltip: `GitHub updates have not stopped yet: ${pollStatus.message}\nClick to try now.`,
+      command: 'zuul.refresh',
+    };
+  }
   if (pollStatus?.kind === 'rate-limited') {
     return {
-      text: `$(clock) Zuul: GitHub rate limit, resumes ${clock(pollStatus.until)}`,
-      tooltip: `GitHub updates are paused until ${clock(pollStatus.until)}: ${pollStatus.message}`,
+      text: `$(clock) Zuul: GitHub rate limit, resumes ${formatClock(pollStatus.until)}`,
+      tooltip: `GitHub updates are paused until ${formatClock(pollStatus.until)}: ${pollStatus.message}`,
     };
   }
 
@@ -175,22 +176,24 @@ export function statusBarView(
   if (!zuul || zuul.kind === 'ok') {
     return { ...info, command: EXPLORER_COMMAND };
   }
+  // Zuul's statuses and builds are empty here, so the normal text would wrongly say "no builds".
+  const lead = waiting ? `${info.text}, ` : '$(warning) ';
   if (zuul.reason === 'needs-token' || zuul.reason === 'no-access') {
     return {
-      text: `${info.text}, Zuul updates stopped (token needed)`,
+      text: `${lead}Zuul updates stopped (token needed)`,
       tooltip: `${info.tooltip}\nZuul updates have stopped: ${zuul.message}\nClick to set a Zuul token.`,
       command: 'zuul.setTenantToken',
     };
   }
   if (zuul.stopped) {
     return {
-      text: `${info.text}, Zuul updates stopped (not responding)`,
+      text: `${lead}Zuul updates stopped (not responding)`,
       tooltip: `${info.tooltip}\nZuul updates have stopped: ${zuul.message}\nClick to try again.`,
       command: 'zuul.refresh',
     };
   }
   return {
-    text: `${info.text}, Zuul retrying`,
+    text: `${lead}Zuul retrying`,
     tooltip: `${info.tooltip}\nZuul is not responding, updates have not stopped yet: ${zuul.message}\nClick to try again.`,
     command: 'zuul.refresh',
   };
@@ -209,10 +212,13 @@ export function sidebarMessage(
   if (pollStatus?.kind === 'stopped') {
     return pollStatus.reason === 'failed'
       ? 'Updates stopped: GitHub is not responding. Data shown may be out of date. Use Refresh to try again.'
-      : 'Updates stopped: GitHub sign-in needed.';
+      : 'Updates stopped: GitHub sign-in needed. After signing in, use Refresh.';
+  }
+  if (pollStatus?.kind === 'retrying') {
+    return "Can't update from GitHub, retrying. Data shown may be out of date.";
   }
   if (pollStatus?.kind === 'rate-limited') {
-    return `Updates paused: GitHub rate limit, resumes at ${clock(pollStatus.until)}.`;
+    return `Updates paused: GitHub rate limit, resumes at ${formatClock(pollStatus.until)}.`;
   }
   const zuul = snapshot?.zuul;
   if (zuul?.kind === 'unavailable') {
@@ -222,6 +228,7 @@ export function sidebarMessage(
     if (zuul.stopped) {
       return 'Zuul updates stopped: Zuul is not responding. GitHub data is still updating. Use Refresh to try again.';
     }
+    return 'Zuul is not responding, retrying. GitHub data is still updating.';
   }
   return undefined;
 }

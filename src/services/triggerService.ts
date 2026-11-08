@@ -271,7 +271,8 @@ export class TriggerService implements vscode.Disposable {
       return;
     }
 
-    if (snapshot === undefined || snapshot.zuul.kind !== 'ok') {
+    // A Zuul that is only retrying may still report the reaction, so keep waiting for it.
+    if (snapshot === undefined || (snapshot.zuul.kind !== 'ok' && snapshot.zuul.stopped)) {
       this.stopWaiting();
       return;
     }

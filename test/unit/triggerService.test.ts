@@ -128,7 +128,7 @@ describe('TriggerService', () => {
     service.dispose();
   });
 
-  it('stops waiting when Zuul becomes unavailable during a watch', async () => {
+  it('stops waiting when Zuul stops during a watch', async () => {
     const okSnapshot: PrSnapshot = {
       pr: makePr(),
       statuses: [makeStatus()],
@@ -145,9 +145,34 @@ describe('TriggerService', () => {
     emitSnapshot({
       ...okSnapshot,
       statuses: [],
-      zuul: { kind: 'unavailable', reason: 'unreachable', message: 'down', stopped: false },
+      zuul: { kind: 'unavailable', reason: 'unreachable', message: 'down', stopped: true },
     });
 
+    expect(service.waiting).toBe(false);
+    service.dispose();
+  });
+
+  it('keeps waiting while Zuul is retrying, and still sees the reaction afterwards', async () => {
+    const okSnapshot: PrSnapshot = {
+      pr: makePr(),
+      statuses: [makeStatus({ enqueueTime: 1 })],
+      builds: [],
+      fetchedAt: 1_000_000,
+      zuul: { kind: 'ok' },
+    };
+    const { ctx, tracker, emitSnapshot } = createHarness(okSnapshot);
+    const service = new TriggerService(ctx, tracker, createFakeLogger(), Date.now);
+
+    await service.post('recheck');
+
+    emitSnapshot({
+      ...okSnapshot,
+      statuses: [],
+      zuul: { kind: 'unavailable', reason: 'unreachable', message: 'down', stopped: false },
+    });
+    expect(service.waiting).toBe(true);
+
+    emitSnapshot({ ...okSnapshot, statuses: [makeStatus({ enqueueTime: 2 })] });
     expect(service.waiting).toBe(false);
     service.dispose();
   });

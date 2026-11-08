@@ -3,7 +3,11 @@ import { AuthService } from './auth/authService';
 import { GhCliAuthProvider } from './auth/ghCliAuthProvider';
 import { PatAuthProvider, validatePatWithGhe } from './auth/patAuthProvider';
 import { ZuulTokenProvider } from './auth/zuulTokenProvider';
-import { onTokenSettingsChanged, readWorkspaceSettings } from './config/settings';
+import {
+  onPollIntervalChanged,
+  onTokenSettingsChanged,
+  readWorkspaceSettings,
+} from './config/settings';
 import { ZuulContextService } from './context/zuulContext';
 import { GitContextService } from './git/gitContext';
 import { normalizeHost } from './git/remoteUrl';
@@ -200,6 +204,9 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     onTokenSettingsChanged(() => {
       void vscode.commands.executeCommand('zuul.refresh');
+    }),
+    onPollIntervalChanged(() => {
+      prTracker.applyPollInterval();
     }),
     vscode.commands.registerCommand('zuul.setGhePat', async (hostArg?: unknown) => {
       const host = await resolveTargetHost(gitContext, hostArg);

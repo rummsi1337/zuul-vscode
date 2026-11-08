@@ -15,6 +15,7 @@ vi.mock('../../src/auth/zuulTokenProvider', () => ({
 
 import { ZuulContextService } from '../../src/context/zuulContext';
 import { activate } from '../../src/extension';
+import { PrTracker } from '../../src/services/prTracker';
 
 type Handler = (...args: unknown[]) => Promise<unknown>;
 
@@ -97,9 +98,17 @@ describe('extension wiring: token changes run Refresh', () => {
     expect(refreshCalls()).toHaveLength(1);
   });
 
-  it('changing zuul.pollIntervalSeconds does not run refresh', () => {
+  it('changing zuul.auth.method runs refresh', () => {
+    fireConfigChange('zuul.auth.method');
+    expect(refreshCalls()).toHaveLength(1);
+  });
+
+  it('changing zuul.pollIntervalSeconds applies it at once without running refresh', () => {
+    const spy = vi.spyOn(PrTracker.prototype, 'applyPollInterval');
     fireConfigChange('zuul.pollIntervalSeconds');
+    expect(spy).toHaveBeenCalledTimes(1);
     expect(refreshCalls()).toHaveLength(0);
+    spy.mockRestore();
   });
 });
 

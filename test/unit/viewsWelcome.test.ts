@@ -99,7 +99,7 @@ const STATES: { name: string; ctx: Ctx; expected: Record<string, string> }[] = [
     expected: {
       'zuul.gateReadiness': '',
       'zuul.dependencies': '',
-      'zuul.builds': 'Zuul refused the token',
+      'zuul.builds': '',
     },
   },
   {
@@ -108,7 +108,7 @@ const STATES: { name: string; ctx: Ctx; expected: Record<string, string> }[] = [
     expected: {
       'zuul.gateReadiness': '',
       'zuul.dependencies': '',
-      'zuul.builds': 'Could not reach Zuul',
+      'zuul.builds': '',
     },
   },
   {
@@ -154,6 +154,16 @@ const STATES: { name: string; ctx: Ctx; expected: Record<string, string> }[] = [
     name: 'load failed (not a missing pull request)',
     ctx: { ...BASE, 'zuul.pollState': 'failed' },
     expected: all('Could not load data from GitHub'),
+  },
+  {
+    name: 'GitHub failing, still retrying',
+    ctx: { ...BASE, 'zuul.pollState': 'retrying' },
+    expected: all('Could not load data from GitHub, retrying'),
+  },
+  {
+    name: 'no token while retrying',
+    ctx: { ...BASE, 'zuul.signedIn': false, 'zuul.pollState': 'retrying' },
+    expected: all('No GitHub token available'),
   },
   {
     name: 'no token while polling stopped on auth',

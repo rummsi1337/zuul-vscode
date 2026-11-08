@@ -3,8 +3,8 @@
 ## Context
 
 The extension polls GitHub Enterprise and Zuul. This plan checks five requirements against the code
-and closes the gaps. Steps 1 and 2 are done, and the measurements and tables below describe the code
-before those two steps. On 2026-11-08 the remaining steps were cut down to the changes that save real
+and closes the gaps. All steps are done. The measurements and tables below describe the code before
+any of them. On 2026-11-08 the steps after Step 2 were cut down to the changes that save real
 requests. What was dropped, and why, is in Decisions and Out of scope.
 
 ### Measured today
@@ -120,7 +120,7 @@ Already made. Implementers must not change these.
 
 | Topic | Decision |
 | ----- | -------- |
-| Polling setting | One setting, `zuul.pollIntervalSeconds`, default 60, range 10 to 3600. The user wants to try low values. |
+| Polling setting | One setting, `zuul.pollIntervalSeconds`, default 60, range 10 to 3600. The user wants to try low values. A change applies at once, not after the timer already waiting. |
 | Intervals | Build running: the setting. Nothing running: 5 times the setting (5 min by default). After posting a trigger: every 15 s for 45 s (3 polls, was 15), or at the setting if that is lower. |
 | Short reuse window | 5 s for Zuul `getChangeStatus` and `listBuilds`, which is below the 10 s minimum interval, so a poll never gets the previous poll's answer. |
 | GitHub PR fetches | No time-based reuse. Step 1 already makes repeat GETs a free 304. |
@@ -129,12 +129,12 @@ Already made. Implementers must not change these.
 | Token caches | Not added. They save local keychain and file reads, not API calls, and Step 6 cuts those by about 80%. |
 | View refresh | The gate keeps its 30 s limit and dependencies keep 60 s. A visible view reloads on a poll once its limit has passed. |
 | Retries | GitHub and Zuul, counted separately. First try plus at most 3 retries, after 30, 60 and 120 s, then stop. |
-| No retry | GitHub 401, 403 and 404, and Zuul 401 and 403, stop at once. Retrying the same credentials can't help. |
-| Rate limits | Don't count as failures. Wait for the time GitHub gives, then resume by itself. |
+| No retry | GitHub 401, 403 and 404, and Zuul 401 and 403, stop at once. Retrying the same credentials can't help. A missing GitHub token is different: reading it can fail briefly (a slow `gh`), so it counts as a failure, and the fourth in a row stops as sign-in needed. |
+| Rate limits | Don't count as failures. Any 429 is one. Wait for the time GitHub gives, then resume by itself. |
 | Zuul stopped | GitHub polling continues. A replaced token file needs Refresh once Zuul has stopped. While Zuul is failing, only the poll calls it. With no statuses the poll runs at the idle interval. |
 | No PR on the branch | Stop polling. One lookup on window focus, at most once per poll interval. Confirmed by the user. |
 | Zuul data gone | Gate can't say "Ready": the Zuul check row shows "unknown" and stays a blocker. |
-| No GitHub token | Send nothing to GitHub. Show the existing "no token" text. |
+| No GitHub token | Send nothing to GitHub. Show the existing "no token" text, with a Refresh link for `gh` users. |
 | What degrades | Only Zuul auth and network problems. `no-zuul-url` and "repo is not in any tenant" still switch the extension off for that repo. Otherwise it would poll GitHub for every repo in every window. |
 
 When polling resumes:
@@ -143,7 +143,7 @@ When polling resumes:
 | ------------------------------- | ---------- |
 | No PR                           | Refresh, branch or HEAD change, one lookup on focus |
 | GitHub failing after retries    | Refresh, branch or HEAD change |
-| GitHub 401, 403, 404, no token  | Refresh, PAT set or cleared, branch or HEAD change |
+| GitHub 401, 403, 404, no token  | Refresh, PAT set or cleared, `zuul.auth.method` changed, branch or HEAD change |
 | GitHub rate limit               | By itself at the time GitHub gave |
 | Zuul token refused (401, 403)   | Refresh, token set or cleared, branch or HEAD change. GitHub polling continues |
 | Zuul failing after retries      | Refresh, branch or HEAD change. GitHub polling continues |
@@ -603,8 +603,51 @@ When polling resumes:
   | Build running, sidebar open          |             66 |          302 |   60 |
   | Idle PR, sidebar closed              |              1 |           12 |   24 |
 
-  Only the no-builds PR goes over a limit (Zuul 36, limit 30). PRs with `Depends-On` were not measured.
-  The user decided to leave those 12 extra `listBuildsets` calls as they are. The test file is deleted.
+  Only the no-builds PR goes over a limit (Zuul 36, limit 30). The user decided to leave those 12 extra
+  `listBuildsets` calls as they are. The test file is deleted.
+
+  Added after the branch review, for a PR with 2 `Depends-On`, using the same method:
+
+  | Scenario                    | GitHub charged | GitHub total | Zuul |
+  | --------------------------- | -------------: | -----------: | ---: |
+  | Build running, sidebar open |            314 |        1,026 |  372 |
+  | Idle PR, sidebar open       |             74 |          186 |   84 |
+  | Idle PR, sidebar closed     |              1 |           12 |   24 |
+
+  Before this plan, the build-running row was 2,181 GitHub and 1,284 Zuul requests.
+
+### Step 11: Fixes from the branch review
+
+- **Tier:** opus
+- **Risk:** medium
+- **Status:** done
+- **Why:** A review of the finished branch found the gaps below. Where this step differs from an
+  earlier step, this step wins.
+- **Files:** `src/clients/http.ts`, `src/clients/rateLimit.ts`, `src/config/settings.ts`,
+  `src/extension.ts`, `src/services/prTracker.ts`, `src/services/statusBarText.ts`,
+  `src/services/triggerService.ts`, `src/util/clock.ts` (new), `src/util/commandErrors.ts`,
+  `package.json`, and their tests (edit)
+- **Do:**
+  - Zuul unavailable: the status bar no longer says `no builds`, because the data is unknown. The text
+    is `$(warning) Zuul retrying` or `$(warning) Zuul updates stopped (...)`. While retrying, the sidebar
+    says so too, which also hides the false "No Zuul builds" welcome text.
+  - GitHub failing: add `{ kind: 'retrying'; message: string }` to `PollStatus`. It polls like `active`.
+    The status bar shows `$(warning) Zuul: can't update from GitHub, retrying` and the sidebar and welcome
+    text say the same.
+  - Missing token: `HttpClient` throws `NoTokenError`, a 401 that `PrTracker` retries like a failure.
+    The welcome text and the sign-in tooltip point `gh` users to Refresh.
+  - `PrTracker.applyPollInterval`, run by `onPollIntervalChanged`, applies a new interval at once.
+  - Any 429 is a rate limit.
+  - The trigger watch ends only once Zuul has stopped, not while it is retrying.
+  - A response is stored only if the token it was sent with is still the current one.
+  - `onTokenSettingsChanged` also fires for `zuul.auth.method`.
+  - Remove the Builds welcome entries for `zuul-auth` and `zuul-unreachable`. The sidebar message always
+    hides them when they would apply.
+  - Remove `at` and `lastSuccessAt` from `PollStatus`, because nothing read them. Share `formatClock`.
+    Reuse `getJsonUnconditional`.
+- **Done when:**
+  - `npm run check` passes
+  - Each new test was seen to fail with the fix it guards removed
 
 ## Out of scope
 

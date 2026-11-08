@@ -114,6 +114,13 @@ describe('RateLimitGuard through HttpClient', () => {
     expect(err).not.toBeInstanceOf(RateLimitedError);
   });
 
+  it('treats any 429 as a rate limit, even with no headers or rate limit text', async () => {
+    const t = setup([res(429, { message: 'Too Many Requests' })]);
+    const err = (await t.client.getJson('/x').catch((e: unknown) => e)) as RateLimitedError;
+    expect(err).toBeInstanceOf(RateLimitedError);
+    expect(err.retryAt).toBe(t.now() + 60_000);
+  });
+
   it('sends nothing while blocked, only for the blocked bucket, and resumes later', async () => {
     const t = setup([
       res(429, {}, { 'retry-after': '30' }),

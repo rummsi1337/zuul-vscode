@@ -207,7 +207,7 @@
       {
         "view": "zuul.gateReadiness",
         "when": "workbenchState != 'empty' && zuul.contextProblem == 'none' && zuul.authChecked && !zuul.signedIn",
-        "contents": "No GitHub token available, so the pull request could not be loaded.\n[Set GitHub Enterprise PAT](command:zuul.setGhePat)"
+        "contents": "No GitHub token available, so the pull request could not be loaded.\n[Set GitHub Enterprise PAT](command:zuul.setGhePat)\nSigned in with `gh`? [Refresh](command:zuul.refresh)"
       },
       {
         "view": "zuul.gateReadiness",
@@ -228,6 +228,11 @@
         "view": "zuul.gateReadiness",
         "when": "workbenchState != 'empty' && zuul.contextProblem == 'none' && (!zuul.authChecked || zuul.signedIn) && zuul.pollState == 'rate-limited'",
         "contents": "Could not load data from GitHub. [Retry](command:zuul.refresh)"
+      },
+      {
+        "view": "zuul.gateReadiness",
+        "when": "workbenchState != 'empty' && zuul.contextProblem == 'none' && (!zuul.authChecked || zuul.signedIn) && zuul.pollState == 'retrying'",
+        "contents": "Could not load data from GitHub, retrying. [Retry now](command:zuul.refresh)"
       },
       {
         "view": "zuul.dependencies",
@@ -257,7 +262,7 @@
       {
         "view": "zuul.dependencies",
         "when": "workbenchState != 'empty' && zuul.contextProblem == 'none' && zuul.authChecked && !zuul.signedIn",
-        "contents": "No GitHub token available, so the pull request could not be loaded.\n[Set GitHub Enterprise PAT](command:zuul.setGhePat)"
+        "contents": "No GitHub token available, so the pull request could not be loaded.\n[Set GitHub Enterprise PAT](command:zuul.setGhePat)\nSigned in with `gh`? [Refresh](command:zuul.refresh)"
       },
       {
         "view": "zuul.dependencies",
@@ -278,6 +283,11 @@
         "view": "zuul.dependencies",
         "when": "workbenchState != 'empty' && zuul.contextProblem == 'none' && (!zuul.authChecked || zuul.signedIn) && zuul.pollState == 'rate-limited'",
         "contents": "Could not load data from GitHub. [Retry](command:zuul.refresh)"
+      },
+      {
+        "view": "zuul.dependencies",
+        "when": "workbenchState != 'empty' && zuul.contextProblem == 'none' && (!zuul.authChecked || zuul.signedIn) && zuul.pollState == 'retrying'",
+        "contents": "Could not load data from GitHub, retrying. [Retry now](command:zuul.refresh)"
       },
       {
         "view": "zuul.builds",
@@ -307,7 +317,7 @@
       {
         "view": "zuul.builds",
         "when": "workbenchState != 'empty' && zuul.contextProblem == 'none' && zuul.authChecked && !zuul.signedIn",
-        "contents": "No GitHub token available, so the pull request could not be loaded.\n[Set GitHub Enterprise PAT](command:zuul.setGhePat)"
+        "contents": "No GitHub token available, so the pull request could not be loaded.\n[Set GitHub Enterprise PAT](command:zuul.setGhePat)\nSigned in with `gh`? [Refresh](command:zuul.refresh)"
       },
       {
         "view": "zuul.builds",
@@ -331,13 +341,8 @@
       },
       {
         "view": "zuul.builds",
-        "when": "workbenchState != 'empty' && zuul.contextProblem == 'none' && (!zuul.authChecked || zuul.signedIn) && zuul.hasPr && zuul.zuulProblem == 'zuul-auth'",
-        "contents": "Zuul refused the token, so builds can't be loaded.\n[Set Zuul Tenant Token](command:zuul.setTenantToken)"
-      },
-      {
-        "view": "zuul.builds",
-        "when": "workbenchState != 'empty' && zuul.contextProblem == 'none' && (!zuul.authChecked || zuul.signedIn) && zuul.hasPr && zuul.zuulProblem == 'zuul-unreachable'",
-        "contents": "Could not reach Zuul at the configured URL. Check `zuul.url` and your network, then [Refresh](command:zuul.refresh)."
+        "when": "workbenchState != 'empty' && zuul.contextProblem == 'none' && (!zuul.authChecked || zuul.signedIn) && zuul.pollState == 'retrying'",
+        "contents": "Could not load data from GitHub, retrying. [Retry now](command:zuul.refresh)"
       },
       {
         "view": "zuul.builds",

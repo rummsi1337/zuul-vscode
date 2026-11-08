@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   onSettingsChanged,
+  onPollIntervalChanged,
   onTokenSettingsChanged,
   readGheHost,
   readSettings,
@@ -223,7 +224,27 @@ describe('settings', () => {
     );
   });
 
-  it('notifies onTokenSettingsChanged only for zuul.tokens and zuul.tokenFile', () => {
+  it('notifies onPollIntervalChanged only for zuul.pollIntervalSeconds', () => {
+    let capturedListener: Listener<ConfigurationChangeEvent> | undefined;
+    workspace.onDidChangeConfiguration.mockImplementationOnce((listener) => {
+      capturedListener = listener;
+      return new Disposable();
+    });
+    const changed = (setting: string): ConfigurationChangeEvent => ({
+      affectsConfiguration: (section) => section === 'zuul' || section === setting,
+    });
+
+    const cb = vi.fn();
+    onPollIntervalChanged(cb);
+
+    capturedListener?.(changed('zuul.tokens'));
+    expect(cb).not.toHaveBeenCalled();
+
+    capturedListener?.(changed('zuul.pollIntervalSeconds'));
+    expect(cb).toHaveBeenCalledTimes(1);
+  });
+
+  it('notifies onTokenSettingsChanged only for the settings that decide the tokens', () => {
     let capturedListener: Listener<ConfigurationChangeEvent> | undefined;
     workspace.onDidChangeConfiguration.mockImplementationOnce((listener) => {
       capturedListener = listener;
@@ -245,6 +266,9 @@ describe('settings', () => {
 
     capturedListener?.(changed('zuul.tokenFile'));
     expect(cb).toHaveBeenCalledTimes(2);
+
+    capturedListener?.(changed('zuul.auth.method'));
+    expect(cb).toHaveBeenCalledTimes(3);
   });
 });
 

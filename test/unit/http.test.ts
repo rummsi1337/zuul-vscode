@@ -1,6 +1,6 @@
 import { gzipSync } from 'node:zlib';
 import { describe, expect, it, vi } from 'vitest';
-import { HttpClient, HttpError } from '../../src/clients/http';
+import { HttpClient, HttpError, NoTokenError } from '../../src/clients/http';
 
 function jsonResponse(data: unknown, status = 200, headers?: Record<string, string>): Response {
   return new Response(JSON.stringify(data), {
@@ -347,6 +347,37 @@ describe('HttpClient', () => {
       expect(sentHeaders(fetchFn, 2)['If-None-Match']).toBe('"v1"');
     });
 
+    it('does not store an answer sent with a token that has since changed', async () => {
+      let token = 'Bearer a';
+      let finishOld: (res: Response) => void = () => undefined;
+      const fetchFn = vi
+        .fn<typeof fetch>()
+        .mockImplementationOnce(
+          () =>
+            new Promise<Response>((resolve) => {
+              finishOld = resolve;
+            }),
+        )
+        .mockResolvedValueOnce(jsonResponse({ who: 'b' }, 200, { ETag: '"b"' }))
+        .mockResolvedValue(new Response(null, { status: 304 }));
+      const client = new HttpClient({
+        baseUrl: base,
+        fetchFn,
+        conditionalGet: true,
+        getAuthHeader: async () => token,
+      });
+
+      const oldRequest = client.getJson('/x');
+      await vi.waitFor(() => expect(fetchFn).toHaveBeenCalledTimes(1));
+      token = 'Bearer b';
+      await client.getJson('/x');
+      finishOld(jsonResponse({ who: 'a' }, 200, { ETag: '"a"' }));
+      await oldRequest;
+
+      await expect(client.getJson('/x')).resolves.toEqual({ who: 'b' });
+      expect(sentHeaders(fetchFn, 2)['If-None-Match']).toBe('"b"');
+    });
+
     it('keeps at most 200 entries, dropping the oldest', async () => {
       const fetchFn = vi.fn<typeof fetch>(async () => jsonResponse({}, 200, { ETag: '"e"' }));
       const client = new HttpClient({ baseUrl: base, fetchFn, conditionalGet: true });
@@ -382,6 +413,7 @@ describe('HttpClient', () => {
     });
 
     await expect(client.getJson('/user')).rejects.toMatchObject({ status: 401 });
+    await expect(client.getJson('/user')).rejects.toBeInstanceOf(NoTokenError);
     await expect(
       client.graphql('https://ghe.example.com/api/graphql', 'query{x}'),
     ).rejects.toMatchObject({ status: 401 });

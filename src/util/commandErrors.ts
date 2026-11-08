@@ -1,5 +1,6 @@
 import { HttpError } from '../clients/http';
 import { RateLimitedError } from '../clients/rateLimit';
+import { formatClock } from './clock';
 import { type Logger } from './logger';
 
 export const SIGN_IN_ACTION = 'Sign in';
@@ -21,11 +22,6 @@ export function offersSignIn(err: unknown): boolean {
     return false;
   }
   return err.status === 401 || (err.status === 403 && !isRateLimitError(err));
-}
-
-function formatClock(epochMs: number): string {
-  const d = new Date(epochMs);
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
 export function shortReason(err: unknown): string {

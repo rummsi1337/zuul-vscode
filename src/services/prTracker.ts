@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { type PullRequest } from '../clients/gheTypes';
 import { type Build, type ChangeStatus } from '../clients/zuulTypes';
-import { HttpError } from '../clients/http';
+import { HttpError, NoTokenError } from '../clients/http';
 import { RateLimitedError } from '../clients/rateLimit';
 import { type ResolvedContext, type ZuulProblem } from '../context/zuulContext';
 import { type Logger } from '../util/logger';
@@ -34,15 +34,10 @@ function zuulUnavailable(err: unknown, stopped: boolean): ZuulUnavailable {
 
 export type PollStatus =
   | { kind: 'active' }
+  | { kind: 'retrying'; message: string }
   | { kind: 'no-pr' }
   | { kind: 'rate-limited'; until: number; message: string }
-  | {
-      kind: 'stopped';
-      reason: 'auth' | 'failed';
-      message: string;
-      at: number;
-      lastSuccessAt?: number;
-    };
+  | { kind: 'stopped'; reason: 'auth' | 'failed'; message: string };
 
 export interface ZuulContextSource {
   readonly current: ResolvedContext | undefined;
@@ -86,7 +81,6 @@ export class PrTracker implements vscode.Disposable {
   private zuulFailures = 0;
   /** Set once Zuul has stopped: `poll` then skips Zuul and reuses this result. */
   private stoppedZuul: ZuulUnavailable | undefined;
-  private lastSuccessAt: number | undefined;
   private currentPr: PullRequest | undefined;
   private fastUntil: number | undefined;
   private lastPollAt: number | undefined;
@@ -173,6 +167,11 @@ export class PrTracker implements vscode.Disposable {
     await this.poll(this.sessionSeq);
   }
 
+  /** Applies a changed poll interval now, instead of after the timer that is already waiting. */
+  applyPollInterval(): void {
+    this.handleFocusChange(this.isFocused());
+  }
+
   private isFocused(): boolean {
     if (this.focusEvents.state.focused !== this.lastObservedStateFocused) {
       this.lastObservedStateFocused = this.focusEvents.state.focused;
@@ -230,7 +229,6 @@ export class PrTracker implements vscode.Disposable {
     this.currentPr = undefined;
     this.lastPollAt = undefined;
     this.hasEmittedForContext = false;
-    this.lastSuccessAt = undefined;
     this.resetPollState();
 
     const currentCtx = this.ctx.current;
@@ -287,6 +285,7 @@ export class PrTracker implements vscode.Disposable {
   private nextTimerDelayMs(): number | undefined {
     switch (this._pollStatus.kind) {
       case 'active':
+      case 'retrying':
         return this.currentDelayMs();
       case 'rate-limited':
         return Math.max(0, this._pollStatus.until - this.now());
@@ -358,7 +357,6 @@ export class PrTracker implements vscode.Disposable {
         this.logger.info(
           `[Poll] No open PR found for branch="${currentCtx.branch}" on ${currentCtx.owner}/${currentCtx.repo}`,
         );
-        this.lastSuccessAt = this.now();
         this.setPollStatus({ kind: 'no-pr' });
         this.updateSnapshot(undefined);
         return;
@@ -429,7 +427,6 @@ export class PrTracker implements vscode.Disposable {
         fetchedAt: this.now(),
         zuul: zuulState,
       };
-      this.lastSuccessAt = this.now();
       this.setPollStatus({ kind: 'active' });
       this.updateSnapshot(snapshot, true);
     } catch (err) {
@@ -457,22 +454,18 @@ export class PrTracker implements vscode.Disposable {
       this.setPollStatus({ kind: 'rate-limited', until, message });
       return;
     }
-    const stoppedAt = {
-      message,
-      at: this.now(),
-      ...(this.lastSuccessAt !== undefined ? { lastSuccessAt: this.lastSuccessAt } : {}),
-    };
-    if (err instanceof HttpError && [401, 403, 404].includes(err.status)) {
-      this.setPollStatus({ kind: 'stopped', reason: 'auth', ...stoppedAt });
+    // Reading a token can fail briefly (a slow `gh`), so that is retried. A refused token isn't.
+    const noToken = err instanceof NoTokenError;
+    if (!noToken && err instanceof HttpError && [401, 403, 404].includes(err.status)) {
+      this.setPollStatus({ kind: 'stopped', reason: 'auth', message });
       return;
     }
     this.gheFailures += 1;
     if (this.gheFailures > RETRY_DELAYS_MS.length) {
-      this.setPollStatus({ kind: 'stopped', reason: 'failed', ...stoppedAt });
+      this.setPollStatus({ kind: 'stopped', reason: noToken ? 'auth' : 'failed', message });
       return;
     }
-    // A lookup that fails after a rate limit or "no PR" is retried like any other failure.
-    this.setPollStatus({ kind: 'active' });
+    this.setPollStatus({ kind: 'retrying', message });
   }
 
   private recordZuulFailure(err: unknown): ZuulUnavailable {
