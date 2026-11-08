@@ -201,6 +201,58 @@ describe('TriggerService', () => {
     service.dispose();
   });
 
+  it('posts to the repository of the pull request, not the checked-out one', async () => {
+    const snapshot: PrSnapshot = {
+      pr: makePr({
+        number: 7,
+        base: { ref: 'main', repo: { full_name: 'other-org/other-repo' } },
+      }),
+      statuses: [],
+      builds: [],
+      fetchedAt: 1_000_000,
+    };
+    const { ctx, tracker, postIssueComment } = createHarness(snapshot);
+    const service = new TriggerService(ctx, tracker, createFakeLogger(), Date.now);
+
+    expect(await service.post('recheck', { confirm: false })).toBe(true);
+    expect(postIssueComment).toHaveBeenCalledWith('other-org', 'other-repo', 7, 'recheck');
+    service.dispose();
+  });
+
+  it('does not start waiting when the snapshot goes away while posting', async () => {
+    const snapshot: PrSnapshot = { pr: makePr(), statuses: [], builds: [], fetchedAt: 1_000_000 };
+    const { ctx, tracker, postIssueComment, emitSnapshot, watchFor } = createHarness(snapshot);
+    const service = new TriggerService(ctx, tracker, createFakeLogger(), Date.now);
+    postIssueComment.mockImplementation(async () => {
+      emitSnapshot(undefined);
+      return { id: 1, body: 'recheck' };
+    });
+
+    expect(await service.post('recheck', { confirm: false })).toBe(true);
+    expect(service.waiting).toBe(false);
+    expect(watchFor).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(WATCH_DURATION_MS);
+    expect(window.showInformationMessage).not.toHaveBeenCalled();
+    service.dispose();
+  });
+
+  it('stops waiting when the snapshot becomes undefined', async () => {
+    const snapshot: PrSnapshot = { pr: makePr(), statuses: [], builds: [], fetchedAt: 1_000_000 };
+    const { ctx, tracker, emitSnapshot } = createHarness(snapshot);
+    const service = new TriggerService(ctx, tracker, createFakeLogger(), Date.now);
+
+    await service.post('recheck', { confirm: false });
+    expect(service.waiting).toBe(true);
+
+    emitSnapshot(undefined);
+    expect(service.waiting).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(WATCH_DURATION_MS);
+    expect(window.showInformationMessage).not.toHaveBeenCalled();
+    service.dispose();
+  });
+
   it('stops waiting when a snapshot contains a new build UUID', async () => {
     const initialSnapshot: PrSnapshot = {
       pr: makePr(),

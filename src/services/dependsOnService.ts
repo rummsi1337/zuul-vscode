@@ -59,6 +59,17 @@ export function normalizeProjectName(project: string): string {
   return project.trim();
 }
 
+export function hostOf(url: string | undefined): string | undefined {
+  if (!url) {
+    return undefined;
+  }
+  try {
+    return new URL(url).host.toLowerCase();
+  } catch {
+    return undefined;
+  }
+}
+
 export function isInTenant(owner: string, repo: string, projects: ReadonlySet<string>): boolean {
   return projects.has(`${owner}/${repo}`.toLowerCase());
 }
@@ -189,22 +200,33 @@ export function syncState(
   };
 }
 
+/** Edits the fresh body. Returns false, without writing, when the body would not change. */
 export async function applyAddDependsOn(
   ghe: Pick<GheClient, 'getPr' | 'updatePrBody'>,
   ref: PrCoordinates,
   url: string,
-): Promise<void> {
+): Promise<boolean> {
   const freshPr = await ghe.getPr(ref.owner, ref.repo, ref.number);
-  await ghe.updatePrBody(ref.owner, ref.repo, ref.number, addDependsOn(freshPr.body, url));
+  const next = addDependsOn(freshPr.body, url);
+  if (next === (freshPr.body ?? '')) {
+    return false;
+  }
+  await ghe.updatePrBody(ref.owner, ref.repo, ref.number, next);
+  return true;
 }
 
 export async function applyRemoveDependsOn(
   ghe: Pick<GheClient, 'getPr' | 'updatePrBody'>,
   ref: PrCoordinates,
-  target: { owner: string; repo: string; number: number },
-): Promise<void> {
+  target: { owner: string; repo: string; number: number; host?: string },
+): Promise<boolean> {
   const freshPr = await ghe.getPr(ref.owner, ref.repo, ref.number);
-  await ghe.updatePrBody(ref.owner, ref.repo, ref.number, removeDependsOn(freshPr.body, target));
+  const next = removeDependsOn(freshPr.body, target);
+  if (next === (freshPr.body ?? '')) {
+    return false;
+  }
+  await ghe.updatePrBody(ref.owner, ref.repo, ref.number, next);
+  return true;
 }
 
 export class DependsOnService {
@@ -240,7 +262,8 @@ export class DependsOnService {
       });
   }
 
-  async getUpstream(pr: Pick<PullRequest, 'body'>): Promise<UpstreamDep[]> {
+  async getUpstream(pr: Pick<PullRequest, 'body' | 'html_url'>): Promise<UpstreamDep[]> {
+    const prHost = hostOf(pr.html_url);
     const parsedRefs = parseDependsOn(pr.body).filter(
       (ref): ref is DependsOnRef & { owner: string; repo: string; number: number } =>
         Boolean(ref.owner && ref.repo && ref.number !== undefined),
@@ -252,6 +275,14 @@ export class DependsOnService {
     const projects = await this.tenantProjects();
 
     return mapWithConcurrency(parsedRefs, MAX_UPSTREAM_CONCURRENCY, async (ref) => {
+      if (ref.host && ref.host !== prHost) {
+        return {
+          ref,
+          state: 'missing',
+          inTenant: false,
+          warning: `Depends-On points to another host (${ref.host}), which this extension does not read`,
+        } satisfies UpstreamDep;
+      }
       const inTenant = isInTenant(ref.owner, ref.repo, projects);
       let warning: string | undefined;
       if (ref.kind === 'shorthand') {

@@ -12,7 +12,7 @@ import { type Build, type Buildset, type ChangeStatus } from '../clients/zuulTyp
 import { mapWithConcurrency } from '../util/concurrency';
 import { classifyJobResult, getLatestBuildsPerJob } from './buildsModel';
 import { type DependsOnRef, formatPrRef, parseDependsOn, prRefKey } from './dependsOnParser';
-import { extractPrCoordinates } from './dependsOnService';
+import { extractPrCoordinates, hostOf } from './dependsOnService';
 import {
   type CheckState,
   type PrGateCheck,
@@ -432,25 +432,39 @@ export async function collectGateFacts(
   return collectGateFactsInternal(ghe, zuul, tenant, pr, true);
 }
 
+interface UpstreamRef {
+  host?: string;
+  owner: string;
+  repo: string;
+  number: number;
+}
+
+function hostKey(host: string | undefined, rootHost: string | undefined): string {
+  return `${host ?? rootHost ?? ''}/`;
+}
+
 function extractValidDependsOnRefs(
   body: string | null | undefined,
   seenKeys: Set<string>,
-): { owner: string; repo: string; number: number }[] {
+  rootHost: string | undefined,
+): UpstreamRef[] {
   const parsed = parseDependsOn(body ?? null).filter(
     (ref): ref is DependsOnRef & { owner: string; repo: string; number: number } =>
       Boolean(ref.owner && ref.repo && ref.number !== undefined),
   );
 
-  const result: { owner: string; repo: string; number: number }[] = [];
+  const result: UpstreamRef[] = [];
   for (const ref of parsed) {
-    const key = prRefKey({ owner: ref.owner, repo: ref.repo, number: ref.number });
+    const key =
+      hostKey(ref.host, rootHost) +
+      prRefKey({ owner: ref.owner, repo: ref.repo, number: ref.number });
     if (!seenKeys.has(key)) {
       seenKeys.add(key);
-      result.push({
-        owner: ref.owner,
-        repo: ref.repo,
-        number: ref.number,
-      });
+      const entry: UpstreamRef = { owner: ref.owner, repo: ref.repo, number: ref.number };
+      if (ref.host !== undefined) {
+        entry.host = ref.host;
+      }
+      result.push(entry);
     }
   }
   return result;
@@ -486,12 +500,13 @@ export async function collectUpstreamFacts(
   }
 
   const seenKeys = new Set<string>();
+  const rootHost = hostOf(rootPr.html_url);
   const rootCoords = extractPrCoordinates(rootPr);
   if (rootCoords) {
-    seenKeys.add(prRefKey(rootCoords));
+    seenKeys.add(hostKey(undefined, rootHost) + prRefKey(rootCoords));
   }
 
-  let currentLevelRefs = extractValidDependsOnRefs(rootPr.body, seenKeys);
+  let currentLevelRefs = extractValidDependsOnRefs(rootPr.body, seenKeys, rootHost);
   const allFacts: PrGateFacts[] = [];
   let depth = 1;
 
@@ -500,6 +515,14 @@ export async function collectUpstreamFacts(
       currentLevelRefs,
       concurrency,
       async (ref): Promise<{ pr?: PullRequest; facts: PrGateFacts } | undefined> => {
+        if (ref.host && ref.host !== rootHost) {
+          return {
+            facts: blockingUpstreamFacts(
+              formatPrRef(ref),
+              `Depends-On points to another host (${ref.host})`,
+            ),
+          };
+        }
         try {
           const upstreamPr = await ghe.getPr(ref.owner, ref.repo, ref.number);
           if (upstreamPr.merged) {
@@ -515,7 +538,7 @@ export async function collectUpstreamFacts(
       },
     );
 
-    const nextLevelRefs: { owner: string; repo: string; number: number }[] = [];
+    const nextLevelRefs: UpstreamRef[] = [];
     const tooDeepFacts: PrGateFacts[] = [];
     for (const entry of levelResults) {
       if (!entry) {
@@ -525,7 +548,7 @@ export async function collectUpstreamFacts(
       if (!entry.pr) {
         continue;
       }
-      const childRefs = extractValidDependsOnRefs(entry.pr.body, seenKeys);
+      const childRefs = extractValidDependsOnRefs(entry.pr.body, seenKeys, rootHost);
       if (depth < maxDepth) {
         nextLevelRefs.push(...childRefs);
       } else {

@@ -58,14 +58,14 @@ async function defaultGetWorkspaceContexts(): Promise<GitContext[]> {
   }
 }
 
-function coerceDirectCandidate(arg: unknown, defaultHost: string): DependsOnCandidate | undefined {
+function coerceDirectCandidate(arg: unknown): DependsOnCandidate | undefined {
   if (typeof arg === 'string') {
-    return parsePrUrlCandidate(arg, defaultHost);
+    return parsePrUrlCandidate(arg);
   }
   if (arg && typeof arg === 'object') {
     const url = (arg as { url?: unknown }).url;
     if (typeof url === 'string') {
-      return parsePrUrlCandidate(url, defaultHost);
+      return parsePrUrlCandidate(url);
     }
   }
   return undefined;
@@ -80,7 +80,6 @@ function toVscodeItems(rows: readonly CandidateRow[]): DependsOnQuickPickItem[] 
 }
 
 async function promptForCandidate(params: {
-  host: string;
   selfKey: string;
   loadBaseSections: () => Promise<{
     myPrs: DependsOnCandidate[];
@@ -134,7 +133,7 @@ async function promptForCandidate(params: {
     qp.onDidChangeValue((value) => {
       clearDebounce();
       const trimmed = value.trim();
-      const parsedUrl = parsePrUrlCandidate(trimmed, params.host);
+      const parsedUrl = parsePrUrlCandidate(trimmed);
       pastedCandidate = parsedUrl && prRefKey(parsedUrl) !== params.selfKey ? parsedUrl : undefined;
 
       if (!trimmed) {
@@ -174,7 +173,7 @@ async function promptForCandidate(params: {
     });
 
     qp.onDidAccept(() => {
-      const fromValue = parsePrUrlCandidate(qp.value, params.host);
+      const fromValue = parsePrUrlCandidate(qp.value);
       if (fromValue) {
         finish(fromValue);
         return;
@@ -249,7 +248,7 @@ export async function pickAndAddDependsOn(options: AddDependsOnOptions): Promise
     const seen = new Set<string>([selfKey]);
     const list: DependsOnCandidate[] = [];
     for (const item of items) {
-      const candidate = searchItemToCandidate(item, currentCtx.host);
+      const candidate = searchItemToCandidate(item);
       if (!candidate) {
         continue;
       }
@@ -316,9 +315,8 @@ export async function pickAndAddDependsOn(options: AddDependsOnOptions): Promise
   };
 
   const candidate =
-    coerceDirectCandidate(options.targetArg, currentCtx.host) ??
+    coerceDirectCandidate(options.targetArg) ??
     (await promptForCandidate({
-      host: currentCtx.host,
       selfKey,
       loadBaseSections,
       searchOpenPrs,
@@ -349,7 +347,6 @@ export async function pickAndAddDependsOn(options: AddDependsOnOptions): Promise
       owner: currentCtx.owner,
       repo: currentCtx.repo,
       number: snapshot.pr.number,
-      body: snapshot.pr.body,
     },
     {
       owner: candidate.owner,
@@ -365,15 +362,24 @@ export async function pickAndAddDependsOn(options: AddDependsOnOptions): Promise
   }
 
   const canonicalUrl = toPrUrl(currentCtx.host, candidate.owner, candidate.repo, candidate.number);
-  await applyAddDependsOn(
+  const changed = await applyAddDependsOn(
     currentCtx.ghe,
     { owner: currentCtx.owner, repo: currentCtx.repo, number: snapshot.pr.number },
     canonicalUrl,
   );
 
-  options.logger.info(
-    `[DependsOn] Added Depends-On ${canonicalUrl} on ${formatPrRef({ owner: currentCtx.owner, repo: currentCtx.repo, number: snapshot.pr.number })}`,
-  );
+  const prLabel = formatPrRef({
+    owner: currentCtx.owner,
+    repo: currentCtx.repo,
+    number: snapshot.pr.number,
+  });
+  if (changed) {
+    options.logger.info(`[DependsOn] Added Depends-On ${canonicalUrl} on ${prLabel}`);
+  } else {
+    options.logger.warn(
+      `[DependsOn] Depends-On ${canonicalUrl} was not added on ${prLabel}: the body did not change`,
+    );
+  }
 
   options.onUpdated?.();
   await options.tracker.refresh();

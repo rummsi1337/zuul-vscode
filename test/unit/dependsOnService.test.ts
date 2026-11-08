@@ -6,6 +6,7 @@ import {
   applyRemoveDependsOn,
   DependsOnService,
   extractPrCoordinates,
+  type GheDependsOnClient,
   MAX_CYCLE_FETCHES,
   normalizeProjectName,
   syncState,
@@ -632,5 +633,92 @@ describe('applyAddDependsOn / applyRemoveDependsOn', () => {
     };
     await expect(applyAddDependsOn(ghe, ref, 'https://x/o/r/pull/2')).rejects.toThrow('nope');
     expect(ghe.updatePrBody).not.toHaveBeenCalled();
+  });
+});
+
+describe('apply* skip the PATCH when nothing changes', () => {
+  const ref = { owner: 'org', repo: 'repo', number: 1 };
+
+  it('returns false and writes nothing when the Depends-On is already there', async () => {
+    const url = 'https://ghe.example.com/org/other/pull/2';
+    const ghe = {
+      getPr: vi.fn().mockResolvedValue(makePr({ body: `text\n\nDepends-On: ${url}` })),
+      updatePrBody: vi.fn().mockResolvedValue(undefined),
+    };
+    expect(await applyAddDependsOn(ghe, ref, url)).toBe(false);
+    expect(ghe.updatePrBody).not.toHaveBeenCalled();
+  });
+
+  it('returns false and writes nothing when the fresh body no longer lists the target', async () => {
+    const ghe = {
+      getPr: vi.fn().mockResolvedValue(makePr({ body: 'already removed' })),
+      updatePrBody: vi.fn().mockResolvedValue(undefined),
+    };
+    expect(await applyRemoveDependsOn(ghe, ref, { owner: 'org', repo: 'other', number: 2 })).toBe(
+      false,
+    );
+    expect(ghe.updatePrBody).not.toHaveBeenCalled();
+  });
+
+  it('returns true after writing a changed body', async () => {
+    const ghe = {
+      getPr: vi.fn().mockResolvedValue(makePr({ body: 'text' })),
+      updatePrBody: vi.fn().mockResolvedValue(undefined),
+    };
+    expect(await applyAddDependsOn(ghe, ref, 'https://ghe.example.com/org/other/pull/2')).toBe(
+      true,
+    );
+    expect(ghe.updatePrBody).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('DependsOnService.getUpstream with another host', () => {
+  it('marks a ref on another host as missing with a warning, without fetching it', async () => {
+    const ghe = { getPr: vi.fn(), searchPrs: vi.fn() };
+    const zuul = { getChangeStatus: vi.fn() };
+    const service = new DependsOnService(ghe, zuul, 'main', async () => new Set(['org/repo']));
+    const res = await service.getUpstream(
+      makePr({ body: 'Depends-On: https://other.example.com/org/repo/pull/7' }),
+    );
+    expect(res).toHaveLength(1);
+    expect(res[0]).toMatchObject({ state: 'missing', ref: { host: 'other.example.com' } });
+    expect(res[0].warning).toContain('other.example.com');
+    expect(ghe.getPr).not.toHaveBeenCalled();
+  });
+});
+
+describe('DependsOnService.getUpstream hosts, part 2', () => {
+  const newService = (getPr: GheDependsOnClient['getPr']) =>
+    new DependsOnService(
+      { getPr, searchPrs: vi.fn() },
+      { getChangeStatus: vi.fn().mockResolvedValue([]) },
+      'main',
+      async () => new Set(['org/repo']),
+    );
+
+  it('returns both a local and a foreign ref with the same path', async () => {
+    const getPr = vi.fn(async () => makePr({ number: 7 }));
+    const res = await newService(getPr).getUpstream(
+      makePr({
+        body: [
+          'Depends-On: https://ghe.example.com/org/repo/pull/7',
+          'Depends-On: https://other.example.com/org/repo/pull/7',
+        ].join('\n'),
+      }),
+    );
+    expect(res.map((d) => d.state)).toEqual(['open', 'missing']);
+    expect(getPr).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['absent', undefined],
+    ['malformed', 'not a url'],
+  ])('treats a ref with a host as foreign when html_url is %s', async (_name, htmlUrl) => {
+    const getPr = vi.fn();
+    const pr = makePr({ body: 'Depends-On: https://ghe.example.com/org/repo/pull/7' });
+    (pr as { html_url?: string }).html_url = htmlUrl;
+    const res = await newService(getPr).getUpstream(pr);
+    expect(res[0].state).toBe('missing');
+    expect(getPr).not.toHaveBeenCalled();
   });
 });

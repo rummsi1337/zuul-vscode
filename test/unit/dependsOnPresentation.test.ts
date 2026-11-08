@@ -126,7 +126,7 @@ describe('formatDownstreamLabel', () => {
   };
 
   it('formats from the html_url', () => {
-    expect(formatDownstreamLabel(item, 'ghe.example.com')).toBe('org/repo#9');
+    expect(formatDownstreamLabel(item)).toBe('org/repo#9');
   });
 
   it('falls back to #n', () => {

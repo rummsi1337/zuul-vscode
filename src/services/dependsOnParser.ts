@@ -111,7 +111,8 @@ export function parseDependsOn(body: string | null): DependsOnRef[] {
 
   const lines = body.split(/\r?\n/);
   const result: DependsOnRef[] = [];
-  const seenKeys = new Set<string>();
+  const seenWithHost = new Set<string>();
+  const seenCoordinates = new Set<string>();
 
   for (let i = 0; i < lines.length; i += 1) {
     const parsed = parseLine(lines[i], i + 1);
@@ -120,16 +121,26 @@ export function parseDependsOn(body: string | null): DependsOnRef[] {
     }
     const key = prRefKey(parsed);
     if (key !== undefined) {
-      if (seenKeys.has(key)) {
+      // A hostless shorthand collapses onto any earlier ref with the same coordinates;
+      // a URL only onto an earlier ref on the same host.
+      const duplicate = parsed.host
+        ? seenWithHost.has(`${parsed.host}|${key}`)
+        : seenCoordinates.has(key);
+      if (duplicate) {
         continue;
       }
-      seenKeys.add(key);
+      seenCoordinates.add(key);
+      if (parsed.host) {
+        seenWithHost.add(`${parsed.host}|${key}`);
+      }
     }
     result.push(parsed);
   }
 
   return result;
 }
+
+const TRAILING_EOL_RE = /(\r\n|\n)$/;
 
 export function addDependsOn(body: string | null, url: string): string {
   const current = body ?? '';
@@ -140,7 +151,11 @@ export function addDependsOn(body: string | null, url: string): string {
 
   const existing = parseDependsOn(current);
   for (const item of existing) {
-    if (targetKey !== undefined && prRefKey(item) === targetKey) {
+    if (
+      targetKey !== undefined &&
+      prRefKey(item) === targetKey &&
+      sameHostOrUnknown(item.host, targetRef.host)
+    ) {
       return current;
     }
     if (item.raw === trimmedUrl || item.raw === canonicalUrl) {
@@ -154,19 +169,31 @@ export function addDependsOn(body: string | null, url: string): string {
   }
 
   const eol = current.includes('\r\n') ? '\r\n' : '\n';
-  const lines = current.split(/\r?\n/);
+  const trailing = TRAILING_EOL_RE.exec(current)?.[1] ?? '';
+  const core = trailing ? current.slice(0, current.length - trailing.length) : current;
+  const lines = core.split(/\r?\n/);
   const lastLine = lines[lines.length - 1];
 
   if (DEPENDS_ON_LINE_RE.test(lastLine) || lastLine.trim() === '') {
-    return `${current}${eol}${newLine}`;
+    return `${core}${eol}${newLine}${trailing}`;
   }
 
-  return `${current}${eol}${eol}${newLine}`;
+  return `${core}${eol}${eol}${newLine}${trailing}`;
 }
 
+interface BodyLine {
+  text: string;
+  eol: string;
+}
+
+function sameHostOrUnknown(a: string | undefined, b: string | undefined): boolean {
+  return !a || !b || a.toLowerCase() === b.toLowerCase();
+}
+
+/** `host`, when given, keeps lines for the same PR number on another host untouched. */
 export function removeDependsOn(
   body: string | null,
-  ref: { owner: string; repo: string; number: number },
+  ref: { owner: string; repo: string; number: number; host?: string },
 ): string {
   const current = body ?? '';
   if (current.length === 0) {
@@ -174,27 +201,49 @@ export function removeDependsOn(
   }
 
   const targetKey = prRefKey(ref);
-  const eol = current.includes('\r\n') ? '\r\n' : '\n';
-  const lines = current.split(eol);
-  const kept: string[] = [];
-  let removed = false;
+  const parts = current.split(/(\r\n|\n)/);
+  const lines: BodyLine[] = [];
+  for (let i = 0; i < parts.length; i += 2) {
+    lines.push({ text: parts[i], eol: parts[i + 1] ?? '' });
+  }
+  // Splitting "a\n" leaves a phantom empty last line; it only records the trailing ending.
+  const last = lines[lines.length - 1];
+  const finalEol = last.text === '' && lines.length > 1 ? lines[lines.length - 2].eol : '';
+  if (finalEol) {
+    lines.pop();
+  }
 
-  for (let i = 0; i < lines.length; i += 1) {
-    const parsed = parseLine(lines[i], i + 1);
-    if (parsed && prRefKey(parsed) === targetKey) {
+  const kept: BodyLine[] = [];
+  let removed = false;
+  let removedAfterContent = false;
+  for (const line of lines) {
+    const parsed = parseLine(line.text, 1);
+    if (parsed && prRefKey(parsed) === targetKey && sameHostOrUnknown(parsed.host, ref.host)) {
       removed = true;
+      removedAfterContent = true;
       continue;
     }
-    kept.push(lines[i]);
+    if (line.text.trim() !== '') {
+      removedAfterContent = false;
+    }
+    kept.push(line);
   }
 
   if (!removed) {
     return current;
   }
 
-  while (kept.length > 0 && kept[kept.length - 1].trim() === '') {
-    kept.pop();
+  // Blank lines are dropped only when the removal left them dangling at the end.
+  if (removedAfterContent) {
+    while (kept.length > 0 && kept[kept.length - 1].text.trim() === '') {
+      kept.pop();
+    }
   }
 
-  return kept.join(eol);
+  if (kept.length === 0) {
+    return '';
+  }
+
+  kept[kept.length - 1] = { text: kept[kept.length - 1].text, eol: finalEol };
+  return kept.map((line) => line.text + line.eol).join('');
 }

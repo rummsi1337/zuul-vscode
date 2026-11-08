@@ -1,6 +1,5 @@
 import { type SearchItem } from '../clients/gheTypes';
 import { type ZuulProject } from '../clients/zuulTypes';
-import { normalizeHost } from '../git/remoteUrl';
 import { formatPrRef, parseDependsOn, toPrUrl } from './dependsOnParser';
 import { normalizeProjectName } from './dependsOnService';
 
@@ -25,10 +24,7 @@ export interface CandidateRow {
   separator?: true;
 }
 
-export function parsePrUrlCandidate(
-  input: string,
-  fallbackHost?: string,
-): DependsOnCandidate | undefined {
+export function parsePrUrlCandidate(input: string): DependsOnCandidate | undefined {
   const trimmed = input.trim();
   if (!trimmed) {
     return undefined;
@@ -55,7 +51,7 @@ export function parsePrUrlCandidate(
   if (!Number.isSafeInteger(prNumber) || prNumber <= 0) {
     return undefined;
   }
-  const host = normalizeHost(fallbackHost?.trim() || rawHost);
+  const host = rawHost.toLowerCase();
 
   return {
     host,
@@ -66,12 +62,9 @@ export function parsePrUrlCandidate(
   };
 }
 
-export function searchItemToCandidate(
-  item: SearchItem,
-  defaultHost: string,
-): DependsOnCandidate | undefined {
+export function searchItemToCandidate(item: SearchItem): DependsOnCandidate | undefined {
   if (item.html_url) {
-    const fromHtml = parsePrUrlCandidate(item.html_url, defaultHost);
+    const fromHtml = parsePrUrlCandidate(item.html_url);
     if (fromHtml) {
       return {
         ...fromHtml,
