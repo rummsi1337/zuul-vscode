@@ -20,11 +20,20 @@ export const MAX_TRANSITIVE_FETCHES = 50;
 
 export type UpstreamState = 'open' | 'merged' | 'closed' | 'missing';
 
+export type UpstreamReview = 'approved' | 'changes requested' | 'review required';
+
+const REVIEW_BY_DECISION = {
+  APPROVED: 'approved',
+  CHANGES_REQUESTED: 'changes requested',
+  REVIEW_REQUIRED: 'review required',
+} as const satisfies Record<string, UpstreamReview>;
+
 export interface UpstreamDep {
   ref: DependsOnRef;
   pr?: PullRequest;
   state: UpstreamState;
   zuul?: ChangeStatus[];
+  review?: UpstreamReview;
   inTenant: boolean;
   warning?: string;
 }
@@ -44,7 +53,8 @@ export interface PrCoordinates {
 
 export type PrIdentifier = PullRequest | PrCoordinates;
 
-export type GheDependsOnClient = Pick<GheClient, 'getPr' | 'searchPrs'>;
+export type GheDependsOnClient = Pick<GheClient, 'getPr' | 'searchPrs'> &
+  Partial<Pick<GheClient, 'getPrRollup'>>;
 export type ZuulDependsOnClient = Pick<ZuulClient, 'getChangeStatus'> &
   Partial<Pick<ZuulClient, 'listProjects' | 'getQueueAhead'>>;
 
@@ -295,6 +305,17 @@ export class DependsOnService {
         const upstreamPr = await this.ghe.getPr(ref.owner, ref.repo, ref.number);
         const state = classifyPrState(upstreamPr);
         let zuulStatuses: ChangeStatus[] | undefined;
+        let review: UpstreamReview | undefined;
+
+        if (state === 'open' && this.ghe.getPrRollup) {
+          try {
+            const rollup = await this.ghe.getPrRollup(ref.owner, ref.repo, ref.number);
+            const decision = rollup?.reviewDecision;
+            review = decision ? REVIEW_BY_DECISION[decision] : undefined;
+          } catch {
+            review = undefined;
+          }
+        }
 
         if (inTenant && upstreamPr.head?.sha) {
           try {
@@ -316,6 +337,9 @@ export class DependsOnService {
         };
         if (zuulStatuses !== undefined) {
           dep.zuul = zuulStatuses;
+        }
+        if (review !== undefined) {
+          dep.review = review;
         }
         if (warning !== undefined) {
           dep.warning = warning;

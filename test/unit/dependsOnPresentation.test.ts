@@ -84,6 +84,15 @@ describe('description and tooltip', () => {
     expect(formatUpstreamDescription(dep())).toBe('open · not in Zuul');
   });
 
+  it('adds the review status when set', () => {
+    expect(formatUpstreamDescription(dep({ review: 'approved' }))).toBe(
+      'open · approved · not in Zuul',
+    );
+    expect(formatUpstreamTooltip(dep({ review: 'changes requested' }))).toBe(
+      'org/repo#5\nState: open\nReview: changes requested\nZuul: not in Zuul',
+    );
+  });
+
   it('builds a tooltip with title and warning', () => {
     const tooltip = formatUpstreamTooltip(
       dep({ pr: { title: 'My title' } as PullRequest, warning: 'careful' }),

@@ -587,7 +587,7 @@ the code, and the pre-commit checks run.
 
 - **Tier:** sonnet
 - **Risk:** low
-- **Status:** todo
+- **Status:** done
 - **Files:** `src/services/dependsOnService.ts`, `src/services/dependsOnPresentation.ts`,
   `test/unit/dependsOnService.test.ts`, `test/unit/dependsOnPresentation.test.ts`
 - **Do:**

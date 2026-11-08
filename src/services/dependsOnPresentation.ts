@@ -60,7 +60,12 @@ export function formatUpstreamZuulSummary(zuul: readonly ChangeStatus[] | undefi
 }
 
 export function formatUpstreamDescription(dep: UpstreamDep): string {
-  return `${dep.state} · ${formatUpstreamZuulSummary(dep.zuul)}`;
+  const parts: string[] = [dep.state];
+  if (dep.review) {
+    parts.push(dep.review);
+  }
+  parts.push(formatUpstreamZuulSummary(dep.zuul));
+  return parts.join(' · ');
 }
 
 export function formatUpstreamTooltip(dep: UpstreamDep): string {
@@ -72,6 +77,9 @@ export function formatUpstreamTooltip(dep: UpstreamDep): string {
     lines.push(label);
   }
   lines.push(`State: ${dep.state}`);
+  if (dep.review) {
+    lines.push(`Review: ${dep.review}`);
+  }
   lines.push(`Zuul: ${formatUpstreamZuulSummary(dep.zuul)}`);
   if (dep.warning) {
     lines.push(`Warning: ${dep.warning}`);

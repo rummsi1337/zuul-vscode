@@ -722,3 +722,55 @@ describe('DependsOnService.getUpstream hosts, part 2', () => {
     expect(getPr).not.toHaveBeenCalled();
   });
 });
+
+describe('DependsOnService.getUpstream review status', () => {
+  const body = 'Depends-On: https://ghe.example.com/org/repo/pull/7';
+  const newService = (
+    pr: PullRequest,
+    getPrRollup: NonNullable<GheDependsOnClient['getPrRollup']>,
+  ) =>
+    new DependsOnService(
+      { getPr: vi.fn().mockResolvedValue(pr), searchPrs: vi.fn(), getPrRollup },
+      { getChangeStatus: vi.fn().mockResolvedValue([]) },
+      'main',
+      async () => new Set(['org/repo']),
+    );
+
+  it.each([
+    ['APPROVED', 'approved'],
+    ['CHANGES_REQUESTED', 'changes requested'],
+    ['REVIEW_REQUIRED', 'review required'],
+  ] as const)('maps %s to "%s"', async (decision, text) => {
+    const getPrRollup = vi.fn().mockResolvedValue({ reviewDecision: decision });
+    const res = await newService(makePr({ number: 7 }), getPrRollup).getUpstream(makePr({ body }));
+    expect(res[0].review).toBe(text);
+    expect(res[0].state).toBe('open');
+  });
+
+  it('leaves review unset for a null decision or a missing rollup', async () => {
+    for (const value of [{ reviewDecision: null }, undefined]) {
+      const getPrRollup = vi.fn().mockResolvedValue(value);
+      const res = await newService(makePr({ number: 7 }), getPrRollup).getUpstream(
+        makePr({ body }),
+      );
+      expect(res[0].review).toBeUndefined();
+    }
+  });
+
+  it('makes no rollup call for a merged PR', async () => {
+    const getPrRollup = vi.fn();
+    const res = await newService(makePr({ number: 7, merged: true }), getPrRollup).getUpstream(
+      makePr({ body }),
+    );
+    expect(getPrRollup).not.toHaveBeenCalled();
+    expect(res[0]).toMatchObject({ state: 'merged' });
+    expect(res[0].review).toBeUndefined();
+  });
+
+  it('keeps state open with no review when the rollup fails', async () => {
+    const getPrRollup = vi.fn().mockRejectedValue(new Error('boom'));
+    const res = await newService(makePr({ number: 7 }), getPrRollup).getUpstream(makePr({ body }));
+    expect(res[0].state).toBe('open');
+    expect(res[0].review).toBeUndefined();
+  });
+});
