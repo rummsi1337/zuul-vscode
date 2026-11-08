@@ -45,7 +45,15 @@ export interface FocusEvents {
 export type SetTimerFn = (callback: () => void, ms: number) => unknown;
 export type ClearTimerFn = (handle: unknown) => void;
 
-const PR_REFETCH_INTERVAL_TICKS = 4;
+export interface PrTrackerOptions {
+  setTimer?: SetTimerFn;
+  now?: () => number;
+  focusEvents?: FocusEvents;
+  clearTimer?: ClearTimerFn;
+  getPollIntervalMs?: () => number;
+}
+
+const DEFAULT_POLL_INTERVAL_MS = 60_000;
 
 export class PrTracker implements vscode.Disposable {
   private readonly emitter = new vscode.EventEmitter<PrSnapshot | undefined>();
@@ -57,13 +65,14 @@ export class PrTracker implements vscode.Disposable {
   private readonly clearTimer: ClearTimerFn;
   private readonly now: () => number;
   private readonly focusEvents: FocusEvents;
+  private readonly getPollIntervalMs: () => number;
 
   private _snapshot: PrSnapshot | undefined;
   private _pollError: PollError | undefined;
   private lastSuccessAt: number | undefined;
   private currentPr: PullRequest | undefined;
   private fastUntil: number | undefined;
-  private pollCount = 0;
+  private lastPollAt: number | undefined;
   private sessionSeq = 0;
   private pollRunSeq = 0;
   private timerSeq = 0;
@@ -78,22 +87,17 @@ export class PrTracker implements vscode.Disposable {
   readonly onDidChange: vscode.Event<PrSnapshot | undefined> = this.emitter.event;
   readonly onDidChangePollError: vscode.Event<void> = this.pollErrorEmitter.event;
 
-  constructor(
-    ctx: ZuulContextSource,
-    logger: Logger,
-    setTimer: SetTimerFn = setTimeout,
-    now: () => number = Date.now,
-    focusEvents: FocusEvents = vscode.window,
-    clearTimer: ClearTimerFn = (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
-  ) {
+  constructor(ctx: ZuulContextSource, logger: Logger, options: PrTrackerOptions = {}) {
+    this.getPollIntervalMs = options.getPollIntervalMs ?? (() => DEFAULT_POLL_INTERVAL_MS);
     this.ctx = ctx;
     this.logger = logger;
-    this.setTimer = setTimer;
-    this.clearTimer = clearTimer;
-    this.now = now;
-    this.focusEvents = focusEvents;
-    this.focused = focusEvents.state.focused;
-    this.lastObservedStateFocused = focusEvents.state.focused;
+    this.setTimer = options.setTimer ?? setTimeout;
+    this.clearTimer =
+      options.clearTimer ?? ((handle) => clearTimeout(handle as ReturnType<typeof setTimeout>));
+    this.now = options.now ?? Date.now;
+    this.focusEvents = options.focusEvents ?? vscode.window;
+    this.focused = this.focusEvents.state.focused;
+    this.lastObservedStateFocused = this.focusEvents.state.focused;
 
     this.disposables.push(
       this.ctx.onDidChange(() => {
@@ -140,8 +144,7 @@ export class PrTracker implements vscode.Disposable {
       return;
     }
     this.clearPendingTimer();
-    this.pollCount = 0;
-    await this.poll(this.sessionSeq, true);
+    await this.poll(this.sessionSeq);
   }
 
   private isFocused(): boolean {
@@ -164,8 +167,15 @@ export class PrTracker implements vscode.Disposable {
       return;
     }
 
-    if (this.ctx.current?.branch) {
-      void this.refresh();
+    if (!this.ctx.current?.branch) {
+      return;
+    }
+    const delay = this.currentDelayMs();
+    const elapsed = this.lastPollAt === undefined ? Infinity : this.now() - this.lastPollAt;
+    if (elapsed >= delay) {
+      void this.poll(this.sessionSeq);
+    } else {
+      this.scheduleNext(this.sessionSeq, delay - elapsed);
     }
   }
 
@@ -178,7 +188,7 @@ export class PrTracker implements vscode.Disposable {
     this.pollRunSeq += 1;
     this.polling = false;
     this.currentPr = undefined;
-    this.pollCount = 0;
+    this.lastPollAt = undefined;
     this.hasEmittedForContext = false;
     this.lastSuccessAt = undefined;
     this.setPollError(undefined);
@@ -201,7 +211,7 @@ export class PrTracker implements vscode.Disposable {
     }
 
     if (this.isFocused()) {
-      void this.poll(seq, true);
+      void this.poll(seq);
     }
   }
 
@@ -224,7 +234,11 @@ export class PrTracker implements vscode.Disposable {
     }
   }
 
-  private scheduleNext(seq: number): void {
+  private currentDelayMs(): number {
+    return nextPollDelayMs(this._snapshot, this.getPollIntervalMs(), this.fastUntil, this.now());
+  }
+
+  private scheduleNext(seq: number, delayOverride?: number): void {
     this.clearPendingTimer();
     if (
       this.disposed ||
@@ -235,7 +249,7 @@ export class PrTracker implements vscode.Disposable {
       return;
     }
 
-    const delay = nextPollDelayMs(this._snapshot, this.fastUntil, this.now());
+    const delay = delayOverride ?? this.currentDelayMs();
     const token = this.timerSeq;
     this.timerHandle = this.setTimer(() => {
       if (this.disposed || token !== this.timerSeq || seq !== this.sessionSeq) {
@@ -245,11 +259,11 @@ export class PrTracker implements vscode.Disposable {
       if (!this.isFocused()) {
         return;
       }
-      void this.poll(seq, false);
+      void this.poll(seq);
     }, delay);
   }
 
-  private async poll(seq: number, forcePrFetch: boolean): Promise<void> {
+  private async poll(seq: number): Promise<void> {
     this.clearPendingTimer();
     if (this.disposed || seq !== this.sessionSeq) {
       return;
@@ -265,25 +279,19 @@ export class PrTracker implements vscode.Disposable {
     this.polling = true;
 
     try {
-      const tickIndex = this.pollCount++;
-      const shouldFetchPr =
-        forcePrFetch || !this.currentPr || tickIndex % PR_REFETCH_INTERVAL_TICKS === 0;
-
-      let pr = this.currentPr;
-      if (shouldFetchPr) {
-        this.logger.info(
-          `[Poll] Polling open PR for branch="${currentCtx.branch}" on ${currentCtx.owner}/${currentCtx.repo}`,
-        );
-        pr = await currentCtx.ghe.findOpenPrForBranch(
-          currentCtx.owner,
-          currentCtx.repo,
-          currentCtx.branch,
-        );
-        if (this.disposed || seq !== this.sessionSeq || pollRunId !== this.pollRunSeq) {
-          return;
-        }
-        this.currentPr = pr;
+      this.lastPollAt = this.now();
+      this.logger.info(
+        `[Poll] Polling open PR for branch="${currentCtx.branch}" on ${currentCtx.owner}/${currentCtx.repo}`,
+      );
+      const pr = await currentCtx.ghe.findOpenPrForBranch(
+        currentCtx.owner,
+        currentCtx.repo,
+        currentCtx.branch,
+      );
+      if (this.disposed || seq !== this.sessionSeq || pollRunId !== this.pollRunSeq) {
+        return;
       }
+      this.currentPr = pr;
 
       if (!pr) {
         this.logger.info(

@@ -37,7 +37,19 @@ describe('settings', () => {
         blockingLabels: ['do-not-merge', 'wip'],
         gateStatusChecks: ['{tenant}/gate'],
       },
+      pollIntervalSeconds: 60,
     });
+  });
+
+  it('clamps pollIntervalSeconds to 10..3600 and falls back to 60', () => {
+    const read = (value: unknown) =>
+      readSettings((key) => (key === 'pollIntervalSeconds' ? value : undefined))
+        .pollIntervalSeconds;
+    expect(read(5)).toBe(10);
+    expect(read(30)).toBe(30);
+    expect(read(99999)).toBe(3600);
+    expect(read('fast')).toBe(60);
+    expect(read(Number.NaN)).toBe(60);
   });
 
   it('reads valid configured values and strips trailing slashes from url', () => {
@@ -89,6 +101,7 @@ describe('settings', () => {
         blockingLabels: ['hold'],
         gateStatusChecks: ['my-tenant/gate'],
       },
+      pollIntervalSeconds: 60,
     });
   });
 
@@ -129,6 +142,7 @@ describe('settings', () => {
         blockingLabels: ['do-not-merge', 'wip'],
         gateStatusChecks: ['{tenant}/gate'],
       },
+      pollIntervalSeconds: 60,
     });
   });
 

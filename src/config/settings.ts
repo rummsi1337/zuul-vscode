@@ -27,6 +27,7 @@ export interface ZuulSettings {
   triggerComments: TriggerComment[];
   pinnedArtifacts: string[];
   gate: GateSettings;
+  pollIntervalSeconds: number;
 }
 
 const VALID_AUTH_METHODS: readonly AuthMethodSetting[] = ['auto', 'gh-cli', 'pat'];
@@ -35,6 +36,9 @@ const DEFAULT_TRIGGER_COMMENTS: readonly TriggerComment[] = [
   { label: 'Recheck', comment: 'recheck', icon: 'refresh' },
 ];
 const DEFAULT_PINNED_ARTIFACTS: readonly string[] = ['job-output.txt'];
+const DEFAULT_POLL_INTERVAL_SECONDS = 60;
+const MIN_POLL_INTERVAL_SECONDS = 10;
+const MAX_POLL_INTERVAL_SECONDS = 3600;
 const DEFAULT_REQUIRED_APPROVALS = 1;
 const DEFAULT_REQUIRED_LABELS: readonly string[] = [];
 const DEFAULT_BLOCKING_LABELS: readonly string[] = ['do-not-merge', 'wip'];
@@ -104,6 +108,13 @@ function readStringArray(value: unknown, fallback: readonly string[]): string[] 
   return [...value];
 }
 
+function readPollIntervalSeconds(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return DEFAULT_POLL_INTERVAL_SECONDS;
+  }
+  return Math.min(MAX_POLL_INTERVAL_SECONDS, Math.max(MIN_POLL_INTERVAL_SECONDS, value));
+}
+
 function readRequiredApprovals(value: unknown): number {
   if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
     return value;
@@ -146,6 +157,7 @@ export function readSettings(get: (key: string) => unknown): ZuulSettings {
       blockingLabels: readStringArray(get('gate.blockingLabels'), DEFAULT_BLOCKING_LABELS),
       gateStatusChecks: readStringArray(get('gate.gateStatusChecks'), DEFAULT_GATE_STATUS_CHECKS),
     },
+    pollIntervalSeconds: readPollIntervalSeconds(get('pollIntervalSeconds')),
   };
 }
 

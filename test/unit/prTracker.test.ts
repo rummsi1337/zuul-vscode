@@ -118,7 +118,7 @@ describe('PrTracker', () => {
     vi.useRealTimers();
   });
 
-  it('uses PR head SHA from GHE (not local HEAD) and polls every 15s when ChangeStatus exists', async () => {
+  it('uses PR head SHA from GHE (not local HEAD) and polls at the interval when a status is live', async () => {
     const { findOpenPrForBranch, getChangeStatus, listBuilds, makeResolvedContext } =
       createMockClients();
     const pr = makePr({
@@ -140,7 +140,11 @@ describe('PrTracker', () => {
     const logger = createFakeLogger();
     const snapshots: (PrSnapshot | undefined)[] = [];
 
-    const tracker = new PrTracker(source, logger, setTimeout, Date.now, focusEvents);
+    const tracker = new PrTracker(source, logger, {
+      setTimer: setTimeout,
+      now: Date.now,
+      focusEvents,
+    });
     tracker.onDidChange((s) => snapshots.push(s));
 
     await vi.advanceTimersByTimeAsync(0);
@@ -159,13 +163,13 @@ describe('PrTracker', () => {
     });
     expect(snapshots).toHaveLength(1);
 
-    // Should not poll at 14.9s, should poll at 15s
-    await vi.advanceTimersByTimeAsync(14_900);
+    // Should not poll at 59.9s, should poll at 60s
+    await vi.advanceTimersByTimeAsync(59_900);
     expect(getChangeStatus).toHaveBeenCalledTimes(1);
 
     await vi.advanceTimersByTimeAsync(100);
     expect(getChangeStatus).toHaveBeenCalledTimes(2);
-    expect(findOpenPrForBranch).toHaveBeenCalledTimes(1);
+    expect(findOpenPrForBranch).toHaveBeenCalledTimes(2);
 
     tracker.dispose();
   });
@@ -178,7 +182,11 @@ describe('PrTracker', () => {
 
     const { source } = createFakeContextSource(makeResolvedContext({ zuul: undefined }));
     const { focusEvents } = createFakeFocusEvents(true);
-    const tracker = new PrTracker(source, createFakeLogger(), setTimeout, Date.now, focusEvents);
+    const tracker = new PrTracker(source, createFakeLogger(), {
+      setTimer: setTimeout,
+      now: Date.now,
+      focusEvents,
+    });
     await vi.advanceTimersByTimeAsync(0);
 
     expect(getChangeStatus).not.toHaveBeenCalled();
@@ -208,7 +216,11 @@ describe('PrTracker', () => {
       const { source } = createFakeContextSource(makeResolvedContext());
       const { focusEvents } = createFakeFocusEvents(true);
       const logger = createFakeLogger();
-      const tracker = new PrTracker(source, logger, setTimeout, Date.now, focusEvents);
+      const tracker = new PrTracker(source, logger, {
+        setTimer: setTimeout,
+        now: Date.now,
+        focusEvents,
+      });
       await vi.advanceTimersByTimeAsync(0);
 
       expect(tracker.snapshot).toMatchObject({
@@ -232,7 +244,11 @@ describe('PrTracker', () => {
 
     const { source } = createFakeContextSource(makeResolvedContext());
     const { focusEvents } = createFakeFocusEvents(true);
-    const tracker = new PrTracker(source, createFakeLogger(), setTimeout, Date.now, focusEvents);
+    const tracker = new PrTracker(source, createFakeLogger(), {
+      setTimer: setTimeout,
+      now: Date.now,
+      focusEvents,
+    });
     await vi.advanceTimersByTimeAsync(0);
 
     expect(listBuilds).toHaveBeenCalledTimes(1);
@@ -251,14 +267,18 @@ describe('PrTracker', () => {
 
     const { source } = createFakeContextSource(makeResolvedContext());
     const { focusEvents } = createFakeFocusEvents(true);
-    const tracker = new PrTracker(source, createFakeLogger(), setTimeout, Date.now, focusEvents);
+    const tracker = new PrTracker(source, createFakeLogger(), {
+      setTimer: setTimeout,
+      now: Date.now,
+      focusEvents,
+    });
     await vi.advanceTimersByTimeAsync(0);
 
     expect(listBuilds).not.toHaveBeenCalled();
     tracker.dispose();
   });
 
-  it('falls back to listBuilds when getChangeStatus returns empty and polls every 60s', async () => {
+  it('falls back to listBuilds when getChangeStatus returns empty and polls every 5 minutes', async () => {
     const { findOpenPrForBranch, getChangeStatus, listBuilds, makeResolvedContext } =
       createMockClients();
     const pr = makePr();
@@ -272,7 +292,11 @@ describe('PrTracker', () => {
     const { focusEvents } = createFakeFocusEvents(true);
     const logger = createFakeLogger();
 
-    const tracker = new PrTracker(source, logger, setTimeout, Date.now, focusEvents);
+    const tracker = new PrTracker(source, logger, {
+      setTimer: setTimeout,
+      now: Date.now,
+      focusEvents,
+    });
     await vi.advanceTimersByTimeAsync(0);
 
     expect(getChangeStatus).toHaveBeenCalledTimes(1);
@@ -290,18 +314,18 @@ describe('PrTracker', () => {
       zuul: { kind: 'ok' },
     });
 
-    // Should not poll at 15s (idle cadence is 60s)
-    await vi.advanceTimersByTimeAsync(15_000);
+    // Should not poll at 60s (idle cadence is 5 times the interval)
+    await vi.advanceTimersByTimeAsync(60_000);
     expect(getChangeStatus).toHaveBeenCalledTimes(1);
 
-    await vi.advanceTimersByTimeAsync(45_000);
+    await vi.advanceTimersByTimeAsync(240_000);
     expect(getChangeStatus).toHaveBeenCalledTimes(2);
     expect(listBuilds).toHaveBeenCalledTimes(2);
 
     tracker.dispose();
   });
 
-  it('switches to 3s cadence during watchFor(ms) and returns to normal cadence afterwards', async () => {
+  it('switches to 15s cadence during watchFor(ms) and returns to normal cadence afterwards', async () => {
     const { findOpenPrForBranch, getChangeStatus, listBuilds, makeResolvedContext } =
       createMockClients();
     const pr = makePr();
@@ -314,34 +338,38 @@ describe('PrTracker', () => {
     const { focusEvents } = createFakeFocusEvents(true);
     const logger = createFakeLogger();
 
-    const tracker = new PrTracker(source, logger, setTimeout, Date.now, focusEvents);
+    const tracker = new PrTracker(source, logger, {
+      setTimer: setTimeout,
+      now: Date.now,
+      focusEvents,
+    });
     await vi.advanceTimersByTimeAsync(0);
     expect(getChangeStatus).toHaveBeenCalledTimes(1);
 
-    // Start fast watch for 7000ms (should reschedule the 60s timer to 3s)
-    tracker.watchFor(7_000);
+    // Start fast watch for 40s (should reschedule the idle timer to 15s)
+    tracker.watchFor(40_000);
 
-    await vi.advanceTimersByTimeAsync(3_000);
+    await vi.advanceTimersByTimeAsync(15_000);
     expect(getChangeStatus).toHaveBeenCalledTimes(2);
 
-    await vi.advanceTimersByTimeAsync(3_000);
+    await vi.advanceTimersByTimeAsync(15_000);
     expect(getChangeStatus).toHaveBeenCalledTimes(3);
 
-    // At t + 6000ms, fastUntil (t + 7000ms) is still in the future -> one more 3s poll
-    await vi.advanceTimersByTimeAsync(3_000);
+    // fastUntil (t + 40s) is still in the future at t + 30s -> one more 15s poll
+    await vi.advanceTimersByTimeAsync(15_000);
     expect(getChangeStatus).toHaveBeenCalledTimes(4);
 
-    // Now at t + 9000ms, fastUntil has expired -> cadence is 60s
-    await vi.advanceTimersByTimeAsync(3_000);
+    // fastUntil has expired -> cadence is 5 minutes
+    await vi.advanceTimersByTimeAsync(15_000);
     expect(getChangeStatus).toHaveBeenCalledTimes(4);
 
-    await vi.advanceTimersByTimeAsync(57_000);
+    await vi.advanceTimersByTimeAsync(285_000);
     expect(getChangeStatus).toHaveBeenCalledTimes(5);
 
     tracker.dispose();
   });
 
-  it('re-fetches the PR itself every 4th tick to detect new pushes', async () => {
+  it('re-fetches the PR on every tick to detect new pushes', async () => {
     const { findOpenPrForBranch, getChangeStatus, listBuilds, makeResolvedContext } =
       createMockClients();
     const prV1 = makePr({
@@ -359,32 +387,21 @@ describe('PrTracker', () => {
     const { focusEvents } = createFakeFocusEvents(true);
     const logger = createFakeLogger();
 
-    const tracker = new PrTracker(source, logger, setTimeout, Date.now, focusEvents);
+    const tracker = new PrTracker(source, logger, {
+      setTimer: setTimeout,
+      now: Date.now,
+      focusEvents,
+    });
 
     // Tick 0 (initial): fetches PR (sha-v1) + status
     await vi.advanceTimersByTimeAsync(0);
     expect(findOpenPrForBranch).toHaveBeenCalledTimes(1);
     expect(getChangeStatus).toHaveBeenLastCalledWith('main', 42, 'sha-v1');
 
-    // Tick 1: status only
-    await vi.advanceTimersByTimeAsync(15_000);
-    expect(findOpenPrForBranch).toHaveBeenCalledTimes(1);
-    expect(getChangeStatus).toHaveBeenCalledTimes(2);
-
-    // Tick 2: status only
-    await vi.advanceTimersByTimeAsync(15_000);
-    expect(findOpenPrForBranch).toHaveBeenCalledTimes(1);
-    expect(getChangeStatus).toHaveBeenCalledTimes(3);
-
-    // Tick 3: status only
-    await vi.advanceTimersByTimeAsync(15_000);
-    expect(findOpenPrForBranch).toHaveBeenCalledTimes(1);
-    expect(getChangeStatus).toHaveBeenCalledTimes(4);
-
-    // Tick 4 (4th tick): re-fetches PR (sha-v2) and uses new SHA for status
-    await vi.advanceTimersByTimeAsync(15_000);
+    // Tick 1: PR is fetched again and the new SHA is used for the status
+    await vi.advanceTimersByTimeAsync(60_000);
     expect(findOpenPrForBranch).toHaveBeenCalledTimes(2);
-    expect(getChangeStatus).toHaveBeenCalledTimes(5);
+    expect(getChangeStatus).toHaveBeenCalledTimes(2);
     expect(getChangeStatus).toHaveBeenLastCalledWith('main', 42, 'sha-v2');
     expect(tracker.snapshot?.pr.head.sha).toBe('sha-v2');
 
@@ -407,7 +424,11 @@ describe('PrTracker', () => {
     const { focusEvents } = createFakeFocusEvents(true);
     const logger = createFakeLogger();
 
-    const tracker = new PrTracker(source, logger, setTimeout, Date.now, focusEvents);
+    const tracker = new PrTracker(source, logger, {
+      setTimer: setTimeout,
+      now: Date.now,
+      focusEvents,
+    });
 
     // Initial tick fails -> logged with [Poll], loop continues
     await vi.advanceTimersByTimeAsync(0);
@@ -416,7 +437,7 @@ describe('PrTracker', () => {
     expect(getChangeStatus).not.toHaveBeenCalled();
 
     // Next tick (idle cadence, no snapshot yet) succeeds
-    await vi.advanceTimersByTimeAsync(60_000);
+    await vi.advanceTimersByTimeAsync(300_000);
     expect(getChangeStatus).toHaveBeenCalledTimes(1);
     expect(logger.errors).toHaveLength(1);
 
@@ -436,7 +457,11 @@ describe('PrTracker', () => {
     const { focusEvents, setFocused } = createFakeFocusEvents(true);
     const logger = createFakeLogger();
 
-    const tracker = new PrTracker(source, logger, setTimeout, Date.now, focusEvents);
+    const tracker = new PrTracker(source, logger, {
+      setTimer: setTimeout,
+      now: Date.now,
+      focusEvents,
+    });
     await vi.advanceTimersByTimeAsync(0);
     expect(getChangeStatus).toHaveBeenCalledTimes(1);
 
@@ -451,9 +476,69 @@ describe('PrTracker', () => {
     expect(findOpenPrForBranch).toHaveBeenCalledTimes(2);
     expect(getChangeStatus).toHaveBeenCalledTimes(2);
 
-    // Next 15s tick runs as normal
-    await vi.advanceTimersByTimeAsync(15_000);
+    // Next tick runs after the interval
+    await vi.advanceTimersByTimeAsync(60_000);
     expect(getChangeStatus).toHaveBeenCalledTimes(3);
+
+    tracker.dispose();
+  });
+
+  it('polls the new branch at once on focus after a branch change while unfocused', async () => {
+    const { findOpenPrForBranch, getChangeStatus, listBuilds, makeResolvedContext } =
+      createMockClients();
+    findOpenPrForBranch.mockResolvedValue(makePr());
+    getChangeStatus.mockResolvedValue([]);
+    listBuilds.mockResolvedValue([]);
+
+    const { source, setContext } = createFakeContextSource(makeResolvedContext());
+    const { focusEvents, setFocused } = createFakeFocusEvents(true);
+    const tracker = new PrTracker(source, createFakeLogger(), {
+      setTimer: setTimeout,
+      now: Date.now,
+      focusEvents,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(findOpenPrForBranch).toHaveBeenCalledTimes(1);
+
+    setFocused(false);
+    setContext(makeResolvedContext({ branch: 'other-branch' }));
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(findOpenPrForBranch).toHaveBeenCalledTimes(1);
+
+    setFocused(true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(findOpenPrForBranch).toHaveBeenCalledTimes(2);
+    expect(findOpenPrForBranch).toHaveBeenLastCalledWith('acme', 'service', 'other-branch');
+    tracker.dispose();
+  });
+
+  it('does not poll on focus when the last poll is newer than the delay, and polls at the remainder', async () => {
+    const { findOpenPrForBranch, getChangeStatus, listBuilds, makeResolvedContext } =
+      createMockClients();
+    findOpenPrForBranch.mockResolvedValue(makePr());
+    getChangeStatus.mockResolvedValue([makeStatus()]);
+    listBuilds.mockResolvedValue([]);
+
+    const { source } = createFakeContextSource(makeResolvedContext());
+    const { focusEvents, setFocused } = createFakeFocusEvents(true);
+    const tracker = new PrTracker(source, createFakeLogger(), {
+      setTimer: setTimeout,
+      now: Date.now,
+      focusEvents,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(getChangeStatus).toHaveBeenCalledTimes(1);
+
+    setFocused(false);
+    await vi.advanceTimersByTimeAsync(10_000);
+    setFocused(true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(findOpenPrForBranch).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(49_900);
+    expect(findOpenPrForBranch).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(findOpenPrForBranch).toHaveBeenCalledTimes(2);
 
     tracker.dispose();
   });
@@ -471,7 +556,11 @@ describe('PrTracker', () => {
     const { focusEvents } = createFakeFocusEvents(true);
     const snapshots: (PrSnapshot | undefined)[] = [];
 
-    const tracker = new PrTracker(source, createFakeLogger(), setTimeout, Date.now, focusEvents);
+    const tracker = new PrTracker(source, createFakeLogger(), {
+      setTimer: setTimeout,
+      now: Date.now,
+      focusEvents,
+    });
     tracker.onDidChange((s) => snapshots.push(s));
 
     setContext(makeResolvedContext());
@@ -496,7 +585,11 @@ describe('PrTracker', () => {
     const { source, setContext } = createFakeContextSource(undefined);
     const { focusEvents } = createFakeFocusEvents(true);
     const snapshots: (PrSnapshot | undefined)[] = [];
-    const tracker = new PrTracker(source, createFakeLogger(), setTimeout, Date.now, focusEvents);
+    const tracker = new PrTracker(source, createFakeLogger(), {
+      setTimer: setTimeout,
+      now: Date.now,
+      focusEvents,
+    });
     tracker.onDidChange((s) => snapshots.push(s));
 
     setContext(makeResolvedContext());
@@ -519,7 +612,11 @@ describe('PrTracker', () => {
 
     const { source } = createFakeContextSource(makeResolvedContext());
     const { focusEvents } = createFakeFocusEvents(true);
-    const tracker = new PrTracker(source, createFakeLogger(), setTimeout, Date.now, focusEvents);
+    const tracker = new PrTracker(source, createFakeLogger(), {
+      setTimer: setTimeout,
+      now: Date.now,
+      focusEvents,
+    });
     await vi.advanceTimersByTimeAsync(0);
     expect(findOpenPrForBranch).toHaveBeenCalledTimes(1);
 
@@ -537,7 +634,11 @@ describe('PrTracker', () => {
 
     const { source, setContext } = createFakeContextSource(undefined);
     const { focusEvents } = createFakeFocusEvents(true);
-    const tracker = new PrTracker(source, createFakeLogger(), setTimeout, Date.now, focusEvents);
+    const tracker = new PrTracker(source, createFakeLogger(), {
+      setTimer: setTimeout,
+      now: Date.now,
+      focusEvents,
+    });
     const snapshots: (PrSnapshot | undefined)[] = [];
     tracker.onDidChange((s) => snapshots.push(s));
 
@@ -562,7 +663,11 @@ describe('PrTracker', () => {
 
     const { source, setContext } = createFakeContextSource(undefined);
     const { focusEvents } = createFakeFocusEvents(true);
-    const tracker = new PrTracker(source, createFakeLogger(), setTimeout, Date.now, focusEvents);
+    const tracker = new PrTracker(source, createFakeLogger(), {
+      setTimer: setTimeout,
+      now: Date.now,
+      focusEvents,
+    });
 
     setContext(makeResolvedContext());
     await vi.advanceTimersByTimeAsync(0);
@@ -607,7 +712,11 @@ describe('PrTracker races', () => {
 
     const { source, setContext } = createFakeContextSource(makeResolvedContext());
     const { focusEvents } = createFakeFocusEvents(true);
-    const tracker = new PrTracker(source, createFakeLogger(), setTimeout, Date.now, focusEvents);
+    const tracker = new PrTracker(source, createFakeLogger(), {
+      setTimer: setTimeout,
+      now: Date.now,
+      focusEvents,
+    });
     const snapshots: (PrSnapshot | undefined)[] = [];
     tracker.onDidChange((s) => snapshots.push(s));
 
@@ -634,19 +743,23 @@ describe('PrTracker races', () => {
 
     const { source } = createFakeContextSource(makeResolvedContext());
     const { focusEvents } = createFakeFocusEvents(true);
-    const tracker = new PrTracker(source, createFakeLogger(), setTimeout, Date.now, focusEvents);
+    const tracker = new PrTracker(source, createFakeLogger(), {
+      setTimer: setTimeout,
+      now: Date.now,
+      focusEvents,
+    });
     await vi.advanceTimersByTimeAsync(0);
     expect(getChangeStatus).toHaveBeenCalledTimes(1);
 
-    // 1s before the 15s timer would fire.
-    await vi.advanceTimersByTimeAsync(14_000);
+    // 1s before the 60s timer would fire.
+    await vi.advanceTimersByTimeAsync(59_000);
     await tracker.refresh();
     expect(getChangeStatus).toHaveBeenCalledTimes(2);
 
-    // The old timer's moment passes: no extra poll. The next one is 15s after refresh().
+    // The old timer's moment passes: no extra poll. The next one is 60s after refresh().
     await vi.advanceTimersByTimeAsync(1_000);
     expect(getChangeStatus).toHaveBeenCalledTimes(2);
-    await vi.advanceTimersByTimeAsync(14_000);
+    await vi.advanceTimersByTimeAsync(59_000);
     expect(getChangeStatus).toHaveBeenCalledTimes(3);
     tracker.dispose();
   });
@@ -667,11 +780,15 @@ describe('PrTracker races', () => {
 
     const { source } = createFakeContextSource(makeResolvedContext());
     const { focusEvents } = createFakeFocusEvents(true);
-    const tracker = new PrTracker(source, createFakeLogger(), setTimeout, Date.now, focusEvents);
+    const tracker = new PrTracker(source, createFakeLogger(), {
+      setTimer: setTimeout,
+      now: Date.now,
+      focusEvents,
+    });
     await vi.advanceTimersByTimeAsync(0);
 
     // The timer poll starts and hangs on the slow status call.
-    await vi.advanceTimersByTimeAsync(15_000);
+    await vi.advanceTimersByTimeAsync(60_000);
     expect(getChangeStatus).toHaveBeenCalledTimes(2);
 
     await tracker.refresh();
@@ -701,7 +818,11 @@ describe('PrTracker poll errors', () => {
     findOpenPrForBranch.mockRejectedValueOnce(new Error('network down'));
     const { source } = createFakeContextSource(makeResolvedContext());
     const { focusEvents } = createFakeFocusEvents(true);
-    const tracker = new PrTracker(source, createFakeLogger(), setTimeout, Date.now, focusEvents);
+    const tracker = new PrTracker(source, createFakeLogger(), {
+      setTimer: setTimeout,
+      now: Date.now,
+      focusEvents,
+    });
     const changes = vi.fn();
     tracker.onDidChangePollError(changes);
 

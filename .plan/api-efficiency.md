@@ -313,7 +313,7 @@ When polling resumes:
 
 - **Tier:** sonnet
 - **Risk:** medium
-- **Status:** todo
+- **Status:** done
 - **Files:** `src/services/pollSchedule.ts`, `src/services/prTracker.ts`, `src/config/settings.ts`,
   `src/extension.ts`, `package.json`, `test/unit/pollSchedule.test.ts`,
   `test/unit/prTracker.test.ts`, `test/unit/settings.test.ts` (edit)
@@ -330,12 +330,50 @@ When polling resumes:
   - Remove `PR_REFETCH_INTERVAL_TICKS` and `pollCount`. The PR lookup runs on every tick, since an
     unchanged answer is a free 304.
   - `handleFocusChange(true)`: don't force a poll. Poll only if the last poll is older than the current
-    delay, otherwise schedule the remainder.
+    delay, otherwise schedule the remainder. Call `poll` directly, not `refresh()`, because Step 7 makes
+    `refresh()` clear the stopped state.
+  - `handleContextChange`: clear the last-poll time, so a branch or HEAD change while the window is
+    unfocused polls on the next focus instead of waiting out the delay.
 - **Don't:** add separate settings for GitHub and Zuul. Don't add an inactivity pause.
 - **Done when:**
   - `npm run check` passes
   - Tests cover the three delays, the trigger delay when the setting is under 15 s, clamping to
-    10..3600, and the throttled focus poll
+    10..3600, the throttled focus poll, and an immediate poll on focus after a branch change while
+    unfocused
+
+### Step 6a: Pass PrTracker's optional arguments by name
+
+- **Tier:** haiku
+- **Risk:** low
+- **Status:** done
+- **Files:** `src/services/prTracker.ts`, `src/extension.ts`, `test/unit/prTracker.test.ts` (edit)
+- **Do:**
+  - In `prTracker.ts`, add and export:
+
+    ```ts
+    export interface PrTrackerOptions {
+      setTimer?: SetTimerFn;
+      now?: () => number;
+      focusEvents?: FocusEvents;
+      clearTimer?: ClearTimerFn;
+      getPollIntervalMs?: () => number;
+    }
+    ```
+
+  - Change the constructor to
+    `constructor(ctx: ZuulContextSource, logger: Logger, options: PrTrackerOptions = {})`. Assign each
+    field with `??` and today's default: `setTimeout`, `Date.now`, `vscode.window`,
+    `(handle) => clearTimeout(handle as ReturnType<typeof setTimeout>)` and
+    `() => DEFAULT_POLL_INTERVAL_MS`.
+  - `extension.ts`: `new PrTracker(zuulContext, logger, { getPollIntervalMs: () =>
+    readWorkspaceSettings().pollIntervalSeconds * 1000 })`.
+  - Each `new PrTracker(` in `test/unit/prTracker.test.ts`: pass the same values by name, and drop any
+    `undefined`. A call with only `ctx` and `logger` stays as it is.
+- **Don't:** change behaviour, a default or a test assertion. Don't add or delete tests. Don't touch
+  other classes.
+- **Done when:**
+  - `npm run check` passes with the same 524 tests
+  - No `new PrTracker(` call passes `undefined`
 
 ### Step 7: Stop polling when retrying can't help
 

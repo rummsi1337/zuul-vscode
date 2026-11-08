@@ -309,6 +309,13 @@
           "markdownDescription": "Base URL of Zuul Web, including any path prefix, e.g. `https://zuul.example.com` or `https://example.com/zuul`.",
           "scope": "machine"
         },
+        "zuul.pollIntervalSeconds": {
+          "type": "number",
+          "default": 60,
+          "minimum": 10,
+          "maximum": 3600,
+          "markdownDescription": "Seconds between checks while a build is running. When nothing is running, the extension checks 5 times less often. Lower values use more API requests."
+        },
         "zuul.tenant": {
           "type": "string",
           "default": "",

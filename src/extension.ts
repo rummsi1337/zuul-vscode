@@ -78,7 +78,9 @@ export function activate(context: vscode.ExtensionContext): void {
     logger,
     cache: context.workspaceState,
   });
-  const prTracker = new PrTracker(zuulContext, logger);
+  const prTracker = new PrTracker(zuulContext, logger, {
+    getPollIntervalMs: () => readWorkspaceSettings().pollIntervalSeconds * 1000,
+  });
   const triggerService = new TriggerService(zuulContext, prTracker, logger);
   const statusBar = new ZuulStatusBar(prTracker, triggerService);
   const buildsTree = new BuildsTreeDataProvider(prTracker);
