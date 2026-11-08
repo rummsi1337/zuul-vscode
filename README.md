@@ -41,7 +41,7 @@ Good to know:
 
 - Each host has its own PAT. The host comes from the git remote. Set `zuul.ghe.host` to override it.
 - Run **Zuul: Clear GitHub Enterprise PAT** to remove a PAT.
-- If the server answers 401, the stored PAT for that host is deleted and a **Sign in** prompt appears.
+- If the server answers 401, the stored PAT is kept and one **Sign in** prompt appears per token. Replacing or clearing the PAT is up to you.
 
 ### Zuul
 

@@ -13,7 +13,7 @@ import {
 import { resolveTenant } from '../../src/context/tenantResolver';
 import { type GitContext } from '../../src/git/gitContext';
 import { type Logger } from '../../src/util/logger';
-import { commands, EventEmitter, window } from '../mocks/vscode';
+import { EventEmitter } from '../mocks/vscode';
 
 function createFakeLogger(): Logger & { messages: string[] } {
   const messages: string[] = [];
@@ -159,7 +159,7 @@ describe('ZuulContextService', () => {
     const logger = createFakeLogger();
 
     let settings = { url: '', tenant: '' };
-    const resolveTenantFn = vi.fn(async (_zuul, _project, configured?: string) => {
+    const resolveTenantFn = vi.fn(async (_zuul, _host, _project, configured?: string) => {
       return configured || 'auto-tenant';
     });
 
@@ -184,6 +184,13 @@ describe('ZuulContextService', () => {
     });
 
     const firstResolved = service.current!;
+    expect(resolveTenantFn).toHaveBeenCalledWith(
+      expect.anything(),
+      sampleGitCtx.host,
+      'acme/service',
+      '',
+      undefined,
+    );
     expect(service.problem).toBeUndefined();
     expect(firstResolved.zuulUrl).toBe('https://zuul.example.com');
     expect(firstResolved.tenant).toBe('auto-tenant');
@@ -206,79 +213,95 @@ describe('ZuulContextService', () => {
     service.dispose();
   });
 
-  it('passes interactive: false to auth.getToken and handles 401 from GHE with Sign in action', async () => {
+  function createGheService(
+    token: () => string | undefined,
+    fetchFn: typeof fetch,
+    showErrorMessage?: ZuulContextServiceOptions['showErrorMessage'],
+  ) {
     const { source } = createFakeGitSource(sampleGitCtx);
     const auth: AuthLike = {
-      getToken: vi.fn(async () => 'expired-token'),
+      getToken: vi.fn(async () => token()),
       reportUnauthorized: vi.fn(async () => undefined),
     };
-    const logger = createFakeLogger();
-
-    const fetchFn = vi.fn<typeof fetch>(async () => {
-      return new Response('{"message":"Bad credentials"}', {
-        status: 401,
-        headers: { 'Content-Type': 'application/json' },
-      });
-    });
-
-    window.showErrorMessage.mockResolvedValueOnce(SIGN_IN_ACTION);
-
+    const executeCommand = vi.fn();
+    const show = vi.fn(showErrorMessage ?? (async () => undefined));
     const service = new ZuulContextService({
       gitContext: source,
       auth,
-      logger,
+      logger: createFakeLogger(),
       getSettings: () => ({ url: 'https://zuul.example.com', tenant: 'main' }),
       fetchFn,
+      showErrorMessage: show,
+      executeCommand,
     });
+    return { service, auth, show, executeCommand };
+  }
 
+  const unauthorizedFetch = () =>
+    vi.fn<typeof fetch>(async () => new Response('{"message":"Bad credentials"}', { status: 401 }));
+
+  it('reports a 401 with a token, toasts once, and offers Sign in', async () => {
+    const { service, auth, show, executeCommand } = createGheService(
+      () => 'expired-token',
+      unauthorizedFetch(),
+      async () => SIGN_IN_ACTION,
+    );
     await service.ready;
-    const ctx = service.current!;
-    expect(ctx).toBeDefined();
 
-    await expect(ctx.ghe.getUser()).rejects.toThrow(HttpError);
+    await expect(service.current!.ghe.getUser()).rejects.toThrow(HttpError);
+    await expect(service.current!.ghe.getUser()).rejects.toThrow(HttpError);
+    await expect(service.current!.ghe.getUser()).rejects.toThrow(HttpError);
 
     expect(auth.getToken).toHaveBeenCalledWith('ghe.example.com', { interactive: false });
-    expect(auth.reportUnauthorized).toHaveBeenCalledTimes(1);
+    expect(auth.reportUnauthorized).toHaveBeenCalledTimes(3);
     expect(auth.reportUnauthorized).toHaveBeenCalledWith('ghe.example.com');
-    expect(window.showErrorMessage).toHaveBeenCalledWith(
+    expect(show).toHaveBeenCalledTimes(1);
+    expect(show).toHaveBeenCalledWith(
       'GitHub Enterprise authentication failed for ghe.example.com.',
       SIGN_IN_ACTION,
     );
-    expect(commands.executeCommand).toHaveBeenCalledWith(SIGN_IN_COMMAND, 'ghe.example.com');
-
+    await vi.waitFor(() => {
+      expect(executeCommand).toHaveBeenCalledWith(SIGN_IN_COMMAND, 'ghe.example.com');
+    });
     service.dispose();
   });
 
-  it('does not trigger reportUnauthorized on non-401 HttpError and handles direct HttpError(401)', async () => {
-    const { source } = createFakeGitSource(sampleGitCtx);
-    const auth: AuthLike = {
-      getToken: vi.fn(async () => 'token'),
-      reportUnauthorized: vi.fn(async () => undefined),
-    };
-    const logger = createFakeLogger();
-
-    const fetchFn = vi.fn<typeof fetch>(async () => {
-      return new Response('Not Found', { status: 404 });
-    });
-
-    const service = new ZuulContextService({
-      gitContext: source,
-      auth,
-      logger,
-      getSettings: () => ({ url: 'https://zuul.example.com', tenant: 'main' }),
-      fetchFn,
-    });
-
+  it('toasts again when the token changed', async () => {
+    let token = 'one';
+    const { service, auth, show } = createGheService(() => token, unauthorizedFetch());
     await service.ready;
+
     await expect(service.current!.ghe.getUser()).rejects.toThrow(HttpError);
+    token = 'two';
+    await expect(service.current!.ghe.getUser()).rejects.toThrow(HttpError);
+
+    expect(show).toHaveBeenCalledTimes(2);
+    expect(auth.reportUnauthorized).toHaveBeenCalledTimes(2);
+    service.dispose();
+  });
+
+  it('gives no toast and no report for a 401 without a token', async () => {
+    const { service, auth, show } = createGheService(() => undefined, unauthorizedFetch());
+    await service.ready;
+
+    await expect(service.current!.ghe.getUser()).rejects.toThrow(HttpError);
+
     expect(auth.reportUnauthorized).not.toHaveBeenCalled();
+    expect(show).not.toHaveBeenCalled();
+    service.dispose();
+  });
 
-    // Direct handleGheError with 401 when user dismisses prompt or leaves toast open
-    window.showErrorMessage.mockImplementationOnce(() => new Promise(() => undefined));
-    await service.handleGheError(new HttpError(401, 'Unauthorized'));
-    expect(auth.reportUnauthorized).toHaveBeenCalledTimes(1);
-    expect(commands.executeCommand).not.toHaveBeenCalled();
+  it('does not trigger reportUnauthorized on a non-401 error', async () => {
+    const { service, auth, show } = createGheService(
+      () => 'token',
+      vi.fn<typeof fetch>(async () => new Response('Not Found', { status: 404 })),
+    );
+    await service.ready;
 
+    await expect(service.current!.ghe.getUser()).rejects.toThrow(HttpError);
+
+    expect(auth.reportUnauthorized).not.toHaveBeenCalled();
+    expect(show).not.toHaveBeenCalled();
     service.dispose();
   });
 

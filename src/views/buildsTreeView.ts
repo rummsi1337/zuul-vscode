@@ -42,7 +42,7 @@ export async function openBuildLogExternally(
   openExternal: (uri: vscode.Uri) => Thenable<boolean> = (uri) => vscode.env.openExternal(uri),
 ): Promise<void> {
   const logUrl = typeof target === 'string' ? target : target?.logUrl;
-  if (!logUrl) {
+  if (!logUrl || !/^https?:\/\//i.test(logUrl)) {
     return;
   }
   await openExternal(vscode.Uri.parse(logUrl));

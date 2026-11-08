@@ -205,10 +205,13 @@ export class GheClient {
     branch: string,
   ): Promise<PullRequest | undefined> {
     this.logger?.info(`[GHE] Finding open PR for owner=${owner} repo=${repo} branch=${branch}`);
-    const prs = await this.http.getJson<PullRequest[]>(`/repos/${owner}/${repo}/pulls`, {
-      state: 'open',
-      head: `${owner}:${branch}`,
-    });
+    const prs = await this.http.getJson<PullRequest[]>(
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls`,
+      {
+        state: 'open',
+        head: `${owner}:${branch}`,
+      },
+    );
     const pr = prs[0];
     this.logger?.info(
       pr
@@ -220,23 +223,30 @@ export class GheClient {
 
   async getPr(owner: string, repo: string, num: number): Promise<PullRequest> {
     this.logger?.info(`[GHE] Fetching PR #${num} for ${owner}/${repo}`);
-    return this.http.getJson<PullRequest>(`/repos/${owner}/${repo}/pulls/${num}`);
+    return this.http.getJson<PullRequest>(
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${num}`,
+    );
   }
 
   async updatePrBody(owner: string, repo: string, num: number, body: string): Promise<PullRequest> {
     this.logger?.info(`[GHE] Updating body of PR #${num} for ${owner}/${repo}`);
-    return this.http.patchJson<PullRequest>(`/repos/${owner}/${repo}/pulls/${num}`, { body });
+    return this.http.patchJson<PullRequest>(
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${num}`,
+      { body },
+    );
   }
 
   async listReviews(owner: string, repo: string, num: number): Promise<Review[]> {
     this.logger?.info(`[GHE] Listing reviews for PR #${num} on ${owner}/${repo}`);
-    return this.paginate<Review>(`/repos/${owner}/${repo}/pulls/${num}/reviews`);
+    return this.paginate<Review>(
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${num}/reviews`,
+    );
   }
 
   async listCommitStatuses(owner: string, repo: string, sha: string): Promise<CombinedStatus> {
     this.logger?.info(`[GHE] Listing commit statuses for commit=${sha} on ${owner}/${repo}`);
     const pages = await this.fetchPages<CombinedStatus>(
-      `/repos/${owner}/${repo}/commits/${sha}/status`,
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits/${sha}/status`,
       { per_page: PER_PAGE },
     );
     const statuses = pages.flatMap((p) => p.statuses ?? []);
@@ -246,7 +256,7 @@ export class GheClient {
   async listCheckRuns(owner: string, repo: string, sha: string): Promise<CheckRun[]> {
     this.logger?.info(`[GHE] Listing check runs for commit=${sha} on ${owner}/${repo}`);
     const pages = await this.fetchPages<{ check_runs?: CheckRun[] } | CheckRun[]>(
-      `/repos/${owner}/${repo}/commits/${sha}/check-runs`,
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits/${sha}/check-runs`,
       { per_page: PER_PAGE },
     );
     return pages.flatMap((res) => (Array.isArray(res) ? res : (res.check_runs ?? [])));
@@ -262,7 +272,7 @@ export class GheClient {
     );
     try {
       return await this.http.getJson<RequiredStatusChecks>(
-        `/repos/${owner}/${repo}/branches/${encodeURIComponent(branch)}/protection/required_status_checks`,
+        `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches/${encodeURIComponent(branch)}/protection/required_status_checks`,
       );
     } catch (err) {
       if (err instanceof HttpError && (err.status === 403 || err.status === 404)) {
@@ -351,6 +361,9 @@ export class GheClient {
       }>(this.graphqlUrl, PR_ROLLUP_QUERY, { owner, repo, num });
       return data.repository?.pullRequest ?? data.pullRequest ?? undefined;
     } catch (err) {
+      if (err instanceof HttpError && (err.status === 401 || err.status === 403)) {
+        throw err;
+      }
       this.logger?.warn(
         `[GHE] Failed to fetch PR rollup for PR #${num} on ${owner}/${repo}: ${String(err)}`,
       );
@@ -365,9 +378,12 @@ export class GheClient {
     body: string,
   ): Promise<IssueComment> {
     this.logger?.info(`[GHE] Posting issue comment on PR #${num} for ${owner}/${repo}`);
-    return this.http.postJson<IssueComment>(`/repos/${owner}/${repo}/issues/${num}/comments`, {
-      body,
-    });
+    return this.http.postJson<IssueComment>(
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${num}/comments`,
+      {
+        body,
+      },
+    );
   }
 
   async searchPrs(query: string, perPage = 20): Promise<SearchItem[]> {

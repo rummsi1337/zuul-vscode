@@ -101,6 +101,7 @@ export class ZuulContextService implements vscode.Disposable {
   ) => Thenable<unknown> | Promise<unknown>;
   private readonly handledErrors = new WeakSet<HttpError>();
   private readonly zuulAuthNotices = new Map<string, string>();
+  private readonly gheAuthNotices = new Map<string, string>();
 
   private _current: ResolvedContext | undefined;
   private _problem: ContextProblem | undefined;
@@ -200,20 +201,13 @@ export class ZuulContextService implements vscode.Disposable {
     await this.recompute();
   }
 
-  async handleGheError(err: unknown, host = this.gitContext.current?.host): Promise<void> {
-    if (!(err instanceof HttpError) || err.status !== 401 || !host) {
-      return;
-    }
-    if (this.handledErrors.has(err)) {
-      return;
-    }
-    this.handledErrors.add(err);
-    await this.handleUnauthorizedGhe(host);
-  }
-
-  private async handleUnauthorizedGhe(host: string): Promise<void> {
+  private async handleUnauthorizedGhe(host: string, authorization: string): Promise<void> {
     const normalizedHost = normalizeHost(host);
     await this.auth.reportUnauthorized(normalizedHost);
+    if (this.gheAuthNotices.get(normalizedHost) === authorization) {
+      return;
+    }
+    this.gheAuthNotices.set(normalizedHost, authorization);
     void Promise.resolve(
       this.showErrorMessage(
         `GitHub Enterprise authentication failed for ${normalizedHost}.`,
@@ -223,32 +217,6 @@ export class ZuulContextService implements vscode.Disposable {
       if (action === SIGN_IN_ACTION) {
         await this.executeCommand(SIGN_IN_COMMAND, normalizedHost);
       }
-    });
-  }
-
-  private wrapGheClient(client: GheClient, host: string): GheClient {
-    return new Proxy(client, {
-      get: (target, prop, receiver) => {
-        const value = Reflect.get(target, prop, receiver);
-        if (typeof value !== 'function') {
-          return value;
-        }
-        return (...args: unknown[]) => {
-          try {
-            const result = value.apply(target, args);
-            if (result && typeof (result as PromiseLike<unknown>).then === 'function') {
-              return (result as Promise<unknown>).catch(async (err: unknown) => {
-                await this.handleGheError(err, host);
-                throw err;
-              });
-            }
-            return result;
-          } catch (err) {
-            void this.handleGheError(err, host);
-            throw err;
-          }
-        };
-      },
     });
   }
 
@@ -262,22 +230,21 @@ export class ZuulContextService implements vscode.Disposable {
     const wrappedFetch: typeof fetch = async (input, init) => {
       const res = await baseFetch(input, init);
       if (res.status === 401) {
-        const body = await res.text();
-        const err = new HttpError(401, body);
-        this.handledErrors.add(err);
-        await this.handleUnauthorizedGhe(normalizedHost);
-        throw err;
+        const headers = new Headers(init?.headers);
+        const authorization = headers.get('authorization');
+        if (authorization) {
+          await this.handleUnauthorizedGhe(normalizedHost, authorization);
+        }
       }
       return res;
     };
 
     const getToken = () => this.auth.getToken(normalizedHost, { interactive: false });
-    const rawClient = this.createGheClient(normalizedHost, getToken, wrappedFetch);
-    const proxied = this.wrapGheClient(rawClient, normalizedHost);
+    const client = this.createGheClient(normalizedHost, getToken, wrappedFetch);
 
     this.cachedGheHost = normalizedHost;
-    this.cachedGheClient = proxied;
-    return proxied;
+    this.cachedGheClient = client;
+    return client;
   }
 
   async handleZuulError(err: unknown, tenant?: string): Promise<void> {
@@ -414,7 +381,13 @@ export class ZuulContextService implements vscode.Disposable {
 
     let tenant: string | undefined;
     try {
-      tenant = await this.resolveTenantFn(rawZuul, project, settings.tenant, this.cache);
+      tenant = await this.resolveTenantFn(
+        rawZuul,
+        gitCtx.host,
+        project,
+        settings.tenant,
+        this.cache,
+      );
     } catch (err) {
       if (this.disposed || seq !== this.recomputeSeq) {
         return;

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { AuthService } from '../../src/auth/authService';
 import { GhCliAuthProvider } from '../../src/auth/ghCliAuthProvider';
+import { PatAuthProvider } from '../../src/auth/patAuthProvider';
 import { type AuthMethodId, type TokenProvider } from '../../src/auth/types';
 import { type Logger } from '../../src/util/logger';
 
@@ -124,6 +125,48 @@ describe('AuthService', () => {
     expect(patInvalidate).toHaveBeenCalledWith('ghe.example.com');
     expect(await service.getToken('ghe.example.com')).toBe('gho_2');
     expect(execFile).toHaveBeenCalledTimes(2);
+  });
+
+  it('treats a throwing provider as no token and moves on', async () => {
+    const throwing: TokenProvider = {
+      id: 'pat',
+      getToken: vi.fn(async () => {
+        throw new Error('keychain locked');
+      }),
+    };
+    const logger = createFakeLogger();
+    const onTokenResult = vi.fn();
+    const service = new AuthService([throwing], () => 'auto', logger, onTokenResult);
+    expect(await service.getToken('ghe.example.com')).toBeUndefined();
+    expect(onTokenResult).toHaveBeenCalledWith('ghe.example.com', false);
+
+    const good: TokenProvider = { id: 'gh-cli', getToken: vi.fn(async () => 'gho_x') };
+    const service2 = new AuthService([throwing, good], () => 'auto', logger);
+    expect(await service2.getToken('ghe.example.com')).toBe('gho_x');
+    expect(logger.warn).toHaveBeenCalled();
+  });
+
+  it('keeps a stored PAT after reportUnauthorized', async () => {
+    const data = new Map<string, string>([['zuul.pat.ghe.example.com', 'ghp_keep']]);
+    const secrets = {
+      get: vi.fn(async (key: string) => data.get(key)),
+      store: vi.fn(async (key: string, value: string) => {
+        data.set(key, value);
+      }),
+      delete: vi.fn(async (key: string) => {
+        data.delete(key);
+      }),
+    };
+    const pat = new PatAuthProvider(secrets, async () => true, {
+      showInputBox: vi.fn(),
+      showErrorMessage: vi.fn(),
+    });
+    const service = new AuthService([pat], () => 'auto', createFakeLogger());
+
+    await service.reportUnauthorized('ghe.example.com');
+
+    expect(secrets.delete).not.toHaveBeenCalled();
+    expect(await service.getToken('ghe.example.com')).toBe('ghp_keep');
   });
 
   it('handles empty host in getToken and reportUnauthorized', async () => {

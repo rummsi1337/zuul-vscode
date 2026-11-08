@@ -115,6 +115,26 @@ describe('GheClient', () => {
     await expect(client.getPr('acme', 'service', 999)).rejects.toThrowError(HttpError);
   });
 
+  it('sends no token to a Link next page on another origin', async () => {
+    const fetchFn = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        jsonResponse([{ id: 1 }], 200, {
+          Link: '<https://evil.example.org/steal?page=2>; rel="next"',
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse([{ id: 2 }]));
+    const client = new GheClient('ghe.example.com', async () => 'tok', fetchFn);
+
+    await client.listReviews('acme', 'service', 42);
+
+    const first = fetchFn.mock.calls[0]?.[1] as { headers: Record<string, string> };
+    const second = fetchFn.mock.calls[1]?.[1] as { headers: Record<string, string> };
+    expect(fetchFn.mock.calls[1]?.[0]).toBe('https://evil.example.org/steal?page=2');
+    expect(first.headers.Authorization).toBe('Bearer tok');
+    expect(second.headers.Authorization).toBeUndefined();
+  });
+
   it('paginates listReviews following Link rel="next" and stops at 10 pages max', async () => {
     const fetchFn = vi
       .fn<typeof fetch>()
@@ -339,6 +359,27 @@ describe('GheClient', () => {
     expect(await client.getPrRollup('acme', 'service', 42)).toBeUndefined();
     expect(await client.getPrRollup('acme', 'service', 42)).toBeUndefined();
     expect(await client.getPrRollup('acme', 'service', 42)).toBeUndefined();
+  });
+
+  it('rethrows 401 and 403 from the PR rollup', async () => {
+    const fetchFn = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response('Unauthorized', { status: 401 }))
+      .mockResolvedValueOnce(new Response('Forbidden', { status: 403 }));
+    const client = new GheClient('ghe.example.com', async () => 'tok', fetchFn);
+
+    await expect(client.getPrRollup('acme', 'service', 42)).rejects.toMatchObject({ status: 401 });
+    await expect(client.getPrRollup('acme', 'service', 42)).rejects.toMatchObject({ status: 403 });
+  });
+
+  it('encodes owner and repo in REST paths', async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => jsonResponse({ number: 1 }));
+    const client = new GheClient('ghe.example.com', async () => 'tok', fetchFn);
+
+    await client.getPr('a b', 'c/d', 1);
+    expect(fetchFn.mock.calls[0]?.[0]).toBe(
+      'https://ghe.example.com/api/v3/repos/a%20b/c%2Fd/pulls/1',
+    );
   });
 
   it('posts issue comments and searches PRs with +is:pr', async () => {
