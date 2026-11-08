@@ -20,7 +20,9 @@
    Zuul queue (Zuul enqueues `Depends-On` targets as non-live items). There is no `dependencies`
    field in Zuul's status API. In `/status/change/{id}`, `item_ahead` is only a UUID or `null`, so
    those items have to be read from `GET /status` (`pipelines[].change_queues[].heads[][]`,
-   following `item_ahead`). Review Step 6 implements this.
+   following `item_ahead`). `ZuulClient.getQueueAhead` does this, and the Depends-On view calls it
+   at most once per 60 s, only when the PR has Depends-On lines and Zuul has statuses. An item
+   ahead counts as extra only if it is outside the transitive `Depends-On` set (depth 5, 50 PRs).
 3. **`org/repo#123` shorthand**: parsed and shown, but flagged "Zuul ignores this form". Zuul's
    GitHub driver only resolves full URLs. The extension always writes full URLs.
 4. **GHE OAuth Path B**: Device Flow only. Authorization Code + PKCE is out of scope.

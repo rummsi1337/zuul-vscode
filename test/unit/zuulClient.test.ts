@@ -374,4 +374,46 @@ describe('ZuulClient', () => {
     expect(await client.listBuilds('acme')).toEqual([]);
     expect(await client.listBuildsets('acme')).toEqual([{ uuid: 'bs-empty', pipeline: '' }]);
   });
+
+  it('getQueueAhead follows item_ahead UUIDs through GET /status', async () => {
+    const ref = (id: string, project: string) => ({
+      id,
+      project,
+      url: `https://ghe.example.com/${project}/pull/${id.split(',')[0]}`,
+    });
+    const status = {
+      pipelines: [
+        {
+          name: 'gate',
+          change_queues: [
+            {
+              name: 'q',
+              heads: [
+                [
+                  { id: 'u1', live: false, item_ahead: null, refs: [ref('3,c3', 'org/c')] },
+                  { id: 'u2', live: false, item_ahead: 'u1', refs: [ref('2,b2', 'org/b')] },
+                  { id: 'u3', live: true, item_ahead: 'u2', refs: [ref('1,a1', 'org/a')] },
+                ],
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    const fetchFn = vi.fn<typeof fetch>().mockImplementation(async () => jsonResponse(status));
+    const client = new ZuulClient('https://zuul.example.com', undefined, fetchFn);
+
+    const ahead = await client.getQueueAhead('acme', 1, 'a1');
+    expect(fetchFn).toHaveBeenCalledWith(
+      'https://zuul.example.com/api/tenant/acme/status',
+      expect.anything(),
+    );
+    expect(ahead).toEqual([
+      { project: 'org/b', change: 2, live: false, url: 'https://ghe.example.com/org/b/pull/2' },
+      { project: 'org/c', change: 3, live: false, url: 'https://ghe.example.com/org/c/pull/3' },
+    ]);
+    // At the head of the queue, nothing ahead is a real answer.
+    expect(await client.getQueueAhead('acme', 3, 'c3')).toEqual([]);
+    expect(await client.getQueueAhead('acme', 99, 'zz')).toBeUndefined();
+  });
 });

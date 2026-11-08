@@ -298,12 +298,14 @@ the code, and the pre-commit checks run.
 
 - **Tier:** sonnet
 - **Risk:** medium
-- **Status:** todo
+- **Status:** done
 - **Files:** `src/clients/zuulClient.ts`, `src/services/dependsOnService.ts`,
   `src/views/dependsOnTreeView.ts`, tests
 - **Do:**
-  - Add `getQueueAhead(tenant, pr, sha): Promise<QueuedRef[]>`: `GET /status` (no cache), find the item
-    whose `refs[].id` is `<pr>,<sha>`, follow `item_ahead` UUIDs, return `project`, `change`, `live`, `url`.
+  - Add `getQueueAhead(tenant, pr, sha): Promise<QueuedRef[] | undefined>`: `GET /status` (no cache), find
+    the item whose `refs[].id` is `<pr>,<sha>`, follow `item_ahead` UUIDs, return `project`, `change`,
+    `live`, `url`. Added after review: return `undefined` when no item matches, so a PR that just left
+    the queue does not show all its dependencies as missing.
     Read `change` from `ref.id` through the `id` path `parseChangeNumber` still has for this. Step 5 left
     `ChangeStatus.itemsAhead` as `[]`, so these refs are the only source of queue data.
   - Call it only when the PR has Depends-On lines and statuses exist, at the existing 60 s cadence.

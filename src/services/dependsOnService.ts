@@ -1,7 +1,7 @@
 import { type GheClient } from '../clients/gheClient';
 import { type PullRequest, type SearchItem } from '../clients/gheTypes';
 import { type ZuulClient } from '../clients/zuulClient';
-import { type ChangeStatus } from '../clients/zuulTypes';
+import { type ChangeStatus, type QueuedRef } from '../clients/zuulTypes';
 import { mapWithConcurrency } from '../util/concurrency';
 import {
   addDependsOn,
@@ -15,6 +15,8 @@ import {
 export const MAX_UPSTREAM_CONCURRENCY = 5;
 export const MAX_CYCLE_DEPTH = 10;
 export const MAX_CYCLE_FETCHES = 50;
+export const MAX_TRANSITIVE_DEPTH = 5;
+export const MAX_TRANSITIVE_FETCHES = 50;
 
 export type UpstreamState = 'open' | 'merged' | 'closed' | 'missing';
 
@@ -44,7 +46,7 @@ export type PrIdentifier = PullRequest | PrCoordinates;
 
 export type GheDependsOnClient = Pick<GheClient, 'getPr' | 'searchPrs'>;
 export type ZuulDependsOnClient = Pick<ZuulClient, 'getChangeStatus'> &
-  Partial<Pick<ZuulClient, 'listProjects'>>;
+  Partial<Pick<ZuulClient, 'listProjects' | 'getQueueAhead'>>;
 
 export function normalizeProjectName(project: string): string {
   const parts = project
@@ -103,10 +105,11 @@ export function extractPrCoordinates(pr: PrIdentifier): PrCoordinates | undefine
 
 export function syncState(
   prOrUpstream: Pick<PullRequest, 'body'> | readonly UpstreamDep[],
-  statuses: readonly ChangeStatus[],
+  queueAhead: readonly QueuedRef[] | undefined,
   upstreamDeps?: readonly UpstreamDep[],
+  transitiveUpstream?: ReadonlySet<string>,
 ): SyncState {
-  if (statuses.length === 0) {
+  if (queueAhead === undefined) {
     return {
       inSync: true,
       missingInZuul: [],
@@ -145,36 +148,36 @@ export function syncState(
     }
   }
 
+  const presentKeys = new Set<string>();
   const zuulMap = new Map<string, string>();
-  for (const status of statuses) {
-    for (const item of status.itemsAhead) {
-      if (item.live !== false || item.change === undefined || !item.project) {
-        continue;
-      }
-      const normalizedProject = normalizeProjectName(item.project);
-      const slashIdx = normalizedProject.indexOf('/');
-      if (slashIdx <= 0 || slashIdx === normalizedProject.length - 1) {
-        continue;
-      }
-      const owner = normalizedProject.slice(0, slashIdx);
-      const repo = normalizedProject.slice(slashIdx + 1);
-      const key = prRefKey({ owner, repo, number: item.change });
-      if (!zuulMap.has(key)) {
-        zuulMap.set(key, formatPrRef({ owner, repo, number: item.change }));
-      }
+  for (const item of queueAhead) {
+    if (item.change === undefined || !item.project) {
+      continue;
+    }
+    const normalizedProject = normalizeProjectName(item.project);
+    const slashIdx = normalizedProject.indexOf('/');
+    if (slashIdx <= 0 || slashIdx === normalizedProject.length - 1) {
+      continue;
+    }
+    const owner = normalizedProject.slice(0, slashIdx);
+    const repo = normalizedProject.slice(slashIdx + 1);
+    const key = prRefKey({ owner, repo, number: item.change });
+    presentKeys.add(key);
+    if (item.live === false && !zuulMap.has(key)) {
+      zuulMap.set(key, formatPrRef({ owner, repo, number: item.change }));
     }
   }
 
   const missingInZuul: string[] = [];
   for (const [key, display] of bodyMap) {
-    if (!zuulMap.has(key)) {
+    if (!presentKeys.has(key)) {
       missingInZuul.push(display);
     }
   }
 
   const extraInZuul: string[] = [];
   for (const [key, display] of zuulMap) {
-    if (!bodyMap.has(key)) {
+    if (!bodyMap.has(key) && !transitiveUpstream?.has(key)) {
       extraInZuul.push(display);
     }
   }
@@ -316,10 +319,49 @@ export class DependsOnService {
 
   syncState(
     prOrUpstream: Pick<PullRequest, 'body'> | readonly UpstreamDep[],
-    statuses: readonly ChangeStatus[],
+    queueAhead: readonly QueuedRef[] | undefined,
     upstreamDeps?: readonly UpstreamDep[],
+    transitiveUpstream?: ReadonlySet<string>,
   ): SyncState {
-    return syncState(prOrUpstream, statuses, upstreamDeps);
+    return syncState(prOrUpstream, queueAhead, upstreamDeps, transitiveUpstream);
+  }
+
+  /** Items ahead of the PR in its Zuul queue, or undefined when it cannot be read. */
+  async getQueueAhead(pr: Pick<PullRequest, 'number' | 'head'>): Promise<QueuedRef[] | undefined> {
+    if (!this.zuul.getQueueAhead || !pr.head?.sha) {
+      return undefined;
+    }
+    return this.zuul.getQueueAhead(this.tenant, pr.number, pr.head.sha);
+  }
+
+  /** Keys of every PR reachable through Depends-On bodies (depth 5, at most 50 fetches). */
+  async getTransitiveUpstreamKeys(pr: Pick<PullRequest, 'body'>): Promise<Set<string>> {
+    const keys = new Set<string>();
+    let fetched = 0;
+    let level = parseDependsOn(pr.body).filter((ref) => prRefKey(ref) !== undefined);
+
+    for (let depth = 1; depth <= MAX_TRANSITIVE_DEPTH && level.length > 0; depth++) {
+      const next: DependsOnRef[] = [];
+      for (const ref of level) {
+        const key = prRefKey(ref);
+        if (key === undefined || keys.has(key)) {
+          continue;
+        }
+        keys.add(key);
+        if (depth === MAX_TRANSITIVE_DEPTH || fetched >= MAX_TRANSITIVE_FETCHES) {
+          continue;
+        }
+        fetched += 1;
+        try {
+          const upstreamPr = await this.ghe.getPr(ref.owner!, ref.repo!, ref.number!);
+          next.push(...parseDependsOn(upstreamPr.body).filter((r) => prRefKey(r) !== undefined));
+        } catch {
+          // An unreadable body only shortens the walk.
+        }
+      }
+      level = next;
+    }
+    return keys;
   }
 
   async wouldCreateCycle(fromPr: PrIdentifier, targetPr: PrIdentifier): Promise<boolean> {
