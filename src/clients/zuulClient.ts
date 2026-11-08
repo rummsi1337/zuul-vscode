@@ -6,6 +6,7 @@ import {
   type JobStatus,
   type ListBuildsetsOptions,
   type ListBuildsOptions,
+  type QueuedRef,
   type ZuulInfo,
   type ZuulJobSummary,
   type ZuulJobVariant,
@@ -42,6 +43,28 @@ interface RawChangeStatusItem {
   enqueue_time?: number | null;
   remaining_time?: number | null;
   jobs?: RawJobStatus[] | null;
+}
+
+interface RawStatusRef {
+  id?: string;
+  project?: string;
+  project_canonical?: string;
+  url?: string;
+}
+
+interface RawQueueItem {
+  id?: string;
+  live?: boolean;
+  item_ahead?: string | null;
+  refs?: RawStatusRef[] | null;
+}
+
+interface RawTenantStatus {
+  pipelines?:
+    | {
+        change_queues?: { heads?: (RawQueueItem[] | null)[] | null }[] | null;
+      }[]
+    | null;
 }
 
 interface RawBuildRef {
@@ -305,6 +328,68 @@ export class ZuulClient {
       }
       throw err;
     }
+  }
+
+  async getQueueAhead(
+    tenant: string,
+    pr: number | string,
+    sha: string,
+  ): Promise<QueuedRef[] | undefined> {
+    const raw = await this.http.getJson<RawTenantStatus>(this.tenantPath(tenant, '/status'));
+    const byId = new Map<string, RawQueueItem>();
+    const targets: RawQueueItem[] = [];
+    const targetId = `${pr},${sha}`;
+    for (const pipeline of raw.pipelines ?? []) {
+      for (const queue of pipeline.change_queues ?? []) {
+        for (const head of queue.heads ?? []) {
+          for (const item of head ?? []) {
+            if (item.id) {
+              byId.set(item.id, item);
+            }
+            if ((item.refs ?? []).some((ref) => ref.id === targetId)) {
+              targets.push(item);
+            }
+          }
+        }
+      }
+    }
+
+    // A PR that is not in the queue says nothing about its dependencies.
+    if (targets.length === 0) {
+      return undefined;
+    }
+
+    const liveTargets = targets.filter((item) => item.live !== false);
+    const starts = liveTargets.length > 0 ? liveTargets : targets;
+    const visited = new Set<string>();
+    const result: QueuedRef[] = [];
+    for (const start of starts) {
+      let aheadId = start.item_ahead;
+      while (aheadId && !visited.has(aheadId)) {
+        visited.add(aheadId);
+        const ahead = byId.get(aheadId);
+        if (!ahead) {
+          break;
+        }
+        for (const ref of ahead.refs ?? []) {
+          const project = ref.project ?? ref.project_canonical;
+          if (!project) {
+            continue;
+          }
+          const queued: QueuedRef = { project, live: ahead.live ?? true };
+          const change = parseChangeNumber(undefined, ref.id);
+          if (change !== undefined) {
+            queued.change = change;
+          }
+          if (ref.url) {
+            queued.url = ref.url;
+          }
+          result.push(queued);
+        }
+        aheadId = ahead.item_ahead;
+      }
+    }
+    return result;
   }
 
   async listBuilds(tenant: string, opts: ListBuildsOptions = {}): Promise<Build[]> {

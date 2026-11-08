@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { type SearchItem } from '../clients/gheTypes';
+import { type QueuedRef } from '../clients/zuulTypes';
 import { buildTenantProjectSet } from '../services/dependsOnCandidates';
 import { type DependsOnRef, formatPrRef, parseDependsOn } from '../services/dependsOnParser';
 import {
@@ -108,6 +109,8 @@ export class DependsOnTreeDataProvider
   private cachedBody: string | undefined;
   private upstream: UpstreamDep[] = [];
   private downstream: SearchItem[] = [];
+  private queueAhead: QueuedRef[] | undefined;
+  private transitiveUpstream: Set<string> | undefined;
   private hasLoadedOnceForPr = false;
   private disposed = false;
 
@@ -244,6 +247,8 @@ export class DependsOnTreeDataProvider
       this.cachedBody = undefined;
       this.upstream = [];
       this.downstream = [];
+      this.queueAhead = undefined;
+      this.transitiveUpstream = undefined;
       this.hasLoadedOnceForPr = false;
       this.emitter.fire();
       return;
@@ -253,6 +258,8 @@ export class DependsOnTreeDataProvider
     if (this.cachedPrKey !== prKey) {
       this.upstream = [];
       this.downstream = [];
+      this.queueAhead = undefined;
+      this.transitiveUpstream = undefined;
       this.hasLoadedOnceForPr = false;
     }
 
@@ -291,12 +298,28 @@ export class DependsOnTreeDataProvider
           service.getDownstream(snapshot.pr),
         ]);
 
+        // Only ask Zuul for the queue when there is something to compare it with.
+        let queueAhead: QueuedRef[] | undefined;
+        let transitiveUpstream: Set<string> | undefined;
+        if (parseDependsOn(snapshot.pr.body).length > 0 && snapshot.statuses.length > 0) {
+          try {
+            [queueAhead, transitiveUpstream] = await Promise.all([
+              service.getQueueAhead(snapshot.pr),
+              service.getTransitiveUpstreamKeys(snapshot.pr),
+            ]);
+          } catch (err) {
+            this.logger.warn(`[DependsOn] Could not read the Zuul queue: ${String(err)}`);
+          }
+        }
+
         if (this.disposed || !isCurrent()) {
           return;
         }
 
         this.upstream = upstream;
         this.downstream = downstream;
+        this.queueAhead = queueAhead;
+        this.transitiveUpstream = transitiveUpstream;
         this.hasLoadedOnceForPr = true;
         this.emitter.fire();
       } catch (err) {
@@ -313,9 +336,9 @@ export class DependsOnTreeDataProvider
       const normalizedUpstream = this.upstream.map((dep) =>
         dep.state === 'missing' ? { ...dep, state: 'open' as const } : dep,
       );
-      return syncState(normalizedUpstream, snapshot.statuses);
+      return syncState(normalizedUpstream, this.queueAhead, undefined, this.transitiveUpstream);
     }
-    return syncState(snapshot.pr, snapshot.statuses);
+    return syncState(snapshot.pr, undefined);
   }
 
   getTreeItem(element: DependsOnTreeNode): vscode.TreeItem {

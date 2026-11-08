@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { type PullRequest, type SearchItem } from '../../src/clients/gheTypes';
-import { type ChangeStatus } from '../../src/clients/zuulTypes';
+import { type ChangeStatus, type QueuedRef } from '../../src/clients/zuulTypes';
 import {
   applyAddDependsOn,
   applyRemoveDependsOn,
@@ -319,57 +319,65 @@ describe('DependsOnService.getDownstream', () => {
 });
 
 describe('syncState', () => {
-  it('returns inSync: true when statuses is empty even if PR body has dependencies', () => {
+  it('returns inSync: true when the queue was not read, even if the body has dependencies', () => {
     const pr = makePr({
       body: 'Depends-On: https://ghe.example.com/org/dep/pull/10',
     });
-    expect(syncState(pr, [])).toEqual({
+    expect(syncState(pr, undefined)).toEqual({
       inSync: true,
       missingInZuul: [],
       extraInZuul: [],
     });
   });
 
-  it('returns inSync: true when body dependencies match Zuul non-live itemsAhead', () => {
+  it('is in sync when body dependencies match the queue ahead', () => {
     const pr = makePr({
       body: [
         'Depends-On: https://ghe.example.com/org/dep1/pull/10',
         'Depends-On: https://ghe.example.com/org/dep2/pull/20',
       ].join('\n'),
     });
-    const statuses: ChangeStatus[] = [
-      makeStatus({
-        itemsAhead: [
-          { project: 'ghe.example.com/org/dep1', change: 10, live: false },
-          { project: 'org/dep2', change: 20, live: false },
-          { project: 'org/unrelated-queue-item', change: 99, live: true },
-        ],
-      }),
+    const queueAhead: QueuedRef[] = [
+      { project: 'ghe.example.com/org/dep1', change: 10, live: false },
+      { project: 'org/dep2', change: 20, live: false },
+      { project: 'org/unrelated-queue-item', change: 99, live: true },
     ];
 
-    expect(syncState(pr, statuses)).toEqual({
+    expect(syncState(pr, queueAhead)).toEqual({
       inSync: true,
       missingInZuul: [],
       extraInZuul: [],
     });
   });
 
-  it('detects missingInZuul and extraInZuul in both directions', () => {
-    const pr = makePr({
-      body: [
-        'Depends-On: https://ghe.example.com/org/in-both/pull/10',
-        'Depends-On: https://ghe.example.com/org/only-body/pull/20',
-      ].join('\n'),
+  it('reports a dependency missing from the queue', () => {
+    const pr = makePr({ body: 'Depends-On: https://ghe.example.com/org/only-body/pull/20' });
+    expect(syncState(pr, [])).toEqual({
+      inSync: false,
+      missingInZuul: ['org/only-body#20'],
+      extraInZuul: [],
     });
-    const statuses: ChangeStatus[] = [
-      makeStatus({
-        itemsAhead: [
-          { project: 'ghe/org/in-both', change: 10, live: false },
-          { project: 'ghe.example.com/org/only-zuul', change: 30, live: false },
-        ],
-      }),
-    ];
+  });
 
+  it('does not count a transitive dependency as extra (A -> B -> C)', () => {
+    const pr = makePr({ body: 'Depends-On: https://ghe.example.com/org/b/pull/2' });
+    const queueAhead: QueuedRef[] = [
+      { project: 'org/c', change: 3, live: false },
+      { project: 'org/b', change: 2, live: false },
+    ];
+    expect(syncState(pr, queueAhead, undefined, new Set(['org/b#2', 'org/c#3']))).toEqual({
+      inSync: true,
+      missingInZuul: [],
+      extraInZuul: [],
+    });
+  });
+
+  it('reports a removed dependency still queued as extra', () => {
+    const pr = makePr({ body: 'Depends-On: https://ghe.example.com/org/in-both/pull/10' });
+    const queueAhead: QueuedRef[] = [
+      { project: 'ghe/org/in-both', change: 10, live: false },
+      { project: 'ghe.example.com/org/only-zuul', change: 30, live: false },
+    ];
     const service = new DependsOnService(
       { getPr: vi.fn(), searchPrs: vi.fn() },
       { getChangeStatus: vi.fn() },
@@ -377,51 +385,75 @@ describe('syncState', () => {
       async () => new Set(),
     );
 
-    expect(service.syncState(pr, statuses)).toEqual({
+    expect(service.syncState(pr, queueAhead, undefined, new Set(['org/in-both#10']))).toEqual({
       inSync: false,
-      missingInZuul: ['org/only-body#20'],
+      missingInZuul: [],
       extraInZuul: ['org/only-zuul#30'],
     });
   });
 
   it('ignores non-open upstream dependencies when UpstreamDep[] is provided', () => {
-    const upstream: UpstreamDep[] = [
-      {
-        ref: {
-          raw: 'https://ghe.example.com/org/open-dep/pull/10',
-          line: 1,
-          kind: 'url',
-          owner: 'org',
-          repo: 'open-dep',
-          number: 10,
-        },
-        state: 'open',
-        inTenant: true,
+    const mkDep = (name: string, n: number, state: 'open' | 'merged'): UpstreamDep => ({
+      ref: {
+        raw: `https://ghe.example.com/org/${name}/pull/${n}`,
+        line: 1,
+        kind: 'url',
+        owner: 'org',
+        repo: name,
+        number: n,
       },
-      {
-        ref: {
-          raw: 'https://ghe.example.com/org/merged-dep/pull/20',
-          line: 2,
-          kind: 'url',
-          owner: 'org',
-          repo: 'merged-dep',
-          number: 20,
-        },
-        state: 'merged',
-        inTenant: true,
-      },
-    ];
-    const statuses: ChangeStatus[] = [
-      makeStatus({
-        itemsAhead: [{ project: 'org/open-dep', change: 10, live: false }],
-      }),
-    ];
+      state,
+      inTenant: true,
+    });
+    const upstream = [mkDep('open-dep', 10, 'open'), mkDep('merged-dep', 20, 'merged')];
+    const queueAhead: QueuedRef[] = [{ project: 'org/open-dep', change: 10, live: false }];
 
-    expect(syncState(upstream, statuses)).toEqual({
+    expect(syncState(upstream, queueAhead)).toEqual({
       inSync: true,
       missingInZuul: [],
       extraInZuul: [],
     });
+  });
+});
+
+describe('DependsOnService.getTransitiveUpstreamKeys', () => {
+  it('walks Depends-On bodies down the chain', async () => {
+    const bodies = new Map<number, string | null>([
+      [2, 'Depends-On: https://ghe.example.com/org/c/pull/3'],
+      [3, null],
+    ]);
+    const getPr = vi.fn(async (_o: string, _r: string, n: number) =>
+      makePr({ number: n, body: bodies.get(n) ?? null }),
+    );
+    const service = new DependsOnService(
+      { getPr, searchPrs: vi.fn() },
+      { getChangeStatus: vi.fn() },
+      'tenant-a',
+      async () => new Set(),
+    );
+
+    const keys = await service.getTransitiveUpstreamKeys({
+      body: 'Depends-On: https://ghe.example.com/org/b/pull/2',
+    });
+    expect([...keys].sort()).toEqual(['org/b#2', 'org/c#3']);
+  });
+
+  it('stops at depth 5', async () => {
+    const getPr = vi.fn(async (_o: string, _r: string, n: number) =>
+      makePr({ number: n, body: `Depends-On: https://ghe.example.com/org/repo/pull/${n + 1}` }),
+    );
+    const service = new DependsOnService(
+      { getPr, searchPrs: vi.fn() },
+      { getChangeStatus: vi.fn() },
+      'tenant-a',
+      async () => new Set(),
+    );
+
+    const keys = await service.getTransitiveUpstreamKeys({
+      body: 'Depends-On: https://ghe.example.com/org/repo/pull/1',
+    });
+    expect(keys.size).toBe(5);
+    expect(getPr).toHaveBeenCalledTimes(4);
   });
 });
 
