@@ -8,7 +8,7 @@ const options = {
   bundle: true,
   platform: 'node',
   format: 'cjs',
-  target: 'node20',
+  target: 'node22',
   external: ['vscode'],
   outfile: 'dist/extension.js',
   sourcemap: !production,
