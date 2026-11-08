@@ -13,6 +13,8 @@ Facts checked on 2026-11-08:
   never run.
 - `gitleaks` is installed at `/opt/homebrew/bin/gitleaks`. It found no leaks in 9 commits or in
   `src`, `test`, `.vscode`.
+- `.github/workflows/ci.yml` (commit `032b56c`, added after the review) runs
+  `pre-commit run --all-files` on Ubuntu, so every `language: system` hook must exist on that runner.
 - `no-floating-promises` and `no-misused-promises` have 0 hits in `src/`.
 - Every command in `package.json` is registered. `zuul.openBuildLog` and `zuul.openDependencyPr` are
   registered but deliberately not declared.
@@ -73,16 +75,19 @@ the code, and the pre-commit checks run.
 
 - **Tier:** self
 - **Risk:** low
-- **Status:** todo
+- **Status:** done
 - **Files:** `.pre-commit-config.yaml`, `eslint.config.mjs`, `.vscodeignore` (edit);
-  `vitest.config.ts` (rename to `vitest.config.mts`); `test/unit/manifest.test.ts` (new)
+  `vitest.config.ts` (rename to `vitest.config.mts`);
+  `test/unit/manifest.test.ts`, `.markdownlint.json` (new)
 - **Do:**
   - Replace the two local hooks with these `local`, `language: system`, `pass_filenames: false` hooks:
     - `check`: `npm run check` (lint, typecheck, tests with coverage, build).
-    - `gitleaks`: `gitleaks git --pre-commit --staged --redact --no-banner`.
     - `lockfile-sync`: `npm ci --dry-run --ignore-scripts`, with `files: ^package(-lock)?\.json$`.
   - Add `pre-commit/pre-commit-hooks` pinned to its latest tag, with `check-merge-conflict` and
     `check-added-large-files` (`args: [--maxkb=500]`; `package-lock.json` is 235 KB).
+  - Added at the user's request: `trailing-whitespace` (`args: [--markdown-linebreak-ext=md]`) and
+    `igorshubovych/markdownlint-cli` `v0.50.0`, excluding what Prettier also skips (`.plan/`,
+    `IMPLEMENTATION_PLAN.md`). `.markdownlint.json` turns off `MD013`, as prose is not wrapped.
   - In `eslint.config.mjs`, add a block for `src/**/*.ts` with
     `parserOptions: { projectService: true, tsconfigRootDir: import.meta.dirname }` and the rules
     `@typescript-eslint/no-floating-promises` and `@typescript-eslint/no-misused-promises` as errors.
@@ -91,8 +96,8 @@ the code, and the pre-commit checks run.
     entry, every `menus` command and every `command:zuul.*` welcome link is registered, and every
     registered `zuul.*` command is declared except `zuul.openBuildLog` and `zuul.openDependencyPr`.
   - Run `pre-commit install`, then `pre-commit run --all-files`.
-- **Don't:** add `no-commit-to-branch` (work happens on `main`). Don't add end-of-file, whitespace,
-  JSON or YAML hooks, because Prettier already fails on those. Don't enable all of
+- **Don't:** add `no-commit-to-branch` (work happens on `main`). Don't add end-of-file, JSON or
+  YAML hooks, because Prettier already fails on those. Don't enable all of
   `recommendedTypeChecked` (49 unrelated hits).
 - **Done when:**
   - `.git/hooks/pre-commit` exists
@@ -433,7 +438,7 @@ the code, and the pre-commit checks run.
 
 ## Out of scope
 
-- CI workflows (the repo has none; pre-commit is the only gate for now).
+- CI changes, and secret scanning (the `gitleaks` hook was removed at the user's request).
 - Multi-root repo picking, and showing `owner/repo @ branch` in the view description.
 - Non-standard ports on GHE remotes.
 - Fork workflows (recorded as out of scope in Step 2).

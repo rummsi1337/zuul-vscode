@@ -7,12 +7,13 @@ coverage/**
 node_modules/**
 **/*.map
 tsconfig.json
-vitest.config.ts
+vitest.config.mts
 esbuild.mjs
 eslint.config.mjs
 .prettierrc
 .prettierignore
 .gitignore
 .pre-commit-config.yaml
+.markdownlint.json
 .vscode-test.mjs
 IMPLEMENTATION_PLAN.md
