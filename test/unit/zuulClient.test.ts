@@ -38,7 +38,7 @@ describe('ZuulClient', () => {
     );
   });
 
-  it('normalises legacy getChangeStatus items including item_ahead and items_ahead deduplication', async () => {
+  it('normalises legacy getChangeStatus items with an item-level pipeline', async () => {
     const fetchFn = vi.fn<typeof fetch>().mockResolvedValueOnce(jsonResponse(statusLegacyFixture));
     const client = new ZuulClient('https://zuul.example.com', undefined, fetchFn);
 
@@ -47,84 +47,74 @@ describe('ZuulClient', () => {
       'https://zuul.example.com/api/tenant/acme/status/change/42,9f8e7d6c5b4a3210',
       expect.anything(),
     );
-    expect(statuses).toHaveLength(1);
+    expect(statuses).toEqual([
+      {
+        pipeline: 'check',
+        queue: 'shared',
+        live: true,
+        enqueueTime: 1700000000000,
+        remainingTimeMs: 120000,
+        itemsAhead: [],
+        jobs: [
+          {
+            name: 'zuul-tox-linters',
+            uuid: '11111111-2222-3333-4444-555555555555',
+            result: 'SUCCESS',
+            running: false,
+            elapsedMs: 45000,
+            remainingMs: 0,
+            reportUrl:
+              'https://logs.example.com/42/9f8e7d6c5b4a3210/check/zuul-tox-linters/1111111/',
+          },
+          { name: 'zuul-deploy-preview', running: false },
+        ],
+      },
+    ]);
+  });
+
+  it('normalises real-shaped getChangeStatus items: pipeline from jobs, non-live item, voting', async () => {
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValueOnce(jsonResponse(statusModernFixture));
+    const client = new ZuulClient('https://zuul.example.com', undefined, fetchFn);
+
+    const statuses = await client.getChangeStatus('acme', 42, '9f8e7d6c5b4a3210');
+    expect(statuses).toHaveLength(2);
     expect(statuses[0]).toEqual({
       pipeline: 'check',
-      queue: 'shared',
+      queue: '',
       live: true,
       enqueueTime: 1700000000000,
       remainingTimeMs: 120000,
-      itemsAhead: [
-        {
-          project: 'acme/common-lib',
-          change: 89,
-          live: false,
-          url: 'https://ghe.example.com/acme/common-lib/pull/89',
-        },
-        {
-          project: 'acme/core',
-          change: 90,
-          live: true,
-          url: 'https://ghe.example.com/acme/core/pull/90',
-        },
-      ],
+      itemsAhead: [],
       jobs: [
         {
           name: 'zuul-tox-linters',
           uuid: '11111111-2222-3333-4444-555555555555',
           result: 'SUCCESS',
           running: false,
-          elapsedMs: 45000,
+          voting: true,
+          elapsedMs: 52000,
           remainingMs: 0,
-          reportUrl: 'https://logs.example.com/42/9f8e7d6c5b4a3210/check/zuul-tox-linters/1111111/',
+          reportUrl: 'https://zuul.example.com/t/acme/build/11111111-2222-3333-4444-555555555555',
         },
         {
           name: 'zuul-tox-py311',
           uuid: '66666666-7777-8888-9999-000000000000',
           running: true,
+          voting: false,
           elapsedMs: 30000,
           remainingMs: 90000,
-          streamUrl: 'stream/66666666-7777-8888-9999-000000000000',
-        },
-        {
-          name: 'zuul-deploy-preview',
-          running: false,
         },
       ],
     });
-  });
-
-  it('normalises modern getChangeStatus items with refs[] into itemsAhead (live: false)', async () => {
-    const fetchFn = vi.fn<typeof fetch>().mockResolvedValueOnce(jsonResponse(statusModernFixture));
-    const client = new ZuulClient('https://zuul.example.com', undefined, fetchFn);
-
-    const statuses = await client.getChangeStatus('acme', 42, '9f8e7d6c5b4a3210');
-    expect(statuses).toHaveLength(1);
-    expect(statuses[0]).toEqual({
-      pipeline: 'check',
-      queue: 'shared',
-      live: true,
+    expect(statuses[0].jobs[1].voting).toBe(false);
+    // Non-live item: no jobs, so no pipeline can be derived.
+    expect(statuses[1]).toEqual({
+      pipeline: '',
+      queue: '',
+      live: false,
       enqueueTime: 1700000000000,
-      remainingTimeMs: 120000,
-      itemsAhead: [
-        {
-          project: 'ghe.example.com/acme/common-lib',
-          change: 89,
-          live: false,
-          url: 'https://ghe.example.com/acme/common-lib/pull/89',
-        },
-      ],
-      jobs: [
-        {
-          name: 'zuul-tox-linters',
-          uuid: '11111111-2222-3333-4444-555555555555',
-          result: 'FAILURE',
-          running: false,
-          elapsedMs: 52000,
-          remainingMs: 0,
-          reportUrl: 'https://logs.example.com/42/9f8e7d6c5b4a3210/check/zuul-tox-linters/1111111/',
-        },
-      ],
+      itemsAhead: [],
+      jobs: [],
     });
   });
 
@@ -334,23 +324,28 @@ describe('ZuulClient', () => {
     );
   });
 
+  it('maps voting on builds', () => {
+    expect(normalizeBuild({ voting: false }).voting).toBe(false);
+    expect(normalizeBuild({}).voting).toBeUndefined();
+  });
+
   it('normalises sparse objects and optional fields in normalisers and getToken', async () => {
-    expect(normalizeJobStatus({ running: true, stream_url: 'ws://stream' })).toEqual({
+    expect(normalizeJobStatus({ running: true, voting: false })).toEqual({
       name: '',
       running: true,
-      streamUrl: 'ws://stream',
+      voting: false,
     });
     expect(normalizeJobStatus({ uuid: 'u1' })).toEqual({
       name: '',
       uuid: 'u1',
       running: true,
     });
-    expect(normalizeChangeStatus({ item_ahead: { id: 'not-a-num', project: 'p' } })).toEqual({
+    expect(normalizeChangeStatus({ item_ahead: 'abc' } as never)).toEqual({
       pipeline: '',
       queue: '',
       live: true,
       jobs: [],
-      itemsAhead: [{ project: 'p', live: false }],
+      itemsAhead: [],
     });
     expect(
       normalizeBuild({

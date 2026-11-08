@@ -1,32 +1,13 @@
 [
   {
     "pipeline": "check",
-    "queue_name": "shared",
+    "queue": "shared",
     "id": "42,9f8e7d6c5b4a3210",
     "project": "acme/service",
     "live": true,
     "enqueue_time": 1700000000000,
     "remaining_time": 120000,
-    "item_ahead": {
-      "id": "89,1122334455667788",
-      "project": "acme/common-lib",
-      "live": false,
-      "url": "https://ghe.example.com/acme/common-lib/pull/89"
-    },
-    "items_ahead": [
-      {
-        "id": "89,1122334455667788",
-        "project": "acme/common-lib",
-        "live": false,
-        "url": "https://ghe.example.com/acme/common-lib/pull/89"
-      },
-      {
-        "id": "90,aabbccddeeff0011",
-        "project": "acme/core",
-        "live": true,
-        "url": "https://ghe.example.com/acme/core/pull/90"
-      }
-    ],
+    "item_ahead": null,
     "jobs": [
       {
         "name": "zuul-tox-linters",
@@ -36,15 +17,6 @@
         "remaining_time": 0,
         "url": null,
         "report_url": "https://logs.example.com/42/9f8e7d6c5b4a3210/check/zuul-tox-linters/1111111/"
-      },
-      {
-        "name": "zuul-tox-py311",
-        "uuid": "66666666-7777-8888-9999-000000000000",
-        "result": null,
-        "elapsed_time": 30000,
-        "remaining_time": 90000,
-        "url": "stream/66666666-7777-8888-9999-000000000000",
-        "report_url": null
       },
       {
         "name": "zuul-deploy-preview",

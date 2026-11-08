@@ -117,6 +117,48 @@ describe('buildsModel', () => {
       expect(buildTree(makeSnapshot())).toEqual([]);
     });
 
+    it('ignores non-live statuses without jobs so builds are used', () => {
+      const tree = buildTree(
+        makeSnapshot({
+          statuses: [{ pipeline: '', queue: '', live: false, jobs: [], itemsAhead: [] }],
+          builds: [
+            {
+              uuid: 'b1',
+              jobName: 'j',
+              pipeline: 'check',
+              result: 'SUCCESS',
+              voting: false,
+              artifacts: [],
+            },
+          ],
+        }),
+      );
+      expect(tree).toEqual([
+        {
+          pipeline: 'check',
+          live: false,
+          jobs: [{ name: 'j', state: 'success', result: 'SUCCESS', uuid: 'b1', voting: false }],
+        },
+      ]);
+    });
+
+    it('carries voting from statuses', () => {
+      const tree = buildTree(
+        makeSnapshot({
+          statuses: [
+            {
+              pipeline: 'check',
+              queue: '',
+              live: true,
+              itemsAhead: [],
+              jobs: [{ name: 'j', running: true, voting: false }],
+            },
+          ],
+        }),
+      );
+      expect(tree[0].jobs[0].voting).toBe(false);
+    });
+
     it('builds tree from statuses when present and sorts jobs properly', () => {
       const snapshot = makeSnapshot({
         statuses: [

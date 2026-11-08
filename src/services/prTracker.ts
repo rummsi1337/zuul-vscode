@@ -247,7 +247,7 @@ export class PrTracker implements vscode.Disposable {
       }
 
       let builds: Build[] = [];
-      if (statuses.length === 0) {
+      if (statuses.every((s) => !s.live)) {
         builds = await currentCtx.zuul.listBuilds(currentCtx.tenant, {
           project: currentCtx.project,
           change: pr.number,

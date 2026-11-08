@@ -286,10 +286,10 @@ Good points to build, install, and manually test the extension:
     interface ChangeStatus { pipeline: string; queue: string; live: boolean; enqueueTime?: number;
       remainingTimeMs?: number; jobs: JobStatus[]; itemsAhead: QueuedRef[] }
     interface JobStatus { name: string; uuid?: string; result?: string /* SUCCESS, FAILURE, ... */;
-      running: boolean; elapsedMs?: number; remainingMs?: number; streamUrl?: string; reportUrl?: string }
+      running: boolean; elapsedMs?: number; remainingMs?: number; voting?: boolean; reportUrl?: string }
     interface QueuedRef { project: string; change?: number; live: boolean; url?: string }
     interface Build { uuid: string; jobName: string; result?: string; pipeline: string; logUrl?: string;
-      startTime?: string; endTime?: string; change?: number; patchset?: string; artifacts: { name: string; url: string }[] }
+      startTime?: string; endTime?: string; voting?: boolean; change?: number; patchset?: string; artifacts: { name: string; url: string }[] }
     ```
     `getChangeStatus` returns `ChangeStatus[]` (one per pipeline the change is in). Real shape of
     one `/status/change/{pr},{sha}` array element, read from `zuul.opendev.org` (Zuul

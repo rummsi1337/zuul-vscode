@@ -1,34 +1,83 @@
 [
   {
-    "pipeline": "check",
-    "queue": "shared",
+    "id": "e709c0c15708408390fe5331f5ca9680",
+    "active": true,
     "live": true,
     "enqueue_time": 1700000000000,
     "remaining_time": 120000,
+    "failing_reasons": [],
+    "zuul_ref": "Z0123456789abcdef",
+    "item_ahead": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+    "items_behind": ["b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"],
     "refs": [
       {
-        "project": "ghe.example.com/acme/service",
-        "change": 42,
-        "patchset": "9f8e7d6c5b4a3210",
-        "ref_url": "https://ghe.example.com/acme/service/pull/42"
+        "id": "42,9f8e7d6c5b4a3210",
+        "owner": "alice",
+        "project": "acme/service",
+        "project_canonical": "ghe.example.com/acme/service",
+        "ref": "refs/pull/42/head",
+        "url": "https://ghe.example.com/acme/service/pull/42"
       },
       {
-        "project": "ghe.example.com/acme/common-lib",
-        "change": 89,
-        "patchset": "1122334455667788",
-        "ref_url": "https://ghe.example.com/acme/common-lib/pull/89"
+        "id": "89,1122334455667788",
+        "owner": "bob",
+        "project": "acme/common-lib",
+        "project_canonical": "ghe.example.com/acme/common-lib",
+        "ref": "refs/pull/89/head",
+        "url": "https://ghe.example.com/acme/common-lib/pull/89"
       }
     ],
     "jobs": [
       {
         "name": "zuul-tox-linters",
         "uuid": "11111111-2222-3333-4444-555555555555",
-        "result": "FAILURE",
+        "result": "SUCCESS",
+        "voting": true,
+        "pipeline": "check",
+        "url": "stream/11111111-2222-3333-4444-555555555555?logfile=console.log",
+        "report_url": "https://zuul.example.com/t/acme/build/11111111-2222-3333-4444-555555555555",
         "elapsed_time": 52000,
         "remaining_time": 0,
-        "url": null,
-        "report_url": "https://logs.example.com/42/9f8e7d6c5b4a3210/check/zuul-tox-linters/1111111/"
+        "canceled": false,
+        "paused": false,
+        "queued": false
+      },
+      {
+        "name": "zuul-tox-py311",
+        "uuid": "66666666-7777-8888-9999-000000000000",
+        "result": null,
+        "voting": false,
+        "pipeline": "check",
+        "url": "stream/66666666-7777-8888-9999-000000000000?logfile=console.log",
+        "report_url": null,
+        "elapsed_time": 30000,
+        "remaining_time": 90000,
+        "canceled": false,
+        "paused": false,
+        "queued": false
       }
     ]
+  },
+  {
+    "id": "95f947a1b9cf4eafb3226ca1c3a99060",
+    "active": false,
+    "live": false,
+    "enqueue_time": 1700000000000,
+    "remaining_time": null,
+    "failing_reasons": [],
+    "zuul_ref": "Z89abcdef01234567",
+    "item_ahead": null,
+    "items_behind": [],
+    "refs": [
+      {
+        "id": "42,9f8e7d6c5b4a3210",
+        "owner": "alice",
+        "project": "acme/service",
+        "project_canonical": "ghe.example.com/acme/service",
+        "ref": "refs/pull/42/head",
+        "url": "https://ghe.example.com/acme/service/pull/42"
+      }
+    ],
+    "jobs": []
   }
 ]
