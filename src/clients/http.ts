@@ -16,6 +16,8 @@ export interface HttpClientOptions {
   conditionalGet?: boolean;
   /** Refuses requests while a GitHub rate limit is in force, and learns limits from responses. */
   rateLimit?: RateLimitGuard;
+  /** Throw HttpError(401) instead of sending a same-origin request without an Authorization header. */
+  requireAuth?: boolean;
 }
 
 interface ConditionalEntry {
@@ -62,6 +64,7 @@ export class HttpClient {
   private readonly logger?: HttpLogger;
   private readonly conditionalGet: boolean;
   private readonly rateLimit?: RateLimitGuard;
+  private readonly requireAuth: boolean;
   private readonly conditionalEntries = new Map<string, ConditionalEntry>();
   private lastGetAuth: string | undefined;
 
@@ -73,6 +76,7 @@ export class HttpClient {
     this.logger = opts.logger;
     this.conditionalGet = opts.conditionalGet ?? false;
     this.rateLimit = opts.rateLimit;
+    this.requireAuth = opts.requireAuth ?? false;
   }
 
   resolveUrl(path: string, query?: QueryParams): string {
@@ -131,6 +135,10 @@ export class HttpClient {
       if (auth) {
         headers.Authorization = auth;
       }
+    }
+
+    if (this.requireAuth && !headers.Authorization) {
+      throw new HttpError(401, 'No GitHub token available');
     }
 
     return headers;

@@ -160,6 +160,7 @@ export class GheClient {
       fetchFn,
       logger: this.logger,
       conditionalGet: true,
+      requireAuth: true,
       rateLimit: new RateLimitGuard(now),
     });
   }

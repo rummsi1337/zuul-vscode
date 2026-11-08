@@ -57,16 +57,20 @@ describe('GheClient', () => {
     expect(ghCom.restBaseUrl).toBe('https://api.github.com');
     expect(ghCom.graphqlUrl).toBe('https://api.github.com/graphql');
 
-    await ghCom.getUser();
-    expect(fetchFn).toHaveBeenLastCalledWith(
-      'https://api.github.com/user',
-      expect.objectContaining({
-        headers: {
-          'User-Agent': 'zuul-vscode',
-          Accept: 'application/json',
-        },
-      }),
-    );
+    const callsBefore = fetchFn.mock.calls.length;
+    await expect(ghCom.getUser()).rejects.toMatchObject({ status: 401 });
+    expect(fetchFn.mock.calls.length).toBe(callsBefore);
+  });
+
+  it('sends no GET or GraphQL request without a token', async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => jsonResponse({}));
+    const client = new GheClient('ghe.example.com', async () => undefined, fetchFn);
+
+    const err = await client.getPr('o', 'r', 1).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(HttpError);
+    expect((err as HttpError).status).toBe(401);
+    await expect(client.getPrRollup('o', 'r', 1)).rejects.toMatchObject({ status: 401 });
+    expect(fetchFn).not.toHaveBeenCalled();
   });
 
   it('finds open PR for a branch or returns undefined when none exists', async () => {

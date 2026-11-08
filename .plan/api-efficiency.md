@@ -3,7 +3,9 @@
 ## Context
 
 The extension polls GitHub Enterprise and Zuul. This plan checks five requirements against the code
-and closes the gaps. No code has been changed yet.
+and closes the gaps. Steps 1 and 2 are done, and the measurements and tables below describe the code
+before those two steps. On 2026-11-08 the remaining steps were cut down to the changes that save real
+requests. What was dropped, and why, is in Decisions and Out of scope.
 
 ### Measured today
 
@@ -57,10 +59,10 @@ Source: GitHub's REST best-practices and rate-limit pages, API version 2026-03-1
 | --------------------------------------- | ----- | ---- |
 | Conditional requests (ETag, 304)        | Not used, and a 304 would throw | 1 |
 | `retry-after`, `x-ratelimit-*`          | Ignored. Only a 403 whose body says "rate limit" is recognised, not 429 | 2 |
-| Serial requests                         | Gate sends 5 at once, and again for each upstream PR | 3 |
-| Authenticated requests                  | Sends requests with no token when none is found | 4 |
-| Do not ignore repeated 4xx and 5xx      | Retries forever | 9 |
-| Avoid polling, use webhooks             | Webhooks are impossible here (no inbound endpoint). Polling is reduced instead | 8, 9 |
+| Serial requests                         | Gate sends 5 at once, and again for each upstream PR. Left as it is, see Decisions | none |
+| Authenticated requests                  | Sends requests with no token when none is found | 3 |
+| Do not ignore repeated 4xx and 5xx      | Retries forever | 7 |
+| Avoid polling, use webhooks             | Webhooks are impossible here (no inbound endpoint). Polling is reduced instead | 6, 7 |
 | Follow redirects                        | OK, `fetch` follows them. `Authorization` is removed for other origins | none |
 | Use `Link` headers for pagination       | OK, `fetchPages` | none |
 | Pause between many mutating requests    | OK, only single user-started writes | none |
@@ -70,12 +72,14 @@ Source: GitHub's REST best-practices and rate-limit pages, API version 2026-03-1
 
 - 304 is free on the primary limit only when the request carries a valid `Authorization` header.
 - GraphQL requests are POST, so they cannot use ETags. A query costs one point.
+- GitHub allows 100 concurrent requests and 5,000 authenticated requests per hour. Search allows 30
+  requests per minute.
 - Rate limits are often off on GitHub Enterprise Server. The response headers are then absent and the
   guard in Step 2 stays idle.
-- `vscode.WindowState.active` and `SecretStorage.onDidChange` exist in `@types/vscode` 1.101 (checked).
-- **Assumed:** a commit status change does not change the PR's `updated_at`. The gate therefore keeps
-  a time limit as well as a change key.
-- **Assumed:** VS Code does not call `getChildren` for a hidden view. Step 10 checks this by hand.
+- `ZuulClient.withAuth` tries each candidate token on a 401 or 403, so a refused call costs one
+  request per candidate.
+- `TreeView.message` exists in `@types/vscode` 1.101 (checked).
+- **Assumed:** VS Code does not call `getChildren` for a hidden view. Step 8 checks this by hand.
 - **Not verified:** whether Zuul answers 304. This plan uses time-based caching for Zuul only.
 
 Already correct, keep it: polling pauses when the window is not focused, and stale poll results are
@@ -83,12 +87,25 @@ discarded with `sessionSeq` and `pollRunSeq`.
 
 ## Goal
 
-An idle PR costs about 25 charged GitHub requests and 26 Zuul requests per hour instead of 382 and
-244. Polling stops when it can't succeed and says why. GitHub features keep working when Zuul or its
-token doesn't.
+An idle PR costs about 26 charged GitHub requests and 26 Zuul requests per hour instead of 382 and
+244. Polling stops when retrying can't help, and says why. GitHub features keep working when Zuul or
+its token doesn't.
+
+Expected per hour at default settings. These are estimates from the calls each poll makes, not
+measurements. Step 10 checks them.
+
+| Scenario                    | GitHub charged | Zuul                    |
+| --------------------------- | -------------: | ----------------------- |
+| Idle PR, sidebar open       |            ~26 | ~26                     |
+| Idle PR, sidebar closed     |             ~1 | ~24                     |
+| Build running, sidebar open |           ~120 | ~60                     |
+| Zuul refuses the token      |            ~26 | 1 per candidate token   |
+| Zuul is down                |            ~26 | 4                       |
 
 ## Conventions
 
+- Simplicity first. Only change an API call when that saves requests that aren't already a free 304.
+  Don't add a cache, queue or retry for anything else.
 - Acceptance command for every step: `npm run check`.
 - No git state changes (commit, add, stash, checkout, branch, push).
 - Every behaviour change gets a test in the same step. Find code by name, because line numbers move.
@@ -104,12 +121,16 @@ Already made. Implementers must not change these.
 | ----- | -------- |
 | Polling setting | One setting, `zuul.pollIntervalSeconds`, default 60, range 10 to 3600. The user wants to try low values. |
 | Intervals | Build running: the setting. Nothing running: 5 times the setting (5 min by default). After posting a trigger: every 15 s for 45 s (3 polls, was 15), or at the setting if that is lower. |
-| Short reuse windows | 5 s, which is below the 10 s minimum interval, so a poll never gets the previous poll's answer. |
-| Retries | First try plus at most 3 retries, after 30, 60 and 120 s, then stop. |
-| No retry | GitHub 401, 403 and 404 stop at once. Retrying the same credentials can't help. |
+| Short reuse window | 5 s for Zuul `getChangeStatus` and `listBuilds`, which is below the 10 s minimum interval, so a poll never gets the previous poll's answer. |
+| GitHub PR fetches | No time-based reuse. Step 1 already makes repeat GETs a free 304. |
+| One request at a time | Not added. The gate sends 5 at once and GitHub allows 100. A queue saves no requests and slows the views. |
+| Token caches | Not added. They save local keychain and file reads, not API calls, and Step 6 cuts those by about 80%. |
+| View refresh | The gate keeps its 30 s limit and dependencies keep 60 s. A visible view reloads on a poll once its limit has passed. |
+| Retries | GitHub and Zuul, counted separately. First try plus at most 3 retries, after 30, 60 and 120 s, then stop. |
+| No retry | GitHub 401, 403 and 404, and Zuul 401 and 403, stop at once. Retrying the same credentials can't help. |
 | Rate limits | Don't count as failures. Wait for the time GitHub gives, then resume by itself. |
+| Zuul stopped | GitHub polling continues. A replaced token file needs Refresh once Zuul has stopped. While Zuul is failing, only the poll calls it. With no statuses the poll runs at the idle interval. |
 | No PR on the branch | Stop polling. One lookup on window focus, at most once per poll interval. Confirmed by the user. |
-| Inactivity | Pause after 15 min without activity in a focused window. Resume on activity. |
 | Zuul data gone | Gate can't say "Ready": the Zuul check row shows "unknown" and stays a blocker. |
 | No GitHub token | Send nothing to GitHub. Show the existing "no token" text. |
 | What degrades | Only Zuul auth and network problems. `no-zuul-url` and "repo is not in any tenant" still switch the extension off for that repo. Otherwise it would poll GitHub for every repo in every window. |
@@ -122,9 +143,9 @@ When polling resumes:
 | GitHub failing after retries    | Refresh, branch or HEAD change |
 | GitHub 401, 403, 404, no token  | Refresh, PAT set or cleared, branch or HEAD change |
 | GitHub rate limit               | By itself at the time GitHub gave |
-| Zuul token refused or expired   | New token (seen within 60 s), Refresh. GitHub polling continues |
+| Zuul token refused (401, 403)   | Refresh, token set or cleared, branch or HEAD change. GitHub polling continues |
 | Zuul failing after retries      | Refresh, branch or HEAD change. GitHub polling continues |
-| Window unfocused or inactive    | Focus or activity |
+| Window unfocused                | Focus |
 
 ## Steps
 
@@ -188,85 +209,23 @@ When polling resumes:
   - Tests cover each wait rule, 403 and 429, GraphQL `RATE_LIMITED`, no network while blocked, and no
     REST fallback from `getRequiredContexts` while limited
 
-### Step 3: Send GitHub requests one at a time and reuse fresh results
+### Step 3: Send nothing to GitHub without a token
 
 - **Tier:** sonnet
-- **Risk:** medium
-- **Status:** todo
-- **Files:** `src/util/ttlCache.ts` (new), `test/unit/ttlCache.test.ts` (new), `src/clients/http.ts`,
-  `src/clients/gheClient.ts`, `src/services/dependsOnService.ts`, `test/unit/http.test.ts`,
-  `test/unit/gheClient.test.ts`, `test/unit/dependsOnService.test.ts` (edit)
+- **Risk:** low
+- **Status:** done
+- **Files:** `src/clients/http.ts`, `src/clients/gheClient.ts`, `test/unit/http.test.ts`,
+  `test/unit/gheClient.test.ts` (edit)
 - **Do:**
-  - Add `class TtlCache` with `get<T>(key, ttlMs, load)`, `delete(key)` and `clear()`. Concurrent
-    calls for one key share one load. Failures are not stored. `undefined` is a valid stored value.
-    Cap at 500 entries, oldest first. Takes an injected `now`.
-  - Add `maxConcurrent?: number` to `HttpClientOptions` (default unlimited). `GheClient` passes 1.
-    Use a FIFO queue around `fetchFn`.
-  - Start `AbortSignal.timeout` when a request leaves the queue. Otherwise queued requests time out
-    while waiting.
-  - `GheClient.getPr(owner, repo, num, opts?: { fresh?: boolean })`: reuse for 5 s through a
-    `TtlCache`. `fresh: true` skips the cache. `updatePrBody` deletes that PR's entry.
-  - `applyAddDependsOn` and `applyRemoveDependsOn` pass `fresh: true`. Those edits must start from
-    the current PR body.
-  - Add `GheClient.clearCache()`.
-- **Don't:** queue Zuul requests. Don't change `mapWithConcurrency`.
-- **Done when:**
-  - `npm run check` passes
-  - Tests show: never more than one GitHub request in flight; the timeout starts at send time;
-    `fresh` reaches the server; `updatePrBody` clears the entry
-
-### Step 4: Cache the GitHub token
-
-- **Tier:** sonnet
-- **Risk:** medium
-- **Status:** todo
-- **Files:** `src/auth/authService.ts`, `src/clients/gheClient.ts`, `src/clients/http.ts`,
-  `src/extension.ts`, `test/unit/authService.test.ts`, `test/unit/gheClient.test.ts` (edit)
-- **Do:**
-  - `AuthService.getToken`: for non-interactive calls, use a `TtlCache` keyed by host and auth method.
-    Keep a found token 5 min and "no token" 60 s. An interactive call skips the cache.
-  - Add `AuthService.invalidate()`. Call it from `reportUnauthorized`.
-  - Call `onTokenResult` only when the signed-in state of that host changes.
-  - In `extension.ts`, subscribe to `context.secrets.onDidChange`. Keys starting with `zuul.pat.` call
-    `authService.invalidate()`.
-  - Add `requireAuth?: boolean` to `HttpClientOptions`. `GheClient` passes true. With no token, throw
+  - Add `requireAuth?: boolean` to `HttpClientOptions`. `GheClient` passes true.
+  - When `getAuthHeader` returns nothing and `requireAuth` is set, throw
     `HttpError(401, 'No GitHub token available')` before any network call.
-- **Don't:** store tokens anywhere new. Don't change `validatePatWithGhe`, which supplies its token.
+- **Don't:** cache tokens. Don't change `validatePatWithGhe`, which supplies its token.
 - **Done when:**
   - `npm run check` passes
-  - Tests show: 100 calls read the secret once; a failing `gh` spawns once per 60 s; `setContext`
-    fires only on a change; no request leaves without a token
+  - Tests show no GET or GraphQL request leaves without a token, and the error is a 401
 
-### Step 5: Cache Zuul tokens and stop re-sending refused ones
-
-- **Tier:** sonnet
-- **Risk:** medium
-- **Status:** todo
-- **Files:** `src/auth/jwt.ts` (new), `test/unit/jwt.test.ts` (new), `src/auth/zuulTokenProvider.ts`,
-  `src/clients/zuulClient.ts`, `src/extension.ts`, `README.md`, `test/unit/zuulTokenProvider.test.ts`,
-  `test/unit/zuulClient.test.ts` (edit)
-- **Do:**
-  - `jwt.ts`: `tokenExpiryMs(token): number | undefined` decodes the payload's `exp` without verifying
-    it. Anything that isn't a JWT, or has no `exp`, returns `undefined`.
-  - `ZuulTokenProvider.getTokenCandidates`: cache per tenant for 60 s. Filter out expired tokens on
-    every call, after the cache, so a token that expires mid-session is dropped.
-  - Add `invalidate()`, and call it from `setToken` and `clearToken`. In `extension.ts`, call it for
-    `secrets.onDidChange` keys starting with `zuul.token` and on settings changes.
-  - Add `getTokenProblem(tenant): 'expired' | 'missing' | undefined` for the user-facing message.
-  - `ZuulClient.withAuth`: add `refused: Map<tenant, { tokens: string; error: HttpError }>`. Compare
-    the joined candidate list to the stored one. If they match, throw the stored error with no network
-    call. On success, delete the entry. `clearCache()` empties it.
-  - A new token or a replaced token file therefore recovers by itself within 60 s. With no usable
-    tokens, one anonymous request is made and its 401 is remembered the same way.
-  - `README.md`: replace "Files are read on every request, so replacing a file takes effect right
-    away" with "Replacing a token file takes effect within a minute, or right away with Refresh."
-- **Don't:** add the "renew token" button (out of scope). Don't verify JWT signatures.
-- **Done when:**
-  - `npm run check` passes
-  - Tests show: an expired JWT is not sent; repeated 401s cause one request; a changed token causes a
-    new request; `clearCache` allows a retry
-
-### Step 6: Resolve the GitHub side without Zuul
+### Step 4: Resolve the GitHub side without Zuul
 
 - **Tier:** opus
 - **Risk:** high
@@ -297,7 +256,7 @@ When polling resumes:
     compares `zuul?.url` and `zuul?.tenant`.
   - `resolveGateRules(rules, tenant: string | undefined)`: with no tenant, remove names containing
     `{tenant}`.
-  - Fix every call site the compiler reports. Where Zuul is absent, use the behaviour from Step 7. For
+  - Fix every call site the compiler reports. Where Zuul is absent, use the behaviour from Step 5. For
     this step a plain `if (!rc.zuul)` that skips the Zuul call is enough.
   - `extension.ts`: set the context key `zuul.zuulProblem` to `zuulContext.zuulProblem ?? 'none'`.
   - `package.json` `viewsWelcome`: remove the `zuul-unreachable` entries for the gate and dependencies
@@ -308,14 +267,15 @@ When polling resumes:
   - `npm run check` passes
   - A test shows a 401 during tenant discovery gives a `current` with `ghe` and no `zuul`
 
-### Step 7: Keep GitHub features working when Zuul fails
+### Step 5: Keep GitHub features working when Zuul fails
 
 - **Tier:** sonnet
 - **Risk:** high
 - **Status:** todo
 - **Files:** `src/services/prTracker.ts`, `src/services/gateFacts.ts`,
   `src/services/gateReadiness.ts`, `src/services/dependsOnService.ts`,
-  `src/views/addDependsOnPick.ts`, `src/services/triggerService.ts`, and their tests (edit)
+  `src/views/addDependsOnPick.ts`, `src/views/prGateTreeView.ts`, `src/views/dependsOnTreeView.ts`,
+  `src/services/triggerService.ts`, and their tests (edit)
 - **Do:**
   - Add to `PrSnapshot`:
 
@@ -340,19 +300,22 @@ When polling resumes:
     "is not part of tenant" refusal, and log a warning. Today the refusal is false in that case.
   - `TriggerService.post`: still post the comment. When `snapshot.zuul.kind` isn't `ok`, skip the watch
     and don't show "waiting for enqueue".
-- **Don't:** keep old Zuul data after an auth failure. Don't change how the gate rows are ordered.
+  - The gate and dependency views: when `snapshot.zuul.kind` isn't `ok`, pass no Zuul client, so only
+    the poll talks to a failing Zuul.
+- **Don't:** keep old Zuul data after a failure. Don't change how the gate rows are ordered.
 - **Done when:**
   - `npm run check` passes
   - Tests show that with every Zuul call returning 401: a snapshot exists, the gate shows GitHub rows
-    and is not ready, dependencies list both groups, and a trigger comment can be posted
+    and is not ready, dependencies list both groups, a trigger comment can be posted, and the gate and
+    dependency views send no Zuul requests
 
-### Step 8: Lower polling and make it configurable
+### Step 6: Lower polling and make it configurable
 
 - **Tier:** sonnet
 - **Risk:** medium
 - **Status:** todo
 - **Files:** `src/services/pollSchedule.ts`, `src/services/prTracker.ts`, `src/config/settings.ts`,
-  `src/extension.ts`, `package.json`, `README.md`, `test/unit/pollSchedule.test.ts`,
+  `src/extension.ts`, `package.json`, `test/unit/pollSchedule.test.ts`,
   `test/unit/prTracker.test.ts`, `test/unit/settings.test.ts` (edit)
 - **Do:**
   - `package.json`: add `zuul.pollIntervalSeconds` (number, default 60, minimum 10, maximum 3600). The
@@ -361,30 +324,26 @@ When polling resumes:
   - `settings.ts`: add `pollIntervalSeconds`, clamped to 10..3600, falling back to 60 if not a number.
   - `pollSchedule.ts`: `nextPollDelayMs(snapshot, intervalMs, fastUntil, now)`. Use
     `Math.min(15_000, intervalMs)` while `now < fastUntil`, so posting a trigger never slows polling
-    down. Use `intervalMs` when any status is `live`. Otherwise use `intervalMs * 5`. Add
-    `idleDelayMs(intervalMs)` for Step 10.
+    down. Use `intervalMs` when any status is `live`. Otherwise use `intervalMs * 5`.
   - `PrTracker`: add a constructor parameter `getPollIntervalMs: () => number`. `extension.ts` passes
     the setting.
   - Remove `PR_REFETCH_INTERVAL_TICKS` and `pollCount`. The PR lookup runs on every tick, since an
     unchanged answer is a free 304.
   - `handleFocusChange(true)`: don't force a poll. Poll only if the last poll is older than the current
     delay, otherwise schedule the remainder.
-  - Inactivity: extend `FocusEvents.state` with `active?: boolean`. If `active === false` for 15 min,
-    don't schedule. When `onDidChangeWindowState` reports `active: true`, treat it like focus gain.
-- **Don't:** add separate settings for GitHub and Zuul. Don't treat `active` going false as an instant
-  stop, because it turns false within seconds of no input.
+- **Don't:** add separate settings for GitHub and Zuul. Don't add an inactivity pause.
 - **Done when:**
   - `npm run check` passes
   - Tests cover the three delays, the trigger delay when the setting is under 15 s, clamping to
-    10..3600, the throttled focus poll, and the 15-minute pause
+    10..3600, and the throttled focus poll
 
-### Step 9: Stop polling when it can't succeed
+### Step 7: Stop polling when retrying can't help
 
 - **Tier:** opus
 - **Risk:** high
 - **Status:** todo
 - **Files:** `src/services/prTracker.ts`, `src/services/pollSchedule.ts`, `src/views/statusBar.ts`,
-  `test/unit/prTracker.test.ts` (edit)
+  `src/extension.ts`, `README.md`, `test/unit/prTracker.test.ts` (edit)
 - **Do:**
   - Replace `_pollError` and `onDidChangePollError` with:
 
@@ -404,99 +363,111 @@ When polling resumes:
       with `failed`. Keep the last snapshot.
   - Add `RETRY_DELAYS_MS = [30_000, 60_000, 120_000]` to `pollSchedule.ts`.
   - No PR found: `no-pr`, no timer.
-  - Zuul errors: count them separately. While retrying, keep the previous statuses and builds if the
-    head SHA is the same. After the fourth failure in a row, skip Zuul until resumed and mark it
-    `unavailable`. GitHub polling carries on. A 401 or 403 is not counted: Step 5 already makes those
-    free.
-  - `refresh()` and `handleContextChange` reset both counters and set `active`.
+  - Zuul errors follow the same rules, with their own counter:
+    - 401 or 403: stop Zuul at once.
+    - Anything else: count it. The next poll runs after 30, 60 or 120 s. The fourth failure in a row
+      stops Zuul. A Zuul success resets the counter.
+  - To stop Zuul, keep the `unavailable` result in one field. While it is set, `poll` skips Zuul and
+    reuses it. GitHub polling carries on at its normal interval.
+  - Add `stopped: boolean` to the `unavailable` variant of `PrSnapshot.zuul`. It is true once Zuul is
+    stopped, and also when `rc.zuul` is absent. Step 9 shows it.
+  - `refresh()` and `handleContextChange` reset both counters, clear that field and set `active`.
   - `handleFocusChange(true)`: do nothing while `stopped`. While `rate-limited`, restore the timer.
     While `no-pr`, do one lookup if the last one is older than the poll interval.
-  - Commands that change a token must end in `prTracker.refresh()`. Make `zuul.setTenantToken` and
-    `zuul.clearTenantToken` run the same code as `zuul.refresh`.
-- **Don't:** let focus restart a stopped poll. Don't show popups here (Step 11).
+  - `zuul.setGhePat` and `zuul.clearGhePat` already run `zuul.refresh`. Make `zuul.setTenantToken` and
+    `zuul.clearTenantToken` run it too, so a new token applies at once.
+  - `README.md`: after "Files are read on every request, so replacing a file takes effect right away."
+    add "If Zuul has already refused the old token, run **Zuul: Refresh**."
+- **Don't:** let focus restart a stopped poll or clear the Zuul field. Step 6 removed `refresh()` from
+  the focus path, so keep it out. Don't show popups.
 - **Done when:**
   - `npm run check` passes
   - Tests show: 500s make exactly 4 calls, then none for an hour; a 401 makes 1 call; `Retry-After: 3600`
     makes no call for an hour and then resumes; no PR makes 1 call; Refresh and a branch change resume;
-    GitHub keeps polling while Zuul is stopped
+    a Zuul 401 makes 1 call per token, then none for an hour, and GitHub keeps polling; Zuul 500s make
+    exactly 4 Zuul calls, then none for an hour, and GitHub keeps polling; Refresh and a new token try
+    Zuul again
 
-### Step 10: Cache slow-changing data and stop views refetching
+### Step 8: Cache branch rules, reuse Zuul answers, stop hidden-view requests
 
 - **Tier:** sonnet
 - **Risk:** medium
 - **Status:** todo
-- **Files:** `src/clients/gheClient.ts`, `src/clients/zuulClient.ts`,
-  `src/services/keyedAsyncCache.ts`, `src/services/prTracker.ts`, `src/services/dependsOnService.ts`,
-  `src/context/zuulContext.ts`, `src/views/prGateTreeView.ts`, `src/views/dependsOnTreeView.ts`,
-  `src/extension.ts`, and their tests (edit)
+- **Files:** `src/util/ttlCache.ts` (new), `test/unit/ttlCache.test.ts` (new),
+  `src/clients/gheClient.ts`, `src/clients/zuulClient.ts`, `src/context/zuulContext.ts`,
+  `src/views/dependsOnTreeView.ts`, `src/extension.ts`, and their tests (edit)
 - **Do:**
-  - `GheClient`: cache `getRequiredContexts` and `getBranchMergeRules` for 1 hour per repo and branch,
-    including an `undefined` result. This also stops an older GHE repeating its failing query.
-  - `searchPrs(query, perPage, opts?: { ttlMs?: number })`. `getDownstream` passes 15 min. Quick-pick
-    searches pass nothing.
-  - `ZuulClient`: replace `cached` with `TtlCache`. `listTenants` and `listProjects`: 1 hour.
-    `getChangeStatus`, `listBuilds` and `listBuildsets`: 5 s, which lets gate and dependencies reuse
-    the poll's result from the same tick. Keep it below the 10 s minimum poll interval.
-  - Add `ZuulContextService.clearClientCaches()`. `zuul.refresh` calls it first. Today `clearCache` is
-    never called.
-  - `PrTracker`: `onDidChange` fires only when the snapshot differs, ignoring `fetchedAt`. Add
-    `onDidPoll`, fired after each successful tick.
-  - Gate: replace `updated_at` in the cache key with `updated_at` plus a Zuul fingerprint (pipeline,
-    live, job name and result, build UUID and result, `zuul.kind`). Leave out times, or the key changes
-    every tick. The time limit is `idleDelayMs(interval)`. Subscribe to `onDidPoll` and fire only when
-    the cache is stale.
-  - Dependencies: the same time limit and `onDidPoll` rule. Remove the eager `ensureDataLoaded` call
-    from `handleSnapshotChange`, so a hidden view fetches nothing. `getChildren` already loads.
-  - `KeyedAsyncCache`: take `ttlMs` as a number or a function. Remember failures per key: while waiting
-    (30, 60, 120 s) `get` rejects with the stored error and no load. After the fourth failure in a row
-    it waits until `invalidate()`. For `RateLimitedError`, wait until `retryAt`. Add `isBlocked(key)`.
-  - Dependencies: rethrow from the loader after setting `loadFailed`. `needsFetch` also checks
-    `isBlocked`.
+  - Move `ZuulClient.cached` into `class TtlCache` with `get<T>(key, ttlMs, load)` and `clear()`. It
+    takes an injected `now`. A failed load is not stored. `undefined` is a valid stored value.
+  - `GheClient`: cache `getRequiredContexts` and `getBranchMergeRules` for 1 hour per repo and branch.
+    Store "this branch has no rule", but never a failed request. `getBranchMergeRules` turns every
+    failure into `undefined` today, so put only the query inside the cached load and keep that `catch`
+    outside it. Otherwise one network blip hides a merge rule for an hour.
+  - Add `GheClient.clearCache()`.
+  - `ZuulClient`: `getChangeStatus` and `listBuilds` reuse their answer for 5 s, so the gate and
+    dependencies reuse the poll's result from the same tick. Other cached calls keep their 5 min.
+  - Lower-case the project in the `listBuilds` key. The poll uses the owner and repo from the git
+    remote and the gate uses GitHub's, which can differ in case.
+  - Add `ZuulContextService.clearClientCaches()`, which clears the current `ghe` and `zuul` clients.
+    `zuul.refresh` calls it first. Today `clearCache` is never called.
+  - `DependsOnTreeDataProvider.handleSnapshotChange`: remove the eager `ensureDataLoaded` call, so a
+    hidden view fetches nothing. `getChildren` already loads.
 - **Don't:** cache anything used to build a PR body edit. Don't show an older gate report after a
-  failure, as the code comment in `getReport` already says.
+  failure, as the code comment in `getReport` already says. Don't cache `getPr`, `getPrRollup` or
+  `searchPrs`.
 - **Done when:**
   - `npm run check` passes
-  - Tests show: one rules query per hour; poll and gate share one `getChangeStatus`; no `search/issues`
-    without `getChildren`; four gate failures then no more calls until `invalidateCache`
+  - Tests show: one rules query per hour; a failed rules query is not stored; poll and gate share one
+    `getChangeStatus` and one `listBuilds`; Refresh clears the caches; no `search/issues` without
+    `getChildren`
   - Checked by hand in the Extension Development Host: with the Zuul sidebar closed, the Zuul output
     channel shows no gate or search requests
 
-### Step 11: Tell the user what is happening
+### Step 9: Tell the user what is happening
 
 - **Tier:** sonnet
 - **Risk:** low
 - **Status:** todo
 - **Files:** `src/views/statusBar.ts`, `src/services/statusBarText.ts`, `src/extension.ts`,
-  `package.json`, `README.md`, `test/unit/statusBarText.test.ts`, `test/unit/viewsWelcome.test.ts` (edit)
+  `package.json`, `test/unit/statusBarText.test.ts`, `test/unit/viewsWelcome.test.ts` (edit)
 - **Do:**
   - Status bar text, with a click action:
 
     | State | Text | Click |
     | ----- | ---- | ----- |
-    | `stopped`, `failed` | `$(warning) Zuul: updates stopped` | `zuul.refresh` |
-    | `stopped`, `auth` | `$(warning) Zuul: GitHub sign-in needed` | `zuul.setGhePat` |
+    | `stopped`, `failed` | `$(warning) Zuul: GitHub not responding, updates stopped` | `zuul.refresh` |
+    | `stopped`, `auth` | `$(warning) Zuul: GitHub sign-in needed, updates stopped` | `zuul.setGhePat` |
     | `rate-limited` | `$(clock) Zuul: GitHub rate limit, resumes HH:MM` | none |
-    | `snapshot.zuul.reason` is `needs-token` | Normal PR text plus `, Zuul token needed` | `zuul.setTenantToken` |
-    | `snapshot.zuul.reason` is `unreachable` | Normal PR text plus `, Zuul unavailable` | `zuul.refresh` |
+    | `snapshot.zuul.reason` is `needs-token` or `no-access` | Normal PR text plus `, Zuul updates stopped (token needed)` | `zuul.setTenantToken` |
+    | `snapshot.zuul.reason` is `unreachable`, `stopped` true | Normal PR text plus `, Zuul updates stopped (not responding)` | `zuul.refresh` |
+    | `snapshot.zuul.reason` is `unreachable`, `stopped` false | Normal PR text plus `, Zuul retrying` | `zuul.refresh` |
 
-  - The tooltip carries the full reason.
-  - Show one `showWarningMessage` with a **Retry** button when polling enters `stopped` with `failed`.
-    Don't repeat it until polling has been resumed and has stopped again.
+  - The tooltip carries the full reason and says whether updates have stopped.
+  - Show the same state at the top of all three sidebar views with `TreeView.message`, so old data
+    can't be mistaken for live data. Switch `extension.ts` from `registerTreeDataProvider` to
+    `createTreeView`. Get the text from one tested function in `statusBarText.ts`, and clear it on
+    resume:
+    - GitHub `failed`: "Updates stopped: GitHub is not responding. Data shown may be out of date. Use
+      Refresh to try again."
+    - GitHub `auth`: "Updates stopped: GitHub sign-in needed."
+    - `rate-limited`: "Updates paused: GitHub rate limit, resumes at HH:MM."
+    - Zuul stopped, not responding: "Zuul updates stopped: Zuul is not responding. GitHub data is
+      still updating. Use Refresh to try again."
+    - Zuul stopped, token: "Zuul updates stopped: the Zuul token was refused. GitHub data is still
+      updating."
   - `extension.ts`: set the context key `zuul.pollState` to `active`, `no-pr`, `failed`, `auth` or
     `rate-limited`.
   - `viewsWelcome`: the "No pull request found for the current branch." entries also need
-    `zuul.pollState == 'no-pr'`. Add entries for `failed` ("Could not load data from GitHub. Updates
-    are stopped. [Retry](command:zuul.refresh)") and for `rate-limited`.
-  - Builds view: when `snapshot.zuul.kind` isn't `ok`, show one row with the message, and for
-    `needs-token` a click that runs `zuul.setTenantToken`.
-  - `README.md`: add a "Polling and API use" section with the setting, the stop rules, and the resume
-    table from this plan's Decisions.
-- **Don't:** add popups for `no-pr` or rate limits. Don't remove the existing Zuul token popup.
+    `zuul.pollState == 'no-pr'`. Add one entry per view for `failed`, `auth` and `rate-limited`:
+    "Could not load data from GitHub. [Retry](command:zuul.refresh)".
+- **Don't:** add popups. Don't remove the existing Zuul token popup.
 - **Done when:**
   - `npm run check` passes
   - A test shows "No pull request found" is not shown after a failed load
+  - Tests show the status bar text and sidebar message for each state name the service that stopped,
+    and that the sidebar message clears on resume
 
-### Step 12: Lock in a request budget
+### Step 10: Lock in a request budget
 
 - **Tier:** sonnet
 - **Risk:** low
@@ -511,28 +482,34 @@ When polling resumes:
   - The fake answers 304 when `If-None-Match` matches. "Charged" means any response that isn't a 304.
   - Assert these limits over one simulated hour, at the default interval of 60 s:
 
-    | Scenario                      | GitHub charged | Zuul  |
-    | ----------------------------- | -------------: | ----: |
-    | Idle PR, sidebar open         |           ≤ 40 |  ≤ 30 |
-    | Build running, sidebar open   |           ≤ 40 |  ≤ 75 |
-    | Running, 2 `Depends-On`       |           ≤ 90 | ≤ 180 |
-    | Idle PR, sidebar closed       |            ≤ 3 |  ≤ 30 |
-    | Branch has no PR              |            ≤ 1 |     0 |
-    | GitHub 500 to everything      |            = 4 |     0 |
-    | GitHub 429, `Retry-After: 3600` |          ≤ 2 |     0 |
-    | Zuul 401, tenant set          |           ≤ 40 |   = 1 |
-    | Zuul 401, tenant auto-detected |          ≤ 40 |   = 1 |
+    | Scenario                    | GitHub charged | Zuul  |
+    | --------------------------- | -------------: | ----: |
+    | Idle PR, sidebar open       |           ≤ 40 |  ≤ 30 |
+    | Build running, sidebar open |          ≤ 140 |  ≤ 75 |
+    | Idle PR, sidebar closed     |            ≤ 3 |  ≤ 30 |
 
-- **Don't:** loosen a limit to make the test pass without finding out why it is exceeded.
+- **Don't:** loosen a limit to make the test pass without finding out why it is exceeded. Don't add
+  the failure scenarios here, Step 7 already tests them.
 - **Done when:**
   - `npm run check` passes, including this test
 
 ## Out of scope
 
 - Webhooks. A VS Code extension has no endpoint to receive them.
-- The "renew Zuul token" button from `future-work.md`. Step 5's `tokenExpiryMs` makes it easy later.
+- The "renew Zuul token" button from `future-work.md`.
 - The redundant "Zuul check" row, and reading real review-thread and signature state (`future-work.md`).
 - ETags for Zuul, until someone confirms a real Zuul server answers 304.
 - Saving ETags across VS Code restarts.
 - Removing unused `ZuulClient` methods (`getInfo`, `getProjectKey`, `getJob`, `listJobs`,
   `listNodesets`, `listProjectTemplates`, `listSemaphores`). They send no requests today.
+
+Cut on 2026-11-08, because they save few or no real requests:
+
+- A one-at-a-time queue for GitHub requests.
+- A 5 s reuse window for `getPr`. Repeats are already a free 304.
+- GitHub and Zuul token caches, JWT expiry checks, and comparing token lists to spot a new Zuul token.
+- The 15-minute inactivity pause.
+- Smarter view refresh: a Zuul fingerprint in the gate's cache key, `onDidPoll`, firing `onDidChange`
+  only on a real change, and failure memory in `KeyedAsyncCache`.
+- A 15-minute cache for dependency searches, and a 1-hour cache for Zuul tenants and projects.
+- Popups and Builds-view rows for stopped polling, and a README section on polling.

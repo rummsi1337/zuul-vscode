@@ -371,4 +371,20 @@ describe('HttpClient', () => {
       expect(sentHeaders(fetchFn, 3)['If-None-Match']).toBeUndefined();
     });
   });
+
+  it('throws a 401 without any network call when requireAuth is set and there is no token', async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => jsonResponse({}));
+    const client = new HttpClient({
+      baseUrl: 'https://ghe.example.com/api/v3',
+      getAuthHeader: async () => undefined,
+      fetchFn,
+      requireAuth: true,
+    });
+
+    await expect(client.getJson('/user')).rejects.toMatchObject({ status: 401 });
+    await expect(
+      client.graphql('https://ghe.example.com/api/graphql', 'query{x}'),
+    ).rejects.toMatchObject({ status: 401 });
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
 });
