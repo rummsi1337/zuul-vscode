@@ -416,4 +416,106 @@ describe('ZuulClient', () => {
     expect(await client.getQueueAhead('acme', 3, 'c3')).toEqual([]);
     expect(await client.getQueueAhead('acme', 99, 'zz')).toBeUndefined();
   });
+
+  it('routes to /zuul/api/tenant/ddad/builds when baseUrl includes /zuul prefix', async () => {
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValueOnce(jsonResponse([]));
+    const client = new ZuulClient('https://zuul.example.com/zuul', undefined, fetchFn);
+
+    const builds = await client.listBuilds('ddad');
+    expect(builds).toEqual([]);
+    expect(fetchFn).toHaveBeenCalledWith(
+      expect.stringMatching(/^https:\/\/zuul\.example\.com\/zuul\/api\/tenant\/ddad\/builds/),
+      expect.anything(),
+    );
+  });
+
+  it('forwards per-tenant token as Authorization header on tenant API calls', async () => {
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValueOnce(jsonResponse([]));
+    const getToken = vi.fn(async (tenant?: string) => {
+      if (tenant === 'ddad') {
+        return 'ddad-secret-token';
+      }
+      return undefined;
+    });
+
+    const client = new ZuulClient('https://zuul.example.com', getToken, fetchFn);
+    await client.listBuilds('ddad');
+
+    expect(getToken).toHaveBeenCalledWith('ddad');
+    expect(fetchFn).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: 'Bearer ddad-secret-token',
+        }),
+      }),
+    );
+  });
+
+  it('retries the next token after 401 and succeeds with it', async () => {
+    const fetchFn = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response('Unauthorized', { status: 401 }))
+      .mockResolvedValueOnce(jsonResponse([]));
+    const client = new ZuulClient(
+      'https://zuul.example.com',
+      async () => ['bad-token', 'good-token'],
+      fetchFn,
+    );
+
+    expect(await client.listBuilds('acme')).toEqual([]);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(fetchFn.mock.calls[0][1]?.headers).toEqual(
+      expect.objectContaining({ Authorization: 'Bearer bad-token' }),
+    );
+    expect(fetchFn.mock.calls[1][1]?.headers).toEqual(
+      expect.objectContaining({ Authorization: 'Bearer good-token' }),
+    );
+  });
+
+  it('starts the next call for a tenant with the token that worked', async () => {
+    const fetchFn = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response('Unauthorized', { status: 401 }))
+      .mockResolvedValueOnce(jsonResponse([]))
+      .mockResolvedValueOnce(jsonResponse([]));
+    const client = new ZuulClient(
+      'https://zuul.example.com',
+      async () => ['bad-token', 'good-token'],
+      fetchFn,
+    );
+
+    await client.listBuilds('acme');
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+
+    await client.listBuilds('acme');
+    expect(fetchFn).toHaveBeenCalledTimes(3);
+    expect(fetchFn.mock.calls[2][1]?.headers).toEqual(
+      expect.objectContaining({ Authorization: 'Bearer good-token' }),
+    );
+  });
+
+  it('rethrows 401 from a single token after one fetch', async () => {
+    const fetchFn = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response('Unauthorized', { status: 401 }));
+    const client = new ZuulClient('https://zuul.example.com', async () => 'only-token', fetchFn);
+
+    await expect(client.listBuilds('acme')).rejects.toThrowError(HttpError);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not try the next token after a 500', async () => {
+    const fetchFn = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response('Server Error', { status: 500 }));
+    const client = new ZuulClient(
+      'https://zuul.example.com',
+      async () => ['first-token', 'second-token'],
+      fetchFn,
+    );
+
+    await expect(client.listBuilds('acme')).rejects.toThrowError(HttpError);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
 });

@@ -24,6 +24,16 @@
   "contributes": {
     "commands": [
       {
+        "command": "zuul.setTenantToken",
+        "title": "Set Zuul Tenant Token",
+        "category": "Zuul"
+      },
+      {
+        "command": "zuul.clearTenantToken",
+        "title": "Clear Zuul Tenant Token",
+        "category": "Zuul"
+      },
+      {
         "command": "zuul.setGhePat",
         "title": "Set GitHub Enterprise PAT",
         "category": "Zuul"
@@ -214,12 +224,28 @@
         "zuul.url": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Base URL of Zuul Web, e.g. `https://zuul.example.com`."
+          "markdownDescription": "Base URL of Zuul Web, including any path prefix, e.g. `https://zuul.example.com` or `https://example.com/zuul`.",
+          "scope": "machine"
         },
         "zuul.tenant": {
           "type": "string",
           "default": "",
           "markdownDescription": "Zuul tenant name. Auto-detected if empty."
+        },
+        "zuul.tokens": {
+          "type": "object",
+          "default": {},
+          "markdownDescription": "Per-tenant paths to Zuul read-only token files, keyed by tenant name (or `*` for default). To store a raw token securely, use the **Set Zuul Tenant Token** command. E.g. `{\"ddad\": \"~/.zuul/ddad.token\", \"swh\": \"~/.zuul/swh.token\"}`.",
+          "scope": "machine",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "zuul.tokenFile": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Absolute or `~/` path to a file containing a Zuul read-only token, or a JSON object mapping tenant to token. E.g. `~/.zuul/token`.",
+          "scope": "machine"
         },
         "zuul.ghe.host": {
           "type": "string",

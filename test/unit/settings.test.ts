@@ -18,6 +18,8 @@ describe('settings', () => {
     expect(settings).toEqual({
       url: '',
       tenant: '',
+      tokens: {},
+      tokenFile: '',
       gheHost: '',
       authMethod: 'pat',
       oauthClientId: '',
@@ -36,6 +38,8 @@ describe('settings', () => {
     const values: Record<string, unknown> = {
       url: 'https://zuul.example.com///',
       tenant: 'internal',
+      tokens: { ddad: 'token-ddad', swh: 'token-swh' },
+      tokenFile: '~/.zuul/token',
       'ghe.host': 'git.example.com',
       'auth.method': 'gh-cli',
       'ghe.oauthClientId': 'Iv1.123456',
@@ -58,6 +62,8 @@ describe('settings', () => {
     expect(settings).toEqual({
       url: 'https://zuul.example.com',
       tenant: 'internal',
+      tokens: { ddad: 'token-ddad', swh: 'token-swh' },
+      tokenFile: '~/.zuul/token',
       gheHost: 'git.example.com',
       authMethod: 'gh-cli',
       oauthClientId: 'Iv1.123456',
@@ -82,6 +88,8 @@ describe('settings', () => {
     const badValues: Record<string, unknown> = {
       url: 42,
       tenant: null,
+      tokens: 'not-an-object',
+      tokenFile: 999,
       'ghe.host': ['invalid'],
       'auth.method': 'unknown-method',
       'ghe.oauthClientId': false,
@@ -98,6 +106,8 @@ describe('settings', () => {
     expect(settings).toEqual({
       url: '',
       tenant: '',
+      tokens: {},
+      tokenFile: '',
       gheHost: '',
       authMethod: 'pat',
       oauthClientId: '',

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { HttpError } from '../../src/clients/http';
 import {
   type KeyValueStore,
   resolveTenant,
@@ -120,5 +121,45 @@ describe('resolveTenant', () => {
 
     expect(result).toBeUndefined();
     expect(cache.update).not.toHaveBeenCalled();
+  });
+
+  it('skips a forbidden tenant and still finds the project in the next one', async () => {
+    const zuul: TenantDiscoveryClient = {
+      baseUrl: 'https://zuul.example.com',
+      listTenants: vi.fn(async () => [{ name: 'alpha' }, { name: 'beta' }]),
+      listProjects: vi.fn(async (tenant: string) => {
+        if (tenant === 'alpha') {
+          throw new HttpError(403, 'Forbidden');
+        }
+        return [{ name: 'acme/service' }];
+      }),
+    };
+
+    await expect(resolveTenant(zuul, 'acme/service')).resolves.toBe('beta');
+  });
+
+  it('rejects with HttpError when all tenants are forbidden', async () => {
+    const zuul: TenantDiscoveryClient = {
+      baseUrl: 'https://zuul.example.com',
+      listTenants: vi.fn(async () => [{ name: 'alpha' }, { name: 'beta' }]),
+      listProjects: vi.fn(async () => {
+        throw new HttpError(403, 'Forbidden');
+      }),
+    };
+
+    await expect(resolveTenant(zuul, 'acme/service')).rejects.toBeInstanceOf(HttpError);
+  });
+
+  it('propagates non-auth errors', async () => {
+    const zuul: TenantDiscoveryClient = {
+      baseUrl: 'https://zuul.example.com',
+      listTenants: vi.fn(async () => [{ name: 'alpha' }, { name: 'beta' }]),
+      listProjects: vi.fn(async () => {
+        throw new HttpError(500, 'Server error');
+      }),
+    };
+
+    await expect(resolveTenant(zuul, 'acme/service')).rejects.toMatchObject({ status: 500 });
+    expect(zuul.listProjects).toHaveBeenCalledTimes(1);
   });
 });

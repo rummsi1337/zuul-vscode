@@ -140,17 +140,22 @@ export class HttpClient {
   async getJsonWithHeaders<T>(
     path: string,
     query?: QueryParams,
+    headers?: Record<string, string>,
   ): Promise<{ data: T; headers: Headers }> {
     const res = await this.request('GET', path, {
       query,
-      headers: { Accept: 'application/json' },
+      headers: { Accept: 'application/json', ...headers },
     });
     const data = (await res.json()) as T;
     return { data, headers: res.headers };
   }
 
-  async getJson<T>(path: string, query?: QueryParams): Promise<T> {
-    const { data } = await this.getJsonWithHeaders<T>(path, query);
+  async getJson<T>(
+    path: string,
+    query?: QueryParams,
+    headers?: Record<string, string>,
+  ): Promise<T> {
+    const { data } = await this.getJsonWithHeaders<T>(path, query, headers);
     return data;
   }
 
@@ -195,8 +200,11 @@ export class HttpClient {
     return payload.data;
   }
 
-  async getBytes(absoluteUrl: string): Promise<Uint8Array> {
-    const res = await this.request('GET', absoluteUrl);
+  async getBytes(
+    absoluteUrl: string,
+    options: { query?: QueryParams; headers?: Record<string, string> } = {},
+  ): Promise<Uint8Array> {
+    const res = await this.request('GET', absoluteUrl, options);
     const bytes = new Uint8Array(await res.arrayBuffer());
     if (bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b) {
       return new Uint8Array(gunzipSync(bytes));
@@ -204,8 +212,12 @@ export class HttpClient {
     return bytes;
   }
 
-  async getText(absoluteUrl: string): Promise<string> {
-    const bytes = await this.getBytes(absoluteUrl);
+  async getText(
+    absoluteUrl: string,
+    query?: QueryParams,
+    headers?: Record<string, string>,
+  ): Promise<string> {
+    const bytes = await this.getBytes(absoluteUrl, { query, headers });
     return new TextDecoder('utf-8').decode(bytes);
   }
 }

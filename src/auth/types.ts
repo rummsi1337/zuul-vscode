@@ -20,6 +20,7 @@ export interface SecretStorageLike {
 export interface InputBoxOptionsLike {
   prompt?: string;
   placeHolder?: string;
+  value?: string;
   password?: boolean;
   ignoreFocusOut?: boolean;
 }
