@@ -11,7 +11,18 @@ export interface HttpClientOptions {
   fetchFn?: typeof fetch;
   userAgent?: string;
   logger?: HttpLogger;
+  /** Send If-None-Match / If-Modified-Since on GETs made via getJsonWithHeaders. */
+  conditionalGet?: boolean;
 }
+
+interface ConditionalEntry {
+  etag?: string;
+  lastModified?: string;
+  data: unknown;
+  headers: Headers;
+}
+
+const MAX_CONDITIONAL_ENTRIES = 200;
 
 export class HttpError extends Error {
   readonly status: number;
@@ -46,6 +57,9 @@ export class HttpClient {
   private readonly fetchFn: typeof fetch;
   private readonly userAgent: string;
   private readonly logger?: HttpLogger;
+  private readonly conditionalGet: boolean;
+  private readonly conditionalEntries = new Map<string, ConditionalEntry>();
+  private lastGetAuth: string | undefined;
 
   constructor(opts: HttpClientOptions) {
     this.baseUrl = opts.baseUrl.replace(/\/+$/, '');
@@ -53,6 +67,7 @@ export class HttpClient {
     this.fetchFn = opts.fetchFn ?? globalThis.fetch;
     this.userAgent = opts.userAgent ?? DEFAULT_USER_AGENT;
     this.logger = opts.logger;
+    this.conditionalGet = opts.conditionalGet ?? false;
   }
 
   resolveUrl(path: string, query?: QueryParams): string {
@@ -123,11 +138,14 @@ export class HttpClient {
       query?: QueryParams;
       body?: string;
       headers?: Record<string, string>;
+      allowNotModified?: boolean;
+      onRequestHeaders?: (headers: Record<string, string>) => void;
     },
   ): Promise<Response> {
     const url = this.resolveUrl(path, opts?.query);
     this.logger?.info(`[HTTP] ${method} ${url}`);
     const headers = await this.buildHeaders(url, opts?.headers);
+    opts?.onRequestHeaders?.(headers);
 
     let res: Response;
     try {
@@ -140,6 +158,11 @@ export class HttpClient {
     } catch (err) {
       this.logger?.warn(`[HTTP] ${method} ${url} failed with error: ${String(err)}`);
       throw err;
+    }
+
+    if (res.status === 304 && opts?.allowNotModified) {
+      this.logger?.info(`[HTTP] ${method} ${url} -> 304`);
+      return res;
     }
 
     if (!res.ok) {
@@ -162,12 +185,75 @@ export class HttpClient {
     query?: QueryParams,
     headers?: Record<string, string>,
   ): Promise<{ data: T; headers: Headers }> {
+    if (!this.conditionalGet) {
+      const res = await this.request('GET', path, {
+        query,
+        headers: { Accept: 'application/json', ...headers },
+      });
+      const data = (await res.json()) as T;
+      return { data, headers: res.headers };
+    }
+
+    const url = this.resolveUrl(path, query);
+    const stored = this.conditionalEntries.get(url);
+    const extra: Record<string, string> = { Accept: 'application/json', ...headers };
+    if (stored?.etag) {
+      extra['If-None-Match'] = stored.etag;
+    } else if (stored?.lastModified) {
+      extra['If-Modified-Since'] = stored.lastModified;
+    }
+
+    let sentAuth: string | undefined;
+    const res = await this.request('GET', path, {
+      query,
+      headers: extra,
+      allowNotModified: stored !== undefined,
+      onRequestHeaders: (sent) => {
+        sentAuth = sent.Authorization;
+        if (sentAuth !== this.lastGetAuth) {
+          this.conditionalEntries.clear();
+          this.lastGetAuth = sentAuth;
+          delete sent['If-None-Match'];
+          delete sent['If-Modified-Since'];
+        }
+      },
+    });
+
+    if (res.status === 304 && stored && this.conditionalEntries.get(url) === stored) {
+      this.conditionalEntries.delete(url);
+      this.conditionalEntries.set(url, stored);
+      return { data: stored.data as T, headers: stored.headers };
+    }
+    if (res.status === 304) {
+      // Entry was dropped (token change) while the request was in flight; retry unconditionally.
+      return this.getJsonUnconditional<T>(path, query, headers);
+    }
+
+    const data = (await res.json()) as T;
+    const etag = res.headers.get('etag') ?? undefined;
+    const lastModified = res.headers.get('last-modified') ?? undefined;
+    if (res.status === 200 && (etag || lastModified)) {
+      this.conditionalEntries.delete(url);
+      this.conditionalEntries.set(url, { etag, lastModified, data, headers: res.headers });
+      while (this.conditionalEntries.size > MAX_CONDITIONAL_ENTRIES) {
+        const oldest = this.conditionalEntries.keys().next().value;
+        if (oldest === undefined) break;
+        this.conditionalEntries.delete(oldest);
+      }
+    }
+    return { data, headers: res.headers };
+  }
+
+  private async getJsonUnconditional<T>(
+    path: string,
+    query?: QueryParams,
+    headers?: Record<string, string>,
+  ): Promise<{ data: T; headers: Headers }> {
     const res = await this.request('GET', path, {
       query,
       headers: { Accept: 'application/json', ...headers },
     });
-    const data = (await res.json()) as T;
-    return { data, headers: res.headers };
+    return { data: (await res.json()) as T, headers: res.headers };
   }
 
   async getJson<T>(

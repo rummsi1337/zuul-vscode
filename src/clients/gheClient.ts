@@ -157,6 +157,7 @@ export class GheClient {
       },
       fetchFn,
       logger: this.logger,
+      conditionalGet: true,
     });
   }
 
@@ -240,6 +241,7 @@ export class GheClient {
     this.logger?.info(`[GHE] Listing reviews for PR #${num} on ${owner}/${repo}`);
     return this.paginate<Review>(
       `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${num}/reviews`,
+      { per_page: PER_PAGE },
     );
   }
 

@@ -151,6 +151,9 @@ describe('GheClient', () => {
     expect(reviews).toHaveLength(3);
     expect(reviews.map((r) => r.id)).toEqual([101, 102, 103]);
     expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(fetchFn.mock.calls[0]?.[0]).toBe(
+      'https://ghe.example.com/api/v3/repos/acme/service/pulls/42/reviews?per_page=100',
+    );
     expect(fetchFn).toHaveBeenNthCalledWith(
       2,
       'https://ghe.example.com/api/v3/repos/acme/service/pulls/42/reviews?page=2',
@@ -424,5 +427,20 @@ describe('GheClient', () => {
       'https://ghe.example.com/api/v3/search/issues?q=is%3Apr+author%3Abob&per_page=20',
       expect.anything(),
     );
+  });
+
+  it('sends conditional GETs and reuses the body on 304', async () => {
+    const fetchFn = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse(pullRequestFixture, 200, { ETag: '"pr"' }))
+      .mockResolvedValueOnce(new Response(null, { status: 304 }));
+    const client = new GheClient('ghe.example.com', async () => 'tok', fetchFn);
+
+    const first = await client.getPr('acme', 'service', 42);
+    const second = await client.getPr('acme', 'service', 42);
+
+    expect(second).toEqual(first);
+    const sent = fetchFn.mock.calls[1]?.[1] as { headers: Record<string, string> };
+    expect(sent.headers['If-None-Match']).toBe('"pr"');
   });
 });
