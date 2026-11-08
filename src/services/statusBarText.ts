@@ -1,6 +1,7 @@
 import { type Build, type ChangeStatus } from '../clients/zuulTypes';
+import { formatClock } from '../util/clock';
 import { classifyJobResult, getLatestBuildsPerJob, pickPrimary } from './buildsModel';
-import { type PrSnapshot } from './prTracker';
+import { type PollStatus, type PrSnapshot } from './prTracker';
 
 export interface StatusBarInfo {
   text: string;
@@ -117,12 +118,117 @@ export function statusBarText(
   };
 }
 
-export function offlineStatusText(lastSuccessAt: number | undefined): string {
-  if (lastSuccessAt === undefined) {
-    return '$(warning) Zuul: offline';
+export type PollStateName = 'active' | 'retrying' | 'no-pr' | 'failed' | 'auth' | 'rate-limited';
+
+export function pollStateName(pollStatus: PollStatus | undefined): PollStateName {
+  if (!pollStatus) {
+    return 'active';
   }
-  const d = new Date(lastSuccessAt);
-  const hh = String(d.getHours()).padStart(2, '0');
-  const mm = String(d.getMinutes()).padStart(2, '0');
-  return `$(warning) Zuul: offline, last update ${hh}:${mm}`;
+  if (pollStatus.kind === 'stopped') {
+    return pollStatus.reason;
+  }
+  return pollStatus.kind;
+}
+
+const EXPLORER_COMMAND = 'workbench.view.extension.zuul-explorer';
+
+export interface StatusBarView extends StatusBarInfo {
+  command?: string;
+}
+
+/** What the status bar shows. GitHub problems win over Zuul problems. */
+export function statusBarView(
+  pollStatus: PollStatus | undefined,
+  snapshot: PrSnapshot | undefined,
+  waiting: boolean,
+): StatusBarView | undefined {
+  if (pollStatus?.kind === 'stopped') {
+    const failed = pollStatus.reason === 'failed';
+    return {
+      text: failed
+        ? '$(warning) Zuul: GitHub not responding, updates stopped'
+        : '$(warning) Zuul: GitHub sign-in needed, updates stopped',
+      tooltip: `GitHub updates have stopped: ${pollStatus.message}\nClick to ${
+        failed ? 'try again' : 'set a GitHub token. Signed in with gh? Run Zuul: Refresh'
+      }.`,
+      command: failed ? 'zuul.refresh' : 'zuul.setGhePat',
+    };
+  }
+  if (pollStatus?.kind === 'retrying') {
+    return {
+      text: "$(warning) Zuul: can't update from GitHub, retrying",
+      tooltip: `GitHub updates have not stopped yet: ${pollStatus.message}\nClick to try now.`,
+      command: 'zuul.refresh',
+    };
+  }
+  if (pollStatus?.kind === 'rate-limited') {
+    return {
+      text: `$(clock) Zuul: GitHub rate limit, resumes ${formatClock(pollStatus.until)}`,
+      tooltip: `GitHub updates are paused until ${formatClock(pollStatus.until)}: ${pollStatus.message}`,
+    };
+  }
+
+  const info = statusBarText(snapshot, waiting);
+  if (!info) {
+    return undefined;
+  }
+  const zuul = snapshot?.zuul;
+  if (!zuul || zuul.kind === 'ok') {
+    return { ...info, command: EXPLORER_COMMAND };
+  }
+  // Zuul's statuses and builds are empty here, so the normal text would wrongly say "no builds".
+  const lead = waiting ? `${info.text}, ` : '$(warning) ';
+  if (zuul.reason === 'needs-token' || zuul.reason === 'no-access') {
+    return {
+      text: `${lead}Zuul updates stopped (token needed)`,
+      tooltip: `${info.tooltip}\nZuul updates have stopped: ${zuul.message}\nClick to set a Zuul token.`,
+      command: 'zuul.setTenantToken',
+    };
+  }
+  if (zuul.stopped) {
+    return {
+      text: `${lead}Zuul updates stopped (not responding)`,
+      tooltip: `${info.tooltip}\nZuul updates have stopped: ${zuul.message}\nClick to try again.`,
+      command: 'zuul.refresh',
+    };
+  }
+  return {
+    text: `${lead}Zuul retrying`,
+    tooltip: `${info.tooltip}\nZuul is not responding, updates have not stopped yet: ${zuul.message}\nClick to try again.`,
+    command: 'zuul.refresh',
+  };
+}
+
+/** The line shown at the top of the sidebar views, or undefined when all is well. */
+export function sidebarMessage(
+  pollStatus: PollStatus | undefined,
+  snapshot: PrSnapshot | undefined,
+): string | undefined {
+  // VS Code hides the welcome text while TreeView.message is set. With no snapshot the
+  // welcome text (Retry, sign-in) is the better message, so show none here.
+  if (!snapshot) {
+    return undefined;
+  }
+  if (pollStatus?.kind === 'stopped') {
+    return pollStatus.reason === 'failed'
+      ? 'Updates stopped: GitHub is not responding. Data shown may be out of date. Use Refresh to try again.'
+      : 'Updates stopped: GitHub sign-in needed. After signing in, use Refresh.';
+  }
+  if (pollStatus?.kind === 'retrying') {
+    return "Can't update from GitHub, retrying. Data shown may be out of date.";
+  }
+  if (pollStatus?.kind === 'rate-limited') {
+    return `Updates paused: GitHub rate limit, resumes at ${formatClock(pollStatus.until)}.`;
+  }
+  const zuul = snapshot?.zuul;
+  if (zuul?.kind === 'unavailable') {
+    if (zuul.reason === 'needs-token' || zuul.reason === 'no-access') {
+      return 'Zuul updates stopped: the Zuul token was refused. GitHub data is still updating.';
+    }
+    if (zuul.stopped) {
+      return 'Zuul updates stopped: Zuul is not responding. GitHub data is still updating. Use Refresh to try again.';
+    }
+    return 'Zuul is not responding, retrying. GitHub data is still updating.';
+  }
+  return undefined;
 }

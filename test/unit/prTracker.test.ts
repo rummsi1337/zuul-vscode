@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type GheClient } from '../../src/clients/gheClient';
+import { HttpError, NoTokenError } from '../../src/clients/http';
 import { type PullRequest } from '../../src/clients/gheTypes';
-import { type ZuulClient } from '../../src/clients/zuulClient';
+import { RateLimitGuard, RateLimitedError } from '../../src/clients/rateLimit';
+import { ZuulClient } from '../../src/clients/zuulClient';
 import { type Build, type ChangeStatus } from '../../src/clients/zuulTypes';
 import { type ResolvedContext } from '../../src/context/zuulContext';
 import {
@@ -91,7 +93,11 @@ function createMockClients() {
   } as unknown as ZuulClient;
 
   const makeResolvedContext = (overrides: Partial<ResolvedContext> = {}): ResolvedContext =>
-    makeBaseContext({ ghe, zuul, ...overrides });
+    makeBaseContext({
+      ghe,
+      zuul: { url: 'https://zuul.example.com', tenant: 'main', client: zuul },
+      ...overrides,
+    });
 
   return {
     findOpenPrForBranch,
@@ -113,7 +119,7 @@ describe('PrTracker', () => {
     vi.useRealTimers();
   });
 
-  it('uses PR head SHA from GHE (not local HEAD) and polls every 15s when ChangeStatus exists', async () => {
+  it('uses PR head SHA from GHE (not local HEAD) and polls at the interval when a status is live', async () => {
     const { findOpenPrForBranch, getChangeStatus, listBuilds, makeResolvedContext } =
       createMockClients();
     const pr = makePr({
@@ -135,7 +141,11 @@ describe('PrTracker', () => {
     const logger = createFakeLogger();
     const snapshots: (PrSnapshot | undefined)[] = [];
 
-    const tracker = new PrTracker(source, logger, setTimeout, Date.now, focusEvents);
+    const tracker = new PrTracker(source, logger, {
+      setTimer: setTimeout,
+      now: Date.now,
+      focusEvents,
+    });
     tracker.onDidChange((s) => snapshots.push(s));
 
     await vi.advanceTimersByTimeAsync(0);
@@ -150,19 +160,86 @@ describe('PrTracker', () => {
       statuses: [status],
       builds: [],
       fetchedAt: 1_000_000,
+      zuul: { kind: 'ok' },
     });
     expect(snapshots).toHaveLength(1);
 
-    // Should not poll at 14.9s, should poll at 15s
-    await vi.advanceTimersByTimeAsync(14_900);
+    // Should not poll at 59.9s, should poll at 60s
+    await vi.advanceTimersByTimeAsync(59_900);
     expect(getChangeStatus).toHaveBeenCalledTimes(1);
 
     await vi.advanceTimersByTimeAsync(100);
     expect(getChangeStatus).toHaveBeenCalledTimes(2);
-    expect(findOpenPrForBranch).toHaveBeenCalledTimes(1);
+    expect(findOpenPrForBranch).toHaveBeenCalledTimes(2);
 
     tracker.dispose();
   });
+
+  it('still makes a snapshot, without calling Zuul, when the context has no Zuul', async () => {
+    const { findOpenPrForBranch, getChangeStatus, listBuilds, makeResolvedContext } =
+      createMockClients();
+    const pr = makePr();
+    findOpenPrForBranch.mockResolvedValue(pr);
+
+    const { source } = createFakeContextSource(makeResolvedContext({ zuul: undefined }));
+    const { focusEvents } = createFakeFocusEvents(true);
+    const tracker = new PrTracker(source, createFakeLogger(), {
+      setTimer: setTimeout,
+      now: Date.now,
+      focusEvents,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(getChangeStatus).not.toHaveBeenCalled();
+    expect(listBuilds).not.toHaveBeenCalled();
+    expect(tracker.snapshot).toEqual({
+      pr,
+      statuses: [],
+      builds: [],
+      fetchedAt: 1_000_000,
+      zuul: {
+        kind: 'unavailable',
+        reason: 'unreachable',
+        message: 'Zuul could not be reached',
+        stopped: true,
+      },
+    });
+    tracker.dispose();
+  });
+
+  it.each([
+    [401, 'needs-token'],
+    [403, 'no-access'],
+    [500, 'unreachable'],
+  ] as const)(
+    'still makes a snapshot with empty Zuul data when Zuul answers %i',
+    async (status, reason) => {
+      const { findOpenPrForBranch, getChangeStatus, makeResolvedContext } = createMockClients();
+      const pr = makePr();
+      findOpenPrForBranch.mockResolvedValue(pr);
+      getChangeStatus.mockRejectedValue(new HttpError(status, 'nope'));
+
+      const { source } = createFakeContextSource(makeResolvedContext());
+      const { focusEvents } = createFakeFocusEvents(true);
+      const logger = createFakeLogger();
+      const tracker = new PrTracker(source, logger, {
+        setTimer: setTimeout,
+        now: Date.now,
+        focusEvents,
+      });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(tracker.snapshot).toMatchObject({
+        pr,
+        statuses: [],
+        builds: [],
+        zuul: { kind: 'unavailable', reason },
+      });
+      expect(tracker.pollStatus).toEqual({ kind: 'active' });
+      expect(logger.errors).toHaveLength(0);
+      tracker.dispose();
+    },
+  );
 
   it('falls back to listBuilds when every status is non-live', async () => {
     const { findOpenPrForBranch, getChangeStatus, listBuilds, makeResolvedContext } =
@@ -173,7 +250,11 @@ describe('PrTracker', () => {
 
     const { source } = createFakeContextSource(makeResolvedContext());
     const { focusEvents } = createFakeFocusEvents(true);
-    const tracker = new PrTracker(source, createFakeLogger(), setTimeout, Date.now, focusEvents);
+    const tracker = new PrTracker(source, createFakeLogger(), {
+      setTimer: setTimeout,
+      now: Date.now,
+      focusEvents,
+    });
     await vi.advanceTimersByTimeAsync(0);
 
     expect(listBuilds).toHaveBeenCalledTimes(1);
@@ -192,14 +273,18 @@ describe('PrTracker', () => {
 
     const { source } = createFakeContextSource(makeResolvedContext());
     const { focusEvents } = createFakeFocusEvents(true);
-    const tracker = new PrTracker(source, createFakeLogger(), setTimeout, Date.now, focusEvents);
+    const tracker = new PrTracker(source, createFakeLogger(), {
+      setTimer: setTimeout,
+      now: Date.now,
+      focusEvents,
+    });
     await vi.advanceTimersByTimeAsync(0);
 
     expect(listBuilds).not.toHaveBeenCalled();
     tracker.dispose();
   });
 
-  it('falls back to listBuilds when getChangeStatus returns empty and polls every 60s', async () => {
+  it('falls back to listBuilds when getChangeStatus returns empty and polls every 5 minutes', async () => {
     const { findOpenPrForBranch, getChangeStatus, listBuilds, makeResolvedContext } =
       createMockClients();
     const pr = makePr();
@@ -213,7 +298,11 @@ describe('PrTracker', () => {
     const { focusEvents } = createFakeFocusEvents(true);
     const logger = createFakeLogger();
 
-    const tracker = new PrTracker(source, logger, setTimeout, Date.now, focusEvents);
+    const tracker = new PrTracker(source, logger, {
+      setTimer: setTimeout,
+      now: Date.now,
+      focusEvents,
+    });
     await vi.advanceTimersByTimeAsync(0);
 
     expect(getChangeStatus).toHaveBeenCalledTimes(1);
@@ -228,20 +317,21 @@ describe('PrTracker', () => {
       statuses: [],
       builds: [build],
       fetchedAt: 1_000_000,
+      zuul: { kind: 'ok' },
     });
 
-    // Should not poll at 15s (idle cadence is 60s)
-    await vi.advanceTimersByTimeAsync(15_000);
+    // Should not poll at 60s (idle cadence is 5 times the interval)
+    await vi.advanceTimersByTimeAsync(60_000);
     expect(getChangeStatus).toHaveBeenCalledTimes(1);
 
-    await vi.advanceTimersByTimeAsync(45_000);
+    await vi.advanceTimersByTimeAsync(240_000);
     expect(getChangeStatus).toHaveBeenCalledTimes(2);
     expect(listBuilds).toHaveBeenCalledTimes(2);
 
     tracker.dispose();
   });
 
-  it('switches to 3s cadence during watchFor(ms) and returns to normal cadence afterwards', async () => {
+  it('switches to 15s cadence during watchFor(ms) and returns to normal cadence afterwards', async () => {
     const { findOpenPrForBranch, getChangeStatus, listBuilds, makeResolvedContext } =
       createMockClients();
     const pr = makePr();
@@ -254,34 +344,38 @@ describe('PrTracker', () => {
     const { focusEvents } = createFakeFocusEvents(true);
     const logger = createFakeLogger();
 
-    const tracker = new PrTracker(source, logger, setTimeout, Date.now, focusEvents);
+    const tracker = new PrTracker(source, logger, {
+      setTimer: setTimeout,
+      now: Date.now,
+      focusEvents,
+    });
     await vi.advanceTimersByTimeAsync(0);
     expect(getChangeStatus).toHaveBeenCalledTimes(1);
 
-    // Start fast watch for 7000ms (should reschedule the 60s timer to 3s)
-    tracker.watchFor(7_000);
+    // Start fast watch for 40s (should reschedule the idle timer to 15s)
+    tracker.watchFor(40_000);
 
-    await vi.advanceTimersByTimeAsync(3_000);
+    await vi.advanceTimersByTimeAsync(15_000);
     expect(getChangeStatus).toHaveBeenCalledTimes(2);
 
-    await vi.advanceTimersByTimeAsync(3_000);
+    await vi.advanceTimersByTimeAsync(15_000);
     expect(getChangeStatus).toHaveBeenCalledTimes(3);
 
-    // At t + 6000ms, fastUntil (t + 7000ms) is still in the future -> one more 3s poll
-    await vi.advanceTimersByTimeAsync(3_000);
+    // fastUntil (t + 40s) is still in the future at t + 30s -> one more 15s poll
+    await vi.advanceTimersByTimeAsync(15_000);
     expect(getChangeStatus).toHaveBeenCalledTimes(4);
 
-    // Now at t + 9000ms, fastUntil has expired -> cadence is 60s
-    await vi.advanceTimersByTimeAsync(3_000);
+    // fastUntil has expired -> cadence is 5 minutes
+    await vi.advanceTimersByTimeAsync(15_000);
     expect(getChangeStatus).toHaveBeenCalledTimes(4);
 
-    await vi.advanceTimersByTimeAsync(57_000);
+    await vi.advanceTimersByTimeAsync(285_000);
     expect(getChangeStatus).toHaveBeenCalledTimes(5);
 
     tracker.dispose();
   });
 
-  it('re-fetches the PR itself every 4th tick to detect new pushes', async () => {
+  it('re-fetches the PR on every tick to detect new pushes', async () => {
     const { findOpenPrForBranch, getChangeStatus, listBuilds, makeResolvedContext } =
       createMockClients();
     const prV1 = makePr({
@@ -299,69 +393,58 @@ describe('PrTracker', () => {
     const { focusEvents } = createFakeFocusEvents(true);
     const logger = createFakeLogger();
 
-    const tracker = new PrTracker(source, logger, setTimeout, Date.now, focusEvents);
+    const tracker = new PrTracker(source, logger, {
+      setTimer: setTimeout,
+      now: Date.now,
+      focusEvents,
+    });
 
     // Tick 0 (initial): fetches PR (sha-v1) + status
     await vi.advanceTimersByTimeAsync(0);
     expect(findOpenPrForBranch).toHaveBeenCalledTimes(1);
     expect(getChangeStatus).toHaveBeenLastCalledWith('main', 42, 'sha-v1');
 
-    // Tick 1: status only
-    await vi.advanceTimersByTimeAsync(15_000);
-    expect(findOpenPrForBranch).toHaveBeenCalledTimes(1);
-    expect(getChangeStatus).toHaveBeenCalledTimes(2);
-
-    // Tick 2: status only
-    await vi.advanceTimersByTimeAsync(15_000);
-    expect(findOpenPrForBranch).toHaveBeenCalledTimes(1);
-    expect(getChangeStatus).toHaveBeenCalledTimes(3);
-
-    // Tick 3: status only
-    await vi.advanceTimersByTimeAsync(15_000);
-    expect(findOpenPrForBranch).toHaveBeenCalledTimes(1);
-    expect(getChangeStatus).toHaveBeenCalledTimes(4);
-
-    // Tick 4 (4th tick): re-fetches PR (sha-v2) and uses new SHA for status
-    await vi.advanceTimersByTimeAsync(15_000);
+    // Tick 1: PR is fetched again and the new SHA is used for the status
+    await vi.advanceTimersByTimeAsync(60_000);
     expect(findOpenPrForBranch).toHaveBeenCalledTimes(2);
-    expect(getChangeStatus).toHaveBeenCalledTimes(5);
+    expect(getChangeStatus).toHaveBeenCalledTimes(2);
     expect(getChangeStatus).toHaveBeenLastCalledWith('main', 42, 'sha-v2');
     expect(tracker.snapshot?.pr.head.sha).toBe('sha-v2');
 
     tracker.dispose();
   });
 
-  it('logs errors with [Poll] and retries at normal delay without throwing out of loop', async () => {
+  it('logs errors with [Poll] and retries after 30 s without throwing out of loop', async () => {
     const { findOpenPrForBranch, getChangeStatus, listBuilds, makeResolvedContext } =
       createMockClients();
     const pr = makePr();
     const status = makeStatus();
 
-    findOpenPrForBranch.mockResolvedValue(pr);
-    getChangeStatus
-      .mockResolvedValueOnce([status])
-      .mockRejectedValueOnce(new Error('Zuul 502 Bad Gateway'))
-      .mockResolvedValueOnce([status]);
+    findOpenPrForBranch
+      .mockRejectedValueOnce(new Error('GitHub 502 Bad Gateway'))
+      .mockResolvedValue(pr);
+    getChangeStatus.mockResolvedValue([status]);
     listBuilds.mockResolvedValue([]);
 
     const { source } = createFakeContextSource(makeResolvedContext());
     const { focusEvents } = createFakeFocusEvents(true);
     const logger = createFakeLogger();
 
-    const tracker = new PrTracker(source, logger, setTimeout, Date.now, focusEvents);
+    const tracker = new PrTracker(source, logger, {
+      setTimer: setTimeout,
+      now: Date.now,
+      focusEvents,
+    });
 
-    // Initial tick succeeds
+    // Initial tick fails -> logged with [Poll], loop continues
     await vi.advanceTimersByTimeAsync(0);
-    expect(logger.errors).toHaveLength(0);
-
-    // Next tick (15s) fails -> logged with [Poll], loop continues
-    await vi.advanceTimersByTimeAsync(15_000);
     expect(logger.errors).toHaveLength(1);
     expect(logger.errors[0].msg).toContain('[Poll]');
+    expect(getChangeStatus).not.toHaveBeenCalled();
 
-    // Next tick (another 15s) succeeds
-    await vi.advanceTimersByTimeAsync(15_000);
-    expect(getChangeStatus).toHaveBeenCalledTimes(3);
+    // The retry runs after 30 s and succeeds
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(getChangeStatus).toHaveBeenCalledTimes(1);
     expect(logger.errors).toHaveLength(1);
 
     tracker.dispose();
@@ -380,7 +463,11 @@ describe('PrTracker', () => {
     const { focusEvents, setFocused } = createFakeFocusEvents(true);
     const logger = createFakeLogger();
 
-    const tracker = new PrTracker(source, logger, setTimeout, Date.now, focusEvents);
+    const tracker = new PrTracker(source, logger, {
+      setTimer: setTimeout,
+      now: Date.now,
+      focusEvents,
+    });
     await vi.advanceTimersByTimeAsync(0);
     expect(getChangeStatus).toHaveBeenCalledTimes(1);
 
@@ -395,9 +482,69 @@ describe('PrTracker', () => {
     expect(findOpenPrForBranch).toHaveBeenCalledTimes(2);
     expect(getChangeStatus).toHaveBeenCalledTimes(2);
 
-    // Next 15s tick runs as normal
-    await vi.advanceTimersByTimeAsync(15_000);
+    // Next tick runs after the interval
+    await vi.advanceTimersByTimeAsync(60_000);
     expect(getChangeStatus).toHaveBeenCalledTimes(3);
+
+    tracker.dispose();
+  });
+
+  it('polls the new branch at once on focus after a branch change while unfocused', async () => {
+    const { findOpenPrForBranch, getChangeStatus, listBuilds, makeResolvedContext } =
+      createMockClients();
+    findOpenPrForBranch.mockResolvedValue(makePr());
+    getChangeStatus.mockResolvedValue([]);
+    listBuilds.mockResolvedValue([]);
+
+    const { source, setContext } = createFakeContextSource(makeResolvedContext());
+    const { focusEvents, setFocused } = createFakeFocusEvents(true);
+    const tracker = new PrTracker(source, createFakeLogger(), {
+      setTimer: setTimeout,
+      now: Date.now,
+      focusEvents,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(findOpenPrForBranch).toHaveBeenCalledTimes(1);
+
+    setFocused(false);
+    setContext(makeResolvedContext({ branch: 'other-branch' }));
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(findOpenPrForBranch).toHaveBeenCalledTimes(1);
+
+    setFocused(true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(findOpenPrForBranch).toHaveBeenCalledTimes(2);
+    expect(findOpenPrForBranch).toHaveBeenLastCalledWith('acme', 'service', 'other-branch');
+    tracker.dispose();
+  });
+
+  it('does not poll on focus when the last poll is newer than the delay, and polls at the remainder', async () => {
+    const { findOpenPrForBranch, getChangeStatus, listBuilds, makeResolvedContext } =
+      createMockClients();
+    findOpenPrForBranch.mockResolvedValue(makePr());
+    getChangeStatus.mockResolvedValue([makeStatus()]);
+    listBuilds.mockResolvedValue([]);
+
+    const { source } = createFakeContextSource(makeResolvedContext());
+    const { focusEvents, setFocused } = createFakeFocusEvents(true);
+    const tracker = new PrTracker(source, createFakeLogger(), {
+      setTimer: setTimeout,
+      now: Date.now,
+      focusEvents,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(getChangeStatus).toHaveBeenCalledTimes(1);
+
+    setFocused(false);
+    await vi.advanceTimersByTimeAsync(10_000);
+    setFocused(true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(findOpenPrForBranch).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(49_900);
+    expect(findOpenPrForBranch).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(findOpenPrForBranch).toHaveBeenCalledTimes(2);
 
     tracker.dispose();
   });
@@ -415,7 +562,11 @@ describe('PrTracker', () => {
     const { focusEvents } = createFakeFocusEvents(true);
     const snapshots: (PrSnapshot | undefined)[] = [];
 
-    const tracker = new PrTracker(source, createFakeLogger(), setTimeout, Date.now, focusEvents);
+    const tracker = new PrTracker(source, createFakeLogger(), {
+      setTimer: setTimeout,
+      now: Date.now,
+      focusEvents,
+    });
     tracker.onDidChange((s) => snapshots.push(s));
 
     setContext(makeResolvedContext());
@@ -440,7 +591,11 @@ describe('PrTracker', () => {
     const { source, setContext } = createFakeContextSource(undefined);
     const { focusEvents } = createFakeFocusEvents(true);
     const snapshots: (PrSnapshot | undefined)[] = [];
-    const tracker = new PrTracker(source, createFakeLogger(), setTimeout, Date.now, focusEvents);
+    const tracker = new PrTracker(source, createFakeLogger(), {
+      setTimer: setTimeout,
+      now: Date.now,
+      focusEvents,
+    });
     tracker.onDidChange((s) => snapshots.push(s));
 
     setContext(makeResolvedContext());
@@ -450,6 +605,7 @@ describe('PrTracker', () => {
     setContext(makeResolvedContext({ branch: undefined }));
     expect(tracker.snapshot).toBeUndefined();
     expect(snapshots.at(-1)).toBeUndefined();
+    expect(tracker.pollStatus).toEqual({ kind: 'no-pr' });
 
     tracker.dispose();
   });
@@ -463,7 +619,11 @@ describe('PrTracker', () => {
 
     const { source } = createFakeContextSource(makeResolvedContext());
     const { focusEvents } = createFakeFocusEvents(true);
-    const tracker = new PrTracker(source, createFakeLogger(), setTimeout, Date.now, focusEvents);
+    const tracker = new PrTracker(source, createFakeLogger(), {
+      setTimer: setTimeout,
+      now: Date.now,
+      focusEvents,
+    });
     await vi.advanceTimersByTimeAsync(0);
     expect(findOpenPrForBranch).toHaveBeenCalledTimes(1);
 
@@ -481,7 +641,11 @@ describe('PrTracker', () => {
 
     const { source, setContext } = createFakeContextSource(undefined);
     const { focusEvents } = createFakeFocusEvents(true);
-    const tracker = new PrTracker(source, createFakeLogger(), setTimeout, Date.now, focusEvents);
+    const tracker = new PrTracker(source, createFakeLogger(), {
+      setTimer: setTimeout,
+      now: Date.now,
+      focusEvents,
+    });
     const snapshots: (PrSnapshot | undefined)[] = [];
     tracker.onDidChange((s) => snapshots.push(s));
 
@@ -506,7 +670,11 @@ describe('PrTracker', () => {
 
     const { source, setContext } = createFakeContextSource(undefined);
     const { focusEvents } = createFakeFocusEvents(true);
-    const tracker = new PrTracker(source, createFakeLogger(), setTimeout, Date.now, focusEvents);
+    const tracker = new PrTracker(source, createFakeLogger(), {
+      setTimer: setTimeout,
+      now: Date.now,
+      focusEvents,
+    });
 
     setContext(makeResolvedContext());
     await vi.advanceTimersByTimeAsync(0);
@@ -551,7 +719,11 @@ describe('PrTracker races', () => {
 
     const { source, setContext } = createFakeContextSource(makeResolvedContext());
     const { focusEvents } = createFakeFocusEvents(true);
-    const tracker = new PrTracker(source, createFakeLogger(), setTimeout, Date.now, focusEvents);
+    const tracker = new PrTracker(source, createFakeLogger(), {
+      setTimer: setTimeout,
+      now: Date.now,
+      focusEvents,
+    });
     const snapshots: (PrSnapshot | undefined)[] = [];
     tracker.onDidChange((s) => snapshots.push(s));
 
@@ -578,19 +750,23 @@ describe('PrTracker races', () => {
 
     const { source } = createFakeContextSource(makeResolvedContext());
     const { focusEvents } = createFakeFocusEvents(true);
-    const tracker = new PrTracker(source, createFakeLogger(), setTimeout, Date.now, focusEvents);
+    const tracker = new PrTracker(source, createFakeLogger(), {
+      setTimer: setTimeout,
+      now: Date.now,
+      focusEvents,
+    });
     await vi.advanceTimersByTimeAsync(0);
     expect(getChangeStatus).toHaveBeenCalledTimes(1);
 
-    // 1s before the 15s timer would fire.
-    await vi.advanceTimersByTimeAsync(14_000);
+    // 1s before the 60s timer would fire.
+    await vi.advanceTimersByTimeAsync(59_000);
     await tracker.refresh();
     expect(getChangeStatus).toHaveBeenCalledTimes(2);
 
-    // The old timer's moment passes: no extra poll. The next one is 15s after refresh().
+    // The old timer's moment passes: no extra poll. The next one is 60s after refresh().
     await vi.advanceTimersByTimeAsync(1_000);
     expect(getChangeStatus).toHaveBeenCalledTimes(2);
-    await vi.advanceTimersByTimeAsync(14_000);
+    await vi.advanceTimersByTimeAsync(59_000);
     expect(getChangeStatus).toHaveBeenCalledTimes(3);
     tracker.dispose();
   });
@@ -611,11 +787,15 @@ describe('PrTracker races', () => {
 
     const { source } = createFakeContextSource(makeResolvedContext());
     const { focusEvents } = createFakeFocusEvents(true);
-    const tracker = new PrTracker(source, createFakeLogger(), setTimeout, Date.now, focusEvents);
+    const tracker = new PrTracker(source, createFakeLogger(), {
+      setTimer: setTimeout,
+      now: Date.now,
+      focusEvents,
+    });
     await vi.advanceTimersByTimeAsync(0);
 
     // The timer poll starts and hangs on the slow status call.
-    await vi.advanceTimersByTimeAsync(15_000);
+    await vi.advanceTimersByTimeAsync(60_000);
     expect(getChangeStatus).toHaveBeenCalledTimes(2);
 
     await tracker.refresh();
@@ -628,7 +808,9 @@ describe('PrTracker races', () => {
   });
 });
 
-describe('PrTracker poll errors', () => {
+const HOUR_MS = 3_600_000;
+
+describe('PrTracker applies a changed poll interval at once', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(1_000_000);
@@ -638,33 +820,681 @@ describe('PrTracker poll errors', () => {
     vi.useRealTimers();
   });
 
-  it('exposes the last poll error and clears it after a successful poll', async () => {
-    const { findOpenPrForBranch, getChangeStatus, makeResolvedContext } = createMockClients();
-    findOpenPrForBranch.mockResolvedValueOnce(makePr());
-    getChangeStatus.mockResolvedValueOnce([makeStatus()]);
-    findOpenPrForBranch.mockRejectedValueOnce(new Error('network down'));
-    const { source } = createFakeContextSource(makeResolvedContext());
+  function start(ctx: ResolvedContext, getPollIntervalMs: () => number) {
+    const { source } = createFakeContextSource(ctx);
     const { focusEvents } = createFakeFocusEvents(true);
-    const tracker = new PrTracker(source, createFakeLogger(), setTimeout, Date.now, focusEvents);
-    const changes = vi.fn();
-    tracker.onDidChangePollError(changes);
-
-    await vi.advanceTimersByTimeAsync(0);
-    expect(tracker.pollError).toBeUndefined();
-
-    await tracker.refresh();
-    expect(tracker.pollError).toEqual({
-      message: 'network down',
-      at: 1_000_000,
-      lastSuccessAt: 1_000_000,
+    return new PrTracker(source, createFakeLogger(), {
+      setTimer: setTimeout,
+      now: Date.now,
+      focusEvents,
+      getPollIntervalMs,
     });
-    expect(changes).toHaveBeenCalledTimes(1);
+  }
 
+  it('moves the waiting timer to the new interval', async () => {
+    const { findOpenPrForBranch, getChangeStatus, listBuilds, makeResolvedContext } =
+      createMockClients();
     findOpenPrForBranch.mockResolvedValue(makePr());
-    getChangeStatus.mockResolvedValue([makeStatus()]);
-    await tracker.refresh();
-    expect(tracker.pollError).toBeUndefined();
-    expect(changes).toHaveBeenCalledTimes(2);
+    getChangeStatus.mockResolvedValue([]);
+    listBuilds.mockResolvedValue([]);
+    let intervalMs = 60_000;
+    const tracker = start(makeResolvedContext(), () => intervalMs);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(findOpenPrForBranch).toHaveBeenCalledTimes(1);
+
+    // Idle, so the next poll was 5 minutes away. With 10 s it is 50 s after the last poll.
+    await vi.advanceTimersByTimeAsync(20_000);
+    intervalMs = 10_000;
+    tracker.applyPollInterval();
+
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(findOpenPrForBranch).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(findOpenPrForBranch).toHaveBeenCalledTimes(2);
     tracker.dispose();
+  });
+
+  it('polls at once when the new delay has already passed', async () => {
+    const { findOpenPrForBranch, getChangeStatus, listBuilds, makeResolvedContext } =
+      createMockClients();
+    findOpenPrForBranch.mockResolvedValue(makePr());
+    getChangeStatus.mockResolvedValue([]);
+    listBuilds.mockResolvedValue([]);
+    let intervalMs = 60_000;
+    const tracker = start(makeResolvedContext(), () => intervalMs);
+    await vi.advanceTimersByTimeAsync(0);
+
+    await vi.advanceTimersByTimeAsync(100_000);
+    intervalMs = 10_000;
+    tracker.applyPollInterval();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(findOpenPrForBranch).toHaveBeenCalledTimes(2);
+    tracker.dispose();
+  });
+
+  it('does not restart polling that has stopped', async () => {
+    const { findOpenPrForBranch, makeResolvedContext } = createMockClients();
+    findOpenPrForBranch.mockRejectedValue(new HttpError(401, 'nope'));
+    let intervalMs = 60_000;
+    const tracker = start(makeResolvedContext(), () => intervalMs);
+    await vi.advanceTimersByTimeAsync(0);
+
+    intervalMs = 10_000;
+    tracker.applyPollInterval();
+    await vi.advanceTimersByTimeAsync(HOUR_MS);
+
+    expect(findOpenPrForBranch).toHaveBeenCalledTimes(1);
+    tracker.dispose();
+  });
+});
+
+describe('PrTracker stops polling when retrying cannot help', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000_000);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function start(ctx: ResolvedContext) {
+    const { source, setContext } = createFakeContextSource(ctx);
+    const { focusEvents, setFocused } = createFakeFocusEvents(true);
+    const logger = createFakeLogger();
+    const tracker = new PrTracker(source, logger, {
+      setTimer: setTimeout,
+      now: Date.now,
+      focusEvents,
+    });
+    return { tracker, setContext, setFocused, logger };
+  }
+
+  /** Runs the first poll and the three retries. Every poll must fail for this to reach four. */
+  async function runRetries(): Promise<void> {
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(30_000);
+    await vi.advanceTimersByTimeAsync(60_000);
+    await vi.advanceTimersByTimeAsync(120_000);
+  }
+
+  describe('GitHub', () => {
+    it('500s make exactly 4 calls, after 30, 60 and 120 s, then none for an hour', async () => {
+      const { findOpenPrForBranch, makeResolvedContext } = createMockClients();
+      findOpenPrForBranch.mockRejectedValue(new HttpError(500, 'boom'));
+      const { tracker } = start(makeResolvedContext());
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(findOpenPrForBranch).toHaveBeenCalledTimes(1);
+      expect(tracker.pollStatus).toMatchObject({ kind: 'retrying' });
+
+      await vi.advanceTimersByTimeAsync(29_999);
+      expect(findOpenPrForBranch).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(findOpenPrForBranch).toHaveBeenCalledTimes(2);
+
+      await vi.advanceTimersByTimeAsync(59_999);
+      expect(findOpenPrForBranch).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(findOpenPrForBranch).toHaveBeenCalledTimes(3);
+
+      await vi.advanceTimersByTimeAsync(119_999);
+      expect(findOpenPrForBranch).toHaveBeenCalledTimes(3);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(findOpenPrForBranch).toHaveBeenCalledTimes(4);
+      expect(tracker.pollStatus).toMatchObject({ kind: 'stopped', reason: 'failed' });
+
+      await vi.advanceTimersByTimeAsync(HOUR_MS);
+      expect(findOpenPrForBranch).toHaveBeenCalledTimes(4);
+      tracker.dispose();
+    });
+
+    it('keeps the last snapshot and reports why it stopped', async () => {
+      const { findOpenPrForBranch, getChangeStatus, makeResolvedContext } = createMockClients();
+      const pr = makePr();
+      findOpenPrForBranch.mockResolvedValueOnce(pr);
+      getChangeStatus.mockResolvedValue([makeStatus()]);
+      findOpenPrForBranch.mockRejectedValue(new Error('network down'));
+      const { tracker } = start(makeResolvedContext());
+      const changes = vi.fn();
+      tracker.onDidChangePollStatus(changes);
+
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(60_000);
+      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.advanceTimersByTimeAsync(60_000);
+      await vi.advanceTimersByTimeAsync(120_000);
+
+      expect(tracker.snapshot?.pr).toEqual(pr);
+      expect(tracker.pollStatus).toEqual({
+        kind: 'stopped',
+        reason: 'failed',
+        message: 'network down',
+      });
+      // Three retries, then the stop.
+      expect(changes).toHaveBeenCalledTimes(4);
+      tracker.dispose();
+    });
+
+    it('a missing token is retried, then stops as sign-in needed', async () => {
+      const { findOpenPrForBranch, makeResolvedContext } = createMockClients();
+      findOpenPrForBranch.mockRejectedValue(new NoTokenError());
+      const { tracker } = start(makeResolvedContext());
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(tracker.pollStatus).toMatchObject({ kind: 'retrying' });
+
+      await vi.advanceTimersByTimeAsync(30_000 + 60_000 + 120_000);
+      expect(findOpenPrForBranch).toHaveBeenCalledTimes(4);
+      expect(tracker.pollStatus).toMatchObject({ kind: 'stopped', reason: 'auth' });
+
+      await vi.advanceTimersByTimeAsync(HOUR_MS);
+      expect(findOpenPrForBranch).toHaveBeenCalledTimes(4);
+      tracker.dispose();
+    });
+
+    it('resumes by itself when the token can be read again', async () => {
+      const { findOpenPrForBranch, getChangeStatus, makeResolvedContext } = createMockClients();
+      findOpenPrForBranch.mockRejectedValueOnce(new NoTokenError()).mockResolvedValue(makePr());
+      getChangeStatus.mockResolvedValue([makeStatus()]);
+      const { tracker } = start(makeResolvedContext());
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(tracker.pollStatus).toMatchObject({ kind: 'retrying' });
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(tracker.pollStatus).toEqual({ kind: 'active' });
+      expect(tracker.snapshot?.pr.number).toBe(42);
+      tracker.dispose();
+    });
+
+    it('only stops after four failures in a row', async () => {
+      const { findOpenPrForBranch, getChangeStatus, listBuilds, makeResolvedContext } =
+        createMockClients();
+      const boom = new HttpError(500, 'boom');
+      findOpenPrForBranch
+        .mockRejectedValueOnce(boom)
+        .mockRejectedValueOnce(boom)
+        .mockRejectedValueOnce(boom)
+        .mockResolvedValueOnce(makePr())
+        .mockRejectedValue(boom);
+      getChangeStatus.mockResolvedValue([]);
+      listBuilds.mockResolvedValue([]);
+      const { tracker } = start(makeResolvedContext());
+
+      await runRetries();
+      expect(findOpenPrForBranch).toHaveBeenCalledTimes(4);
+      expect(tracker.pollStatus).toEqual({ kind: 'active' });
+
+      // The success puts the next poll on the idle interval, then three more failures still retry.
+      await vi.advanceTimersByTimeAsync(300_000);
+      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(findOpenPrForBranch).toHaveBeenCalledTimes(7);
+      expect(tracker.pollStatus).toMatchObject({ kind: 'retrying' });
+
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(findOpenPrForBranch).toHaveBeenCalledTimes(8);
+      expect(tracker.pollStatus).toMatchObject({ kind: 'stopped', reason: 'failed' });
+      tracker.dispose();
+    });
+
+    it.each([401, 403, 404])('a %i makes 1 call and stops at once', async (status) => {
+      const { findOpenPrForBranch, makeResolvedContext } = createMockClients();
+      findOpenPrForBranch.mockRejectedValue(new HttpError(status, 'nope'));
+      const { tracker } = start(makeResolvedContext());
+
+      await vi.advanceTimersByTimeAsync(HOUR_MS);
+
+      expect(findOpenPrForBranch).toHaveBeenCalledTimes(1);
+      expect(tracker.pollStatus).toMatchObject({ kind: 'stopped', reason: 'auth' });
+      tracker.dispose();
+    });
+
+    it('Retry-After: 3600 makes no call for an hour, then resumes and keeps the snapshot', async () => {
+      const { findOpenPrForBranch, getChangeStatus, makeResolvedContext } = createMockClients();
+      const guard = new RateLimitGuard(Date.now);
+      getChangeStatus.mockResolvedValue([makeStatus()]);
+      findOpenPrForBranch.mockResolvedValueOnce(makePr());
+      const { tracker } = start(makeResolvedContext());
+      await vi.advanceTimersByTimeAsync(0);
+      expect(findOpenPrForBranch).toHaveBeenCalledTimes(1);
+
+      findOpenPrForBranch.mockImplementationOnce(() =>
+        Promise.reject(
+          guard.recordFailure('core', 429, new Headers({ 'retry-after': '3600' }), 'slow down'),
+        ),
+      );
+      findOpenPrForBranch.mockResolvedValue(makePr());
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(findOpenPrForBranch).toHaveBeenCalledTimes(2);
+      expect(tracker.pollStatus).toMatchObject({
+        kind: 'rate-limited',
+        until: 1_000_000 + 60_000 + HOUR_MS,
+      });
+      expect(tracker.snapshot?.pr.number).toBe(42);
+
+      await vi.advanceTimersByTimeAsync(HOUR_MS - 1);
+      expect(findOpenPrForBranch).toHaveBeenCalledTimes(2);
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(findOpenPrForBranch).toHaveBeenCalledTimes(3);
+      expect(tracker.pollStatus).toEqual({ kind: 'active' });
+      tracker.dispose();
+    });
+
+    it('Retry-After: 0 waits 30 s instead of polling at once', async () => {
+      const { findOpenPrForBranch, makeResolvedContext } = createMockClients();
+      const guard = new RateLimitGuard(Date.now);
+      findOpenPrForBranch.mockImplementation(() =>
+        Promise.reject(
+          guard.recordFailure('core', 429, new Headers({ 'retry-after': '0' }), 'slow down'),
+        ),
+      );
+      const { tracker } = start(makeResolvedContext());
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(findOpenPrForBranch).toHaveBeenCalledTimes(1);
+      expect(tracker.pollStatus).toMatchObject({
+        kind: 'rate-limited',
+        until: 1_000_000 + 30_000,
+      });
+
+      await vi.advanceTimersByTimeAsync(29_999);
+      expect(findOpenPrForBranch).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(findOpenPrForBranch).toHaveBeenCalledTimes(2);
+      tracker.dispose();
+    });
+
+    it('does not count rate limits as failures', async () => {
+      const { findOpenPrForBranch, makeResolvedContext } = createMockClients();
+      findOpenPrForBranch.mockImplementation(() =>
+        Promise.reject(new RateLimitedError(429, 'slow down', Date.now() + 60_000)),
+      );
+      const { tracker } = start(makeResolvedContext());
+
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(5 * 60_000);
+
+      expect(findOpenPrForBranch).toHaveBeenCalledTimes(6);
+      expect(tracker.pollStatus.kind).toBe('rate-limited');
+      tracker.dispose();
+    });
+
+    it('retries a failure that follows a rate limit instead of polling in a loop', async () => {
+      const { findOpenPrForBranch, makeResolvedContext } = createMockClients();
+      findOpenPrForBranch
+        .mockRejectedValueOnce(new RateLimitedError(429, 'slow down', Date.now() + 60_000))
+        .mockRejectedValue(new HttpError(500, 'boom'));
+      const { tracker } = start(makeResolvedContext());
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(findOpenPrForBranch).toHaveBeenCalledTimes(2);
+      expect(tracker.pollStatus).toMatchObject({ kind: 'retrying' });
+
+      await vi.advanceTimersByTimeAsync(29_999);
+      expect(findOpenPrForBranch).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(findOpenPrForBranch).toHaveBeenCalledTimes(3);
+      tracker.dispose();
+    });
+
+    it('no PR makes 1 call and stops', async () => {
+      const { findOpenPrForBranch, makeResolvedContext } = createMockClients();
+      findOpenPrForBranch.mockResolvedValue(undefined);
+      const { tracker } = start(makeResolvedContext());
+
+      await vi.advanceTimersByTimeAsync(HOUR_MS);
+
+      expect(findOpenPrForBranch).toHaveBeenCalledTimes(1);
+      expect(tracker.pollStatus).toEqual({ kind: 'no-pr' });
+      tracker.dispose();
+    });
+  });
+
+  describe('resuming', () => {
+    it.each([
+      ['GitHub stopped after failures', new HttpError(500, 'boom'), 4],
+      ['GitHub refused the token', new HttpError(401, 'nope'), 1],
+    ] as const)('Refresh resumes when %s', async (_name, error, calls) => {
+      const { findOpenPrForBranch, getChangeStatus, listBuilds, makeResolvedContext } =
+        createMockClients();
+      findOpenPrForBranch.mockRejectedValue(error);
+      getChangeStatus.mockResolvedValue([]);
+      listBuilds.mockResolvedValue([]);
+      const { tracker } = start(makeResolvedContext());
+      await runRetries();
+      expect(findOpenPrForBranch).toHaveBeenCalledTimes(calls);
+
+      findOpenPrForBranch.mockResolvedValue(makePr());
+      await tracker.refresh();
+
+      expect(findOpenPrForBranch).toHaveBeenCalledTimes(calls + 1);
+      expect(tracker.pollStatus).toEqual({ kind: 'active' });
+      await vi.advanceTimersByTimeAsync(300_000);
+      expect(findOpenPrForBranch).toHaveBeenCalledTimes(calls + 2);
+      tracker.dispose();
+    });
+
+    it('a branch change resumes after GitHub stopped', async () => {
+      const { findOpenPrForBranch, getChangeStatus, listBuilds, makeResolvedContext } =
+        createMockClients();
+      findOpenPrForBranch.mockRejectedValue(new HttpError(401, 'nope'));
+      getChangeStatus.mockResolvedValue([]);
+      listBuilds.mockResolvedValue([]);
+      const { tracker, setContext } = start(makeResolvedContext());
+      await vi.advanceTimersByTimeAsync(0);
+      expect(tracker.pollStatus.kind).toBe('stopped');
+
+      findOpenPrForBranch.mockResolvedValue(makePr());
+      setContext(makeResolvedContext({ branch: 'other-branch' }));
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(findOpenPrForBranch).toHaveBeenCalledTimes(2);
+      expect(tracker.pollStatus).toEqual({ kind: 'active' });
+      tracker.dispose();
+    });
+
+    it('a branch change resumes after no PR', async () => {
+      const { findOpenPrForBranch, getChangeStatus, listBuilds, makeResolvedContext } =
+        createMockClients();
+      findOpenPrForBranch.mockResolvedValueOnce(undefined).mockResolvedValue(makePr());
+      getChangeStatus.mockResolvedValue([]);
+      listBuilds.mockResolvedValue([]);
+      const { tracker, setContext } = start(makeResolvedContext());
+      await vi.advanceTimersByTimeAsync(0);
+      expect(tracker.pollStatus).toEqual({ kind: 'no-pr' });
+
+      setContext(makeResolvedContext({ branch: 'other-branch' }));
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(tracker.pollStatus).toEqual({ kind: 'active' });
+      expect(tracker.snapshot?.pr.number).toBe(42);
+      tracker.dispose();
+    });
+
+    it('resets the failure count on Refresh', async () => {
+      const { findOpenPrForBranch, makeResolvedContext } = createMockClients();
+      findOpenPrForBranch.mockRejectedValue(new HttpError(500, 'boom'));
+      const { tracker } = start(makeResolvedContext());
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(findOpenPrForBranch).toHaveBeenCalledTimes(2);
+
+      await tracker.refresh();
+      expect(findOpenPrForBranch).toHaveBeenCalledTimes(3);
+
+      // Counting starts over, so the next retry is after 30 s, not 120 s.
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(findOpenPrForBranch).toHaveBeenCalledTimes(4);
+      expect(tracker.pollStatus).toMatchObject({ kind: 'retrying' });
+      tracker.dispose();
+    });
+  });
+
+  describe('window focus', () => {
+    it('does not restart a stopped poll', async () => {
+      const { findOpenPrForBranch, makeResolvedContext } = createMockClients();
+      findOpenPrForBranch.mockRejectedValue(new HttpError(401, 'nope'));
+      const { tracker, setFocused } = start(makeResolvedContext());
+      await vi.advanceTimersByTimeAsync(0);
+
+      setFocused(false);
+      await vi.advanceTimersByTimeAsync(HOUR_MS);
+      setFocused(true);
+      await vi.advanceTimersByTimeAsync(HOUR_MS);
+
+      expect(findOpenPrForBranch).toHaveBeenCalledTimes(1);
+      expect(tracker.pollStatus.kind).toBe('stopped');
+      tracker.dispose();
+    });
+
+    it('restores the rate-limit timer without calling early', async () => {
+      const { findOpenPrForBranch, getChangeStatus, listBuilds, makeResolvedContext } =
+        createMockClients();
+      findOpenPrForBranch
+        .mockRejectedValueOnce(new RateLimitedError(429, 'slow down', Date.now() + 600_000))
+        .mockResolvedValue(makePr());
+      getChangeStatus.mockResolvedValue([]);
+      listBuilds.mockResolvedValue([]);
+      const { tracker, setFocused } = start(makeResolvedContext());
+      await vi.advanceTimersByTimeAsync(0);
+
+      setFocused(false);
+      await vi.advanceTimersByTimeAsync(100_000);
+      setFocused(true);
+      await vi.advanceTimersByTimeAsync(499_999);
+      expect(findOpenPrForBranch).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(findOpenPrForBranch).toHaveBeenCalledTimes(2);
+      expect(tracker.pollStatus).toEqual({ kind: 'active' });
+      tracker.dispose();
+    });
+
+    it('does one lookup while there is no PR, at most once per poll interval', async () => {
+      const { findOpenPrForBranch, makeResolvedContext } = createMockClients();
+      findOpenPrForBranch.mockResolvedValue(undefined);
+      const { tracker, setFocused } = start(makeResolvedContext());
+      await vi.advanceTimersByTimeAsync(0);
+      expect(findOpenPrForBranch).toHaveBeenCalledTimes(1);
+
+      setFocused(false);
+      await vi.advanceTimersByTimeAsync(10_000);
+      setFocused(true);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(findOpenPrForBranch).toHaveBeenCalledTimes(1);
+
+      setFocused(false);
+      await vi.advanceTimersByTimeAsync(50_000);
+      setFocused(true);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(findOpenPrForBranch).toHaveBeenCalledTimes(2);
+
+      await vi.advanceTimersByTimeAsync(HOUR_MS);
+      expect(findOpenPrForBranch).toHaveBeenCalledTimes(2);
+      tracker.dispose();
+    });
+
+    it('keeps the retry delay across a blur and focus', async () => {
+      const { findOpenPrForBranch, makeResolvedContext } = createMockClients();
+      findOpenPrForBranch.mockRejectedValue(new HttpError(500, 'boom'));
+      const { tracker, setFocused } = start(makeResolvedContext());
+      await vi.advanceTimersByTimeAsync(0);
+
+      setFocused(false);
+      await vi.advanceTimersByTimeAsync(10_000);
+      setFocused(true);
+      await vi.advanceTimersByTimeAsync(19_999);
+      expect(findOpenPrForBranch).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(findOpenPrForBranch).toHaveBeenCalledTimes(2);
+      tracker.dispose();
+    });
+
+    it('does not retry a stopped Zuul', async () => {
+      const { findOpenPrForBranch, getChangeStatus, listBuilds, makeResolvedContext } =
+        createMockClients();
+      findOpenPrForBranch.mockResolvedValue(makePr());
+      getChangeStatus.mockRejectedValue(new HttpError(401, 'nope'));
+      listBuilds.mockResolvedValue([]);
+      const { tracker, setFocused } = start(makeResolvedContext());
+      await vi.advanceTimersByTimeAsync(0);
+      expect(getChangeStatus).toHaveBeenCalledTimes(1);
+
+      setFocused(false);
+      await vi.advanceTimersByTimeAsync(HOUR_MS);
+      setFocused(true);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(findOpenPrForBranch).toHaveBeenCalledTimes(2);
+      expect(getChangeStatus).toHaveBeenCalledTimes(1);
+      tracker.dispose();
+    });
+  });
+
+  it('watchFor does not restart a stopped poll', async () => {
+    const { findOpenPrForBranch, makeResolvedContext } = createMockClients();
+    findOpenPrForBranch.mockRejectedValue(new HttpError(401, 'nope'));
+    const { tracker } = start(makeResolvedContext());
+    await vi.advanceTimersByTimeAsync(0);
+
+    tracker.watchFor(45_000);
+    await vi.advanceTimersByTimeAsync(HOUR_MS);
+
+    expect(findOpenPrForBranch).toHaveBeenCalledTimes(1);
+    tracker.dispose();
+  });
+
+  describe('Zuul', () => {
+    it('a 401 makes 1 call per token, then none for an hour, and GitHub keeps polling', async () => {
+      const { findOpenPrForBranch, makeResolvedContext } = createMockClients();
+      findOpenPrForBranch.mockResolvedValue(makePr());
+      const fetchFn = vi.fn<typeof fetch>(async () => new Response('nope', { status: 401 }));
+      const client = new ZuulClient(
+        'https://zuul.example.com',
+        async () => ['token-a', 'token-b'],
+        fetchFn,
+      );
+      const { tracker } = start(
+        makeResolvedContext({ zuul: { url: 'https://zuul.example.com', tenant: 'main', client } }),
+      );
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchFn).toHaveBeenCalledTimes(2);
+      expect(tracker.snapshot?.zuul).toMatchObject({
+        kind: 'unavailable',
+        reason: 'needs-token',
+        stopped: true,
+      });
+
+      await vi.advanceTimersByTimeAsync(HOUR_MS);
+      expect(fetchFn).toHaveBeenCalledTimes(2);
+      // One poll at the start, then one every 5 minutes.
+      expect(findOpenPrForBranch).toHaveBeenCalledTimes(13);
+      expect(tracker.pollStatus).toEqual({ kind: 'active' });
+      expect(tracker.snapshot?.zuul).toMatchObject({ stopped: true });
+      tracker.dispose();
+    });
+
+    it('a 403 stops at once with no-access', async () => {
+      const { findOpenPrForBranch, getChangeStatus, makeResolvedContext } = createMockClients();
+      findOpenPrForBranch.mockResolvedValue(makePr());
+      getChangeStatus.mockRejectedValue(new HttpError(403, 'nope'));
+      const { tracker } = start(makeResolvedContext());
+
+      await vi.advanceTimersByTimeAsync(HOUR_MS);
+
+      expect(getChangeStatus).toHaveBeenCalledTimes(1);
+      expect(tracker.snapshot?.zuul).toMatchObject({ reason: 'no-access', stopped: true });
+      tracker.dispose();
+    });
+
+    it('500s make exactly 4 calls, then none for an hour, and GitHub keeps polling', async () => {
+      const { findOpenPrForBranch, getChangeStatus, makeResolvedContext } = createMockClients();
+      findOpenPrForBranch.mockResolvedValue(makePr());
+      getChangeStatus.mockRejectedValue(new HttpError(500, 'boom'));
+      const { tracker } = start(makeResolvedContext());
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(getChangeStatus).toHaveBeenCalledTimes(1);
+      expect(tracker.snapshot?.zuul).toMatchObject({ reason: 'unreachable', stopped: false });
+
+      await vi.advanceTimersByTimeAsync(29_999);
+      expect(getChangeStatus).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(getChangeStatus).toHaveBeenCalledTimes(2);
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(getChangeStatus).toHaveBeenCalledTimes(3);
+      expect(tracker.snapshot?.zuul).toMatchObject({ stopped: false });
+
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(getChangeStatus).toHaveBeenCalledTimes(4);
+      expect(tracker.snapshot?.zuul).toMatchObject({ reason: 'unreachable', stopped: true });
+
+      await vi.advanceTimersByTimeAsync(HOUR_MS);
+      expect(getChangeStatus).toHaveBeenCalledTimes(4);
+      // Four polls while retrying, then one every 5 minutes.
+      expect(findOpenPrForBranch).toHaveBeenCalledTimes(4 + 12);
+      expect(tracker.pollStatus).toEqual({ kind: 'active' });
+      tracker.dispose();
+    });
+
+    it('a success resets the Zuul failure count', async () => {
+      const { findOpenPrForBranch, getChangeStatus, listBuilds, makeResolvedContext } =
+        createMockClients();
+      const boom = new HttpError(500, 'boom');
+      findOpenPrForBranch.mockResolvedValue(makePr());
+      getChangeStatus
+        .mockRejectedValueOnce(boom)
+        .mockRejectedValueOnce(boom)
+        .mockResolvedValueOnce([])
+        .mockRejectedValue(boom);
+      listBuilds.mockResolvedValue([]);
+      const { tracker } = start(makeResolvedContext());
+
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(getChangeStatus).toHaveBeenCalledTimes(3);
+      expect(tracker.snapshot?.zuul).toEqual({ kind: 'ok' });
+
+      await vi.advanceTimersByTimeAsync(300_000);
+      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(getChangeStatus).toHaveBeenCalledTimes(6);
+      expect(tracker.snapshot?.zuul).toMatchObject({ stopped: false });
+
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(getChangeStatus).toHaveBeenCalledTimes(7);
+      expect(tracker.snapshot?.zuul).toMatchObject({ stopped: true });
+      tracker.dispose();
+    });
+
+    it.each([
+      ['refused the token', new HttpError(401, 'nope'), 1],
+      ['stopped responding', new HttpError(500, 'boom'), 4],
+    ] as const)(
+      'Refresh, which a new token runs, tries Zuul again after it %s',
+      async (_name, error, calls) => {
+        const { findOpenPrForBranch, getChangeStatus, listBuilds, makeResolvedContext } =
+          createMockClients();
+        findOpenPrForBranch.mockResolvedValue(makePr());
+        getChangeStatus.mockRejectedValue(error);
+        listBuilds.mockResolvedValue([]);
+        const { tracker } = start(makeResolvedContext());
+        await runRetries();
+        expect(getChangeStatus).toHaveBeenCalledTimes(calls);
+
+        getChangeStatus.mockResolvedValue([]);
+        await tracker.refresh();
+
+        expect(getChangeStatus).toHaveBeenCalledTimes(calls + 1);
+        expect(tracker.snapshot?.zuul).toEqual({ kind: 'ok' });
+        tracker.dispose();
+      },
+    );
+
+    it('a branch change tries Zuul again', async () => {
+      const { findOpenPrForBranch, getChangeStatus, listBuilds, makeResolvedContext } =
+        createMockClients();
+      findOpenPrForBranch.mockResolvedValue(makePr());
+      getChangeStatus.mockRejectedValueOnce(new HttpError(401, 'nope')).mockResolvedValue([]);
+      listBuilds.mockResolvedValue([]);
+      const { tracker, setContext } = start(makeResolvedContext());
+      await vi.advanceTimersByTimeAsync(0);
+      expect(tracker.snapshot?.zuul).toMatchObject({ stopped: true });
+
+      setContext(makeResolvedContext({ branch: 'other-branch' }));
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(getChangeStatus).toHaveBeenCalledTimes(2);
+      expect(tracker.snapshot?.zuul).toEqual({ kind: 'ok' });
+      tracker.dispose();
+    });
   });
 });

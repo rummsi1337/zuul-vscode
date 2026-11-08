@@ -10,11 +10,13 @@ export function makeResolvedContext(overrides: Partial<ResolvedContext> = {}): R
     repo: 'service',
     branch: 'feat/x',
     headSha: 'local-head-sha-ignored',
-    zuulUrl: 'https://zuul.example.com',
-    tenant: 'main',
     project: 'acme/service',
     ghe: {} as unknown as GheClient,
-    zuul: {} as unknown as ZuulClient,
+    zuul: {
+      url: 'https://zuul.example.com',
+      tenant: 'main',
+      client: {} as unknown as ZuulClient,
+    },
     ...overrides,
   };
 }

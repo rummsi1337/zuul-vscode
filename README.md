@@ -75,7 +75,7 @@ A token file holds either the token alone, or a JSON object that maps tenants to
 { "ddad": "eyJ...", "swh": "eyJ...", "*": "eyJ..." }
 ```
 
-From a JSON file, the extension uses the tenant's entry, then `*`, then the only token if the file has exactly one. Paths must be absolute or start with `~/`. Files are read on every request, so replacing a file takes effect right away.
+From a JSON file, the extension uses the tenant's entry, then `*`, then the only token if the file has exactly one. Paths must be absolute or start with `~/`. Files are read on every request, so replacing a file takes effect right away. If Zuul has already refused the old token, run **Zuul: Refresh**.
 
 For each tenant, the first match wins:
 

@@ -1,12 +1,12 @@
 import * as vscode from 'vscode';
-import { type PollError, type PrSnapshot } from '../services/prTracker';
-import { offlineStatusText, statusBarText } from '../services/statusBarText';
+import { type PollStatus, type PrSnapshot } from '../services/prTracker';
+import { statusBarView } from '../services/statusBarText';
 
 export interface StatusBarTrackerSource {
   readonly snapshot: PrSnapshot | undefined;
   readonly onDidChange: vscode.Event<PrSnapshot | undefined>;
-  readonly pollError?: PollError;
-  readonly onDidChangePollError?: vscode.Event<void>;
+  readonly pollStatus?: PollStatus;
+  readonly onDidChangePollStatus?: vscode.Event<void>;
 }
 
 export interface WaitingStateSource {
@@ -41,9 +41,9 @@ export class ZuulStatusBar implements vscode.Disposable {
       }),
     );
 
-    if (this.tracker.onDidChangePollError) {
+    if (this.tracker.onDidChangePollStatus) {
       this.disposables.push(
-        this.tracker.onDidChangePollError(() => {
+        this.tracker.onDidChangePollStatus(() => {
           this.update();
         }),
       );
@@ -67,17 +67,9 @@ export class ZuulStatusBar implements vscode.Disposable {
   }
 
   update(): void {
-    const pollError = this.tracker.pollError;
-    if (pollError) {
-      this.item.command = 'zuul.refresh';
-      this.item.text = offlineStatusText(pollError.lastSuccessAt);
-      this.item.tooltip = `Could not update from Zuul or GitHub: ${pollError.message}\nClick to refresh.`;
-      this.item.show();
-      return;
-    }
-    this.item.command = 'workbench.view.extension.zuul-explorer';
     const waiting = this.waitingSource ? this.waitingSource.waiting : this.isWaiting;
-    const info = statusBarText(this.tracker.snapshot, waiting);
+    const info = statusBarView(this.tracker.pollStatus, this.tracker.snapshot, waiting);
+    this.item.command = info ? info.command : 'workbench.view.extension.zuul-explorer';
     if (!info) {
       this.item.hide();
       return;

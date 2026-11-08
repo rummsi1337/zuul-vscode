@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { type GheClient } from '../../src/clients/gheClient';
 import { HttpError } from '../../src/clients/http';
+import { type ZuulClient } from '../../src/clients/zuulClient';
 import {
   type AuthLike,
   type GitContextSource,
@@ -102,7 +104,7 @@ describe('ZuulContextService', () => {
     service.dispose();
   });
 
-  it('sets problem to zuul-unreachable for network and 5xx errors, no-tenant for auth errors', async () => {
+  it('publishes GitHub without Zuul when tenant discovery throws', async () => {
     const { source } = createFakeGitSource(sampleGitCtx);
     const auth: AuthLike = {
       getToken: vi.fn(async () => undefined),
@@ -121,16 +123,60 @@ describe('ZuulContextService', () => {
       }),
     });
 
+    const events: (ResolvedContext | undefined)[] = [];
+    service.onDidChange((ctx) => events.push(ctx));
+
     await service.ready;
-    expect(service.problem).toBe('zuul-unreachable');
+    expect(service.problem).toBeUndefined();
+    expect(service.zuulProblem).toBe('zuul-unreachable');
+    expect(events).toHaveLength(1);
 
     error = new HttpError(503, 'Unavailable');
     await service.recompute();
-    expect(service.problem).toBe('zuul-unreachable');
+    expect(service.zuulProblem).toBe('zuul-unreachable');
+    expect(events).toHaveLength(1);
 
     error = new HttpError(401, 'Unauthorized');
     await service.recompute();
-    expect(service.problem).toBe('no-tenant');
+    expect(service.problem).toBeUndefined();
+    expect(service.zuulProblem).toBe('zuul-auth');
+    expect(service.current?.ghe).toBeDefined();
+    expect(service.current?.project).toBe('acme/service');
+    expect(service.current?.zuul).toBeUndefined();
+    // Only the Zuul problem changed, and that alone must still reach the listeners.
+    expect(events).toHaveLength(2);
+
+    error = new HttpError(403, 'Forbidden');
+    await service.recompute();
+    expect(service.zuulProblem).toBe('zuul-auth');
+    service.dispose();
+  });
+
+  it('clears the Zuul problem and adds Zuul once discovery works again', async () => {
+    const { source } = createFakeGitSource(sampleGitCtx);
+    let fail = true;
+    const service = new ZuulContextService({
+      gitContext: source,
+      auth: { getToken: vi.fn(async () => 't'), reportUnauthorized: vi.fn(async () => undefined) },
+      logger: createFakeLogger(),
+      getSettings: () => ({ url: 'https://zuul.example.com', tenant: '' }),
+      onSettingsChange: () => ({ dispose: () => undefined }),
+      showErrorMessage: vi.fn(async () => undefined),
+      resolveTenantFn: vi.fn(async () => {
+        if (fail) {
+          throw new HttpError(401, 'Unauthorized');
+        }
+        return 'main';
+      }),
+    });
+    await service.ready;
+    expect(service.zuulProblem).toBe('zuul-auth');
+
+    fail = false;
+    await service.recompute();
+
+    expect(service.zuulProblem).toBeUndefined();
+    expect(service.current?.zuul?.tenant).toBe('main');
     service.dispose();
   });
 
@@ -164,11 +210,42 @@ describe('ZuulContextService', () => {
 
     shouldThrow = true;
     await service.recompute();
-    expect(service.current).toBeUndefined();
-    expect(service.problem).toBe('zuul-unreachable');
+    expect(service.current?.zuul).toBeUndefined();
+    expect(service.current?.ghe).toBeDefined();
+    expect(service.problem).toBeUndefined();
+    expect(service.zuulProblem).toBe('zuul-unreachable');
     expect(logger.messages.some((m) => m.includes('Failed to resolve tenant'))).toBe(true);
 
+    shouldThrow = false;
+    await service.recompute();
+    expect(service.current).toBeUndefined();
+    expect(service.problem).toBe('no-tenant');
+    expect(service.zuulProblem).toBeUndefined();
+
     service.dispose();
+  });
+
+  it('clearClientCaches clears the GitHub and Zuul clients', async () => {
+    const { source } = createFakeGitSource(sampleGitCtx);
+    const auth: AuthLike = {
+      getToken: vi.fn(async () => 'token-1'),
+      reportUnauthorized: vi.fn(async () => undefined),
+    };
+    const gheClear = vi.fn();
+    const zuulClear = vi.fn();
+    const service = new ZuulContextService(source, auth, createFakeLogger(), undefined, {
+      getSettings: () => ({ url: 'https://zuul.example.com', tenant: 't' }),
+      onSettingsChange: () => ({ dispose: () => undefined }),
+      resolveTenantFn: vi.fn(async () => 't'),
+      createGheClient: () => ({ clearCache: gheClear }) as unknown as GheClient,
+      createZuulClient: () => ({ clearCache: zuulClear }) as unknown as ZuulClient,
+    });
+    await service.ready;
+
+    service.clearClientCaches();
+
+    expect(gheClear).toHaveBeenCalledTimes(1);
+    expect(zuulClear).toHaveBeenCalledTimes(1);
   });
 
   it('resolves context and recomputes when git context or settings change', async () => {
@@ -214,8 +291,8 @@ describe('ZuulContextService', () => {
       undefined,
     );
     expect(service.problem).toBeUndefined();
-    expect(firstResolved.zuulUrl).toBe('https://zuul.example.com');
-    expect(firstResolved.tenant).toBe('auto-tenant');
+    expect(firstResolved.zuul?.url).toBe('https://zuul.example.com');
+    expect(firstResolved.zuul?.tenant).toBe('auto-tenant');
     expect(firstResolved.project).toBe('acme/service');
     expect(firstResolved.branch).toBe('feat/login');
 
@@ -230,7 +307,7 @@ describe('ZuulContextService', () => {
       expect(service.current?.branch).toBe('feat/next');
     });
     expect(service.current?.ghe).toBe(firstResolved.ghe);
-    expect(service.current?.zuul).toBe(firstResolved.zuul);
+    expect(service.current?.zuul?.client).toBe(firstResolved.zuul?.client);
 
     service.dispose();
   });
@@ -328,21 +405,24 @@ describe('ZuulContextService', () => {
   });
 
   it('compares ResolvedContext values accurately with isSameResolvedContext', () => {
-    const a = {
+    const access = { url: 'https://zuul.example.com', tenant: 'main', client: {} as ZuulClient };
+    const a: ResolvedContext = {
       ...sampleGitCtx,
-      zuulUrl: 'https://zuul.example.com',
-      tenant: 'main',
       project: 'acme/service',
       ghe: {} as ResolvedContext['ghe'],
-      zuul: {} as ResolvedContext['zuul'],
+      zuul: access,
     };
 
     expect(isSameResolvedContext(undefined, undefined)).toBe(true);
     expect(isSameResolvedContext(a, undefined)).toBe(false);
     expect(isSameResolvedContext(undefined, a)).toBe(false);
     expect(isSameResolvedContext(a, { ...a })).toBe(true);
-    expect(isSameResolvedContext(a, { ...a, tenant: 'other' })).toBe(false);
-    expect(isSameResolvedContext(a, { ...a, zuulUrl: 'https://zuul2.example.com' })).toBe(false);
+    expect(isSameResolvedContext(a, { ...a, zuul: { ...access, tenant: 'other' } })).toBe(false);
+    expect(
+      isSameResolvedContext(a, { ...a, zuul: { ...access, url: 'https://zuul2.example.com' } }),
+    ).toBe(false);
+    expect(isSameResolvedContext(a, { ...a, zuul: undefined })).toBe(false);
+    expect(isSameResolvedContext({ ...a, zuul: undefined }, { ...a, zuul: undefined })).toBe(true);
   });
 
   it('prompts user to set Zuul token when a Zuul client request returns 401', async () => {
@@ -365,7 +445,7 @@ describe('ZuulContextService', () => {
           listBuilds: vi.fn(async () => {
             throw new HttpError(401, 'Unauthorized');
           }),
-        }) as unknown as ResolvedContext['zuul'],
+        }) as unknown as ZuulClient,
       showErrorMessage,
       executeCommand,
     });
@@ -373,7 +453,7 @@ describe('ZuulContextService', () => {
     await service.ready;
     expect(service.current).toBeDefined();
 
-    await expect(service.current!.zuul.listBuilds('ddad')).rejects.toThrow(HttpError);
+    await expect(service.current!.zuul!.client.listBuilds('ddad')).rejects.toThrow(HttpError);
     expect(showErrorMessage).toHaveBeenCalledWith(
       expect.stringContaining('Zuul authentication failed for tenant "ddad"'),
       'Set Zuul Token',
@@ -399,13 +479,15 @@ describe('ZuulContextService', () => {
           listBuilds: vi.fn(async () => {
             throw new HttpError(401, 'Unauthorized');
           }),
-        }) as unknown as ResolvedContext['zuul'],
+        }) as unknown as ZuulClient,
       showErrorMessage: vi.fn(async () => undefined),
       executeCommand: vi.fn(),
     });
 
     await service.ready;
-    const zuulError: unknown = await service.current!.zuul.listBuilds('ddad').catch((e) => e);
+    const zuulError: unknown = await service
+      .current!.zuul!.client.listBuilds('ddad')
+      .catch((e) => e);
 
     expect(zuulError).toBeInstanceOf(HttpError);
     expect(service.signInFor(zuulError)).toEqual({
@@ -445,8 +527,7 @@ describe('ZuulContextService', () => {
       }),
       resolveTenantFn: opts.resolveTenantFn,
       createZuulClient:
-        opts.createZuulClient ??
-        (() => ({ listBuilds: opts.listBuilds }) as unknown as ResolvedContext['zuul']),
+        opts.createZuulClient ?? (() => ({ listBuilds: opts.listBuilds }) as unknown as ZuulClient),
       showErrorMessage,
       executeCommand: vi.fn(),
     });
@@ -461,7 +542,7 @@ describe('ZuulContextService', () => {
     });
     await service.ready;
     for (let i = 0; i < 3; i++) {
-      await expect(service.current!.zuul.listBuilds('ddad')).rejects.toThrow(HttpError);
+      await expect(service.current!.zuul!.client.listBuilds('ddad')).rejects.toThrow(HttpError);
     }
     expect(showErrorMessage).toHaveBeenCalledTimes(1);
     service.dispose();
@@ -476,9 +557,9 @@ describe('ZuulContextService', () => {
       },
     });
     await service.ready;
-    await expect(service.current!.zuul.listBuilds('ddad')).rejects.toThrow(HttpError);
+    await expect(service.current!.zuul!.client.listBuilds('ddad')).rejects.toThrow(HttpError);
     candidates = ['a', 'b'];
-    await expect(service.current!.zuul.listBuilds('ddad')).rejects.toThrow(HttpError);
+    await expect(service.current!.zuul!.client.listBuilds('ddad')).rejects.toThrow(HttpError);
     expect(showErrorMessage).toHaveBeenCalledTimes(2);
     service.dispose();
   });
@@ -491,7 +572,7 @@ describe('ZuulContextService', () => {
       },
     });
     await service.ready;
-    await expect(service.current!.zuul.listBuilds('swh')).rejects.toThrow(HttpError);
+    await expect(service.current!.zuul!.client.listBuilds('swh')).rejects.toThrow(HttpError);
     expect(showErrorMessage).toHaveBeenCalledWith(
       'Your Zuul token has no access to tenant "swh".',
       'Set Zuul Token',
@@ -499,7 +580,7 @@ describe('ZuulContextService', () => {
     service.dispose();
   });
 
-  it('gives no-tenant and one popup when detection gets 401 for all tenants', async () => {
+  it('gives a GitHub-only context and one popup when detection gets 401 for all tenants', async () => {
     const raw = {
       baseUrl: 'https://zuul.example.com',
       listTenants: vi.fn(async () => [{ name: 'alpha' }, { name: 'beta' }]),
@@ -511,10 +592,13 @@ describe('ZuulContextService', () => {
       tenant: '',
       listBuilds: async () => [],
       resolveTenantFn: resolveTenant,
-      createZuulClient: () => raw as unknown as ResolvedContext['zuul'],
+      createZuulClient: () => raw as unknown as ZuulClient,
     });
     await service.ready;
-    expect(service.problem).toBe('no-tenant');
+    expect(service.problem).toBeUndefined();
+    expect(service.zuulProblem).toBe('zuul-auth');
+    expect(service.current?.ghe).toBeDefined();
+    expect(service.current?.zuul).toBeUndefined();
     expect(showErrorMessage).toHaveBeenCalledTimes(1);
     expect(showErrorMessage).toHaveBeenCalledWith('Zuul authentication failed.', 'Set Zuul Token');
     service.dispose();
@@ -535,10 +619,10 @@ describe('ZuulContextService', () => {
       tenant: '',
       listBuilds: async () => [],
       resolveTenantFn: resolveTenant,
-      createZuulClient: () => raw as unknown as ResolvedContext['zuul'],
+      createZuulClient: () => raw as unknown as ZuulClient,
     });
     await service.ready;
-    expect(service.current?.tenant).toBe('beta');
+    expect(service.current?.zuul?.tenant).toBe('beta');
     expect(showErrorMessage).not.toHaveBeenCalled();
     service.dispose();
   });

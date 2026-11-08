@@ -48,12 +48,21 @@ describe('DependsOnTreeDataProvider.removeDependsOn', () => {
       host: 'ghe.example.com',
       owner: 'acme',
       repo: 'service',
-      tenant: 't',
       project: 'acme/service',
       ghe,
-      zuul: { listProjects: vi.fn(async () => []), getChangeStatus: vi.fn(async () => []) },
+      zuul: {
+        url: 'https://zuul.example.com',
+        tenant: 't',
+        client: { listProjects: vi.fn(async () => []), getChangeStatus: vi.fn(async () => []) },
+      },
     } as unknown as ResolvedContext;
-    const snapshot: PrSnapshot = { pr, statuses: [], builds: [], fetchedAt: 0 };
+    const snapshot: PrSnapshot = {
+      pr,
+      statuses: [],
+      builds: [],
+      fetchedAt: 0,
+      zuul: { kind: 'ok' },
+    };
     const refresh = vi.fn(async () => undefined);
     const logger = createFakeLogger();
     const provider = new DependsOnTreeDataProvider(
@@ -88,7 +97,6 @@ describe('DependsOnTreeDataProvider load failures', () => {
       host: 'ghe.example.com',
       owner: 'acme',
       repo: 'service',
-      tenant: 't',
       project: 'acme/service',
       ghe: {
         getPr: vi.fn(),
@@ -96,9 +104,19 @@ describe('DependsOnTreeDataProvider load failures', () => {
           throw new Error('boom');
         }),
       },
-      zuul: { listProjects: vi.fn(async () => []), getChangeStatus: vi.fn(async () => []) },
+      zuul: {
+        url: 'https://zuul.example.com',
+        tenant: 't',
+        client: { listProjects: vi.fn(async () => []), getChangeStatus: vi.fn(async () => []) },
+      },
     } as unknown as ResolvedContext;
-    const snapshot: PrSnapshot = { pr, statuses: [], builds: [], fetchedAt: 0 };
+    const snapshot: PrSnapshot = {
+      pr,
+      statuses: [],
+      builds: [],
+      fetchedAt: 0,
+      zuul: { kind: 'ok' },
+    };
     const logger = createFakeLogger();
     const provider = new DependsOnTreeDataProvider(
       { current: ctx, onDidChange: new EventEmitter<ResolvedContext | undefined>().event },
@@ -117,6 +135,207 @@ describe('DependsOnTreeDataProvider load failures', () => {
     expect(item.label).toBe('Could not load dependencies, click to retry');
     expect(item.command?.command).toBe('zuul.refresh');
     expect(item.id).toBeUndefined();
+    provider.dispose();
+  });
+
+  it.each([
+    ['the context has no Zuul', { kind: 'ok' } as PrSnapshot['zuul'], false],
+    [
+      'the snapshot says Zuul failed',
+      {
+        kind: 'unavailable',
+        reason: 'needs-token',
+        message: 'HTTP 401',
+        stopped: true,
+      } as PrSnapshot['zuul'],
+      true,
+    ],
+  ])('lists both groups and sends no Zuul requests when %s', async (_name, zuulState, hasZuul) => {
+    const upstreamUrl = 'https://ghe.example.com/org/dep/pull/9';
+    const pr = {
+      number: 5,
+      html_url: 'https://ghe.example.com/acme/service/pull/5',
+      body: `Depends-On: ${upstreamUrl}`,
+      state: 'open',
+      merged: false,
+      base: { ref: 'main', repo: { full_name: 'acme/service' } },
+      head: { sha: 'x', ref: 'f', repo: { full_name: 'acme/service' } },
+    } as unknown as PullRequest;
+    const upstreamPr = {
+      ...pr,
+      number: 9,
+      html_url: upstreamUrl,
+      body: null,
+      head: { sha: 'y', ref: 'g', repo: { full_name: 'org/dep' } },
+    };
+    const downstream = { number: 12, html_url: 'https://ghe.example.com/acme/other/pull/12' };
+    const searchPrs = vi.fn(async () => [downstream]);
+    const listProjects = vi.fn(async () => {
+      throw new Error('HTTP 401');
+    });
+    const getChangeStatus = vi.fn(async () => {
+      throw new Error('HTTP 401');
+    });
+    const ctx = {
+      host: 'ghe.example.com',
+      owner: 'acme',
+      repo: 'service',
+      project: 'acme/service',
+      ghe: { getPr: vi.fn(async () => upstreamPr), searchPrs },
+      ...(hasZuul
+        ? {
+            zuul: {
+              url: 'https://zuul.example.com',
+              tenant: 't',
+              client: { listProjects, getChangeStatus },
+            },
+          }
+        : {}),
+    } as unknown as ResolvedContext;
+    const snapshot: PrSnapshot = {
+      pr,
+      statuses: [],
+      builds: [],
+      fetchedAt: 0,
+      zuul: hasZuul
+        ? zuulState
+        : { kind: 'unavailable', reason: 'unreachable', message: 'x', stopped: true },
+    };
+    const provider = new DependsOnTreeDataProvider(
+      { current: ctx, onDidChange: new EventEmitter<ResolvedContext | undefined>().event },
+      {
+        snapshot,
+        onDidChange: new EventEmitter<PrSnapshot | undefined>().event,
+        refresh: vi.fn(async () => undefined),
+      },
+      createFakeLogger(),
+    );
+
+    const kinds = (await provider.getChildren()).map((n) => n.kind);
+
+    expect(kinds).not.toContain('load-error');
+    expect(kinds).toContain('depends-on-group');
+    expect(kinds).toContain('needed-by-group');
+    expect(listProjects).not.toHaveBeenCalled();
+    expect(getChangeStatus).not.toHaveBeenCalled();
+    provider.dispose();
+  });
+
+  it('reloads, without Zuul data, when the snapshot flips to unavailable', async () => {
+    const upstreamUrl = 'https://ghe.example.com/org/dep/pull/9';
+    const pr = {
+      number: 5,
+      html_url: 'https://ghe.example.com/acme/service/pull/5',
+      body: `Depends-On: ${upstreamUrl}`,
+      state: 'open',
+      merged: false,
+      base: { ref: 'main', repo: { full_name: 'acme/service' } },
+      head: { sha: 'x', ref: 'f', repo: { full_name: 'acme/service' } },
+    } as unknown as PullRequest;
+    const upstreamPr = {
+      ...pr,
+      number: 9,
+      html_url: upstreamUrl,
+      body: null,
+      head: { sha: 'y', ref: 'g', repo: { full_name: 'org/dep' } },
+    };
+    const getPr = vi.fn(async () => upstreamPr);
+    const getChangeStatus = vi.fn(async () => []);
+    const ctx = {
+      host: 'ghe.example.com',
+      owner: 'acme',
+      repo: 'service',
+      project: 'acme/service',
+      ghe: { getPr, searchPrs: vi.fn(async () => []) },
+      zuul: {
+        url: 'https://zuul.example.com',
+        tenant: 't',
+        client: { listProjects: vi.fn(async () => [{ name: 'org/dep' }]), getChangeStatus },
+      },
+    } as unknown as ResolvedContext;
+    const emitter = new EventEmitter<PrSnapshot | undefined>();
+    const tracker = {
+      snapshot: {
+        pr,
+        statuses: [],
+        builds: [],
+        fetchedAt: 0,
+        zuul: { kind: 'ok' },
+      } as PrSnapshot,
+      onDidChange: emitter.event,
+      refresh: vi.fn(async () => undefined),
+    };
+    const provider = new DependsOnTreeDataProvider(
+      { current: ctx, onDidChange: new EventEmitter<ResolvedContext | undefined>().event },
+      tracker,
+      createFakeLogger(),
+    );
+
+    await provider.getChildren();
+    expect(getChangeStatus).toHaveBeenCalledTimes(1);
+    expect(getPr).toHaveBeenCalledTimes(1);
+
+    tracker.snapshot = {
+      ...tracker.snapshot,
+      zuul: { kind: 'unavailable', reason: 'needs-token', message: 'HTTP 401', stopped: true },
+    };
+    emitter.fire(tracker.snapshot);
+    await provider.getChildren();
+
+    expect(getPr).toHaveBeenCalledTimes(2);
+    expect(getChangeStatus).toHaveBeenCalledTimes(1);
+    provider.dispose();
+  });
+
+  it('fetches nothing on a snapshot change until getChildren is called', async () => {
+    const searchPrs = vi.fn(async () => []);
+    const getPr = vi.fn();
+    const pr = {
+      number: 5,
+      html_url: 'https://ghe.example.com/acme/service/pull/5',
+      body: '',
+      state: 'open',
+      merged: false,
+      base: { ref: 'main', repo: { full_name: 'acme/service' } },
+      head: { sha: 'x', ref: 'f', repo: { full_name: 'acme/service' } },
+    } as unknown as PullRequest;
+    const ctx = {
+      host: 'ghe.example.com',
+      owner: 'acme',
+      repo: 'service',
+      project: 'acme/service',
+      ghe: { getPr, searchPrs },
+      zuul: {
+        url: 'https://zuul.example.com',
+        tenant: 't',
+        client: { listProjects: vi.fn(async () => []), getChangeStatus: vi.fn(async () => []) },
+      },
+    } as unknown as ResolvedContext;
+    const emitter = new EventEmitter<PrSnapshot | undefined>();
+    const snapshot = {
+      pr,
+      statuses: [],
+      builds: [],
+      fetchedAt: 0,
+      zuul: { kind: 'ok' },
+    } as PrSnapshot;
+    const tracker = {
+      snapshot,
+      onDidChange: emitter.event,
+      refresh: vi.fn(async () => undefined),
+    };
+    const provider = new DependsOnTreeDataProvider(
+      { current: ctx, onDidChange: new EventEmitter<ResolvedContext | undefined>().event },
+      tracker,
+      createFakeLogger(),
+    );
+
+    emitter.fire(snapshot);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(searchPrs).not.toHaveBeenCalled();
+
+    await provider.getChildren();
+    expect(searchPrs).toHaveBeenCalled();
     provider.dispose();
   });
 });

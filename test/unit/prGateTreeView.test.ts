@@ -34,15 +34,23 @@ const RULES: GateRules = {
   gateStatusChecks: ['{tenant}/gate'],
 };
 
-function setup() {
+function setup(zuulState: PrSnapshot['zuul'] = { kind: 'ok' }) {
   let time = 0;
   let rules = RULES;
   const listReviews = vi.fn(async (): Promise<Review[]> => []);
+  const getChangeStatus = vi.fn(async () => [
+    {
+      pipeline: 'check',
+      queue: '',
+      live: true,
+      jobs: [{ name: 'j', running: false, result: 'SUCCESS', voting: true }],
+      itemsAhead: [],
+    },
+  ]);
   const context = {
     host: 'ghe.example.com',
     owner: 'acme',
     repo: 'service',
-    tenant: 'acme-tenant',
     ghe: {
       getPr: vi.fn(async () => PR),
       getPrRollup: vi.fn(async () => undefined),
@@ -53,19 +61,21 @@ function setup() {
       listReviews,
     },
     zuul: {
-      getChangeStatus: vi.fn(async () => [
-        {
-          pipeline: 'check',
-          queue: '',
-          live: true,
-          jobs: [{ name: 'j', running: false, result: 'SUCCESS', voting: true }],
-          itemsAhead: [],
-        },
-      ]),
+      url: 'https://zuul.example.com',
+      tenant: 'acme-tenant',
+      client: {
+        getChangeStatus,
+      },
     },
   } as unknown as ResolvedContext;
   const ctx = { current: context };
-  const snapshot: PrSnapshot = { pr: PR, statuses: [], builds: [], fetchedAt: 0 };
+  const snapshot: PrSnapshot = {
+    pr: PR,
+    statuses: [],
+    builds: [],
+    fetchedAt: 0,
+    zuul: zuulState,
+  };
   const provider = new PrGateTreeDataProvider(
     { snapshot, onDidChange: new EventEmitter<PrSnapshot | undefined>().event },
     ctx,
@@ -77,8 +87,12 @@ function setup() {
   return {
     provider,
     listReviews,
+    getChangeStatus,
     advance: (ms: number): void => {
       time += ms;
+    },
+    setZuulState: (next: PrSnapshot['zuul']): void => {
+      snapshot.zuul = next;
     },
     setRules: (next: Partial<GateRules>): void => {
       rules = { ...RULES, ...next };
@@ -114,6 +128,66 @@ describe('PrGateTreeDataProvider', () => {
         message: 'Could not load gate data: HTTP 500',
       },
     ]);
+  });
+
+  it('shows GitHub rows and is not ready when the context has no Zuul', async () => {
+    const t = setup();
+    t.moveTo({ zuul: undefined });
+
+    const report = await currentReport(t.provider);
+
+    expect(report.ready).toBe(false);
+    expect(report.blockers.map((b) => b.kind)).toContain('zuul-check');
+    expect(report.blockers.map((b) => b.kind)).not.toContain('load-error');
+    expect(t.listReviews).toHaveBeenCalled();
+    expect(t.getChangeStatus).not.toHaveBeenCalled();
+  });
+
+  it('sends no Zuul requests and is not ready when the snapshot says Zuul failed', async () => {
+    const t = setup({
+      kind: 'unavailable',
+      reason: 'needs-token',
+      message: 'HTTP 401',
+      stopped: true,
+    });
+
+    const report = await currentReport(t.provider);
+
+    expect(report.ready).toBe(false);
+    expect(report.blockers).toContainEqual(
+      expect.objectContaining({ kind: 'zuul-check', message: "Zuul check can't be read" }),
+    );
+    expect(t.listReviews).toHaveBeenCalled();
+    expect(t.getChangeStatus).not.toHaveBeenCalled();
+  });
+
+  it('reports a Zuul error as unknown instead of failing the gate', async () => {
+    const t = setup();
+    t.getChangeStatus.mockRejectedValue(new Error('HTTP 401'));
+
+    const report = await currentReport(t.provider);
+
+    expect(report.ready).toBe(false);
+    expect(report.blockers.map((b) => b.kind)).not.toContain('load-error');
+    expect(report.blockers.map((b) => b.kind)).toContain('zuul-check');
+  });
+
+  it('rebuilds the report when only the snapshot Zuul state flips', async () => {
+    const t = setup();
+    expect((await currentReport(t.provider)).ready).toBe(true);
+    expect(t.getChangeStatus).toHaveBeenCalledTimes(1);
+
+    t.advance(1);
+    t.setZuulState({
+      kind: 'unavailable',
+      reason: 'needs-token',
+      message: 'HTTP 401',
+      stopped: true,
+    });
+
+    const report = await currentReport(t.provider);
+    expect(report.ready).toBe(false);
+    expect(t.getChangeStatus).toHaveBeenCalledTimes(1);
   });
 
   it('does not reuse a report when the rules change', async () => {

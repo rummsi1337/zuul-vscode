@@ -720,6 +720,18 @@ describe('Zuul gate status checks', () => {
     });
   });
 
+  it('removes names containing {tenant} when there is no tenant', () => {
+    const rules = resolveGateRules(
+      makeDefaultRules({
+        gateStatusChecks: ['{tenant}/gate', 'static'],
+        requiredStatusChecks: { '*': ['{tenant}/gate', 'ci/unit'], 'acme/app': ['{tenant}/check'] },
+      }),
+      undefined,
+    );
+    expect(rules.gateStatusChecks).toEqual(['static']);
+    expect(rules.requiredStatusChecks).toEqual({ '*': ['ci/unit'], 'acme/app': [] });
+  });
+
   it('excuses `blocked` when the settings list the gate as {tenant}/gate', () => {
     const report = evaluateGate(
       makeReadyPr({

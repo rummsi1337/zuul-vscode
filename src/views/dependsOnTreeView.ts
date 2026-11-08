@@ -246,12 +246,16 @@ export class DependsOnTreeDataProvider
     if (!currentCtx) {
       return undefined;
     }
-    return `${currentCtx.tenant}:${currentCtx.project}#${snapshot.pr.number}`;
+    return `${currentCtx.zuul?.tenant ?? ''}:${currentCtx.project}#${snapshot.pr.number}`;
   }
 
   private getCacheKey(snapshot: PrSnapshot): string | undefined {
     const prKey = this.getPrKey(snapshot);
-    return prKey === undefined ? undefined : `${prKey}\n${snapshot.pr.body ?? ''}`;
+    if (prKey === undefined) {
+      return undefined;
+    }
+    const zuulPart = snapshot.zuul.kind === 'ok' && this.ctx.current?.zuul ? 'zuul' : 'no-zuul';
+    return `${prKey}\n${zuulPart}\n${snapshot.pr.body ?? ''}`;
   }
 
   private needsFetch(snapshot: PrSnapshot): boolean {
@@ -290,11 +294,8 @@ export class DependsOnTreeDataProvider
       this.loadFailed = false;
     }
 
+    // No fetch here: a hidden view never calls getChildren, so it loads nothing.
     this.emitter.fire();
-
-    if (this.needsFetch(snapshot)) {
-      void this.ensureDataLoaded(snapshot);
-    }
   }
 
   private ensureDataLoaded(snapshot: PrSnapshot): Promise<void> {
@@ -310,14 +311,18 @@ export class DependsOnTreeDataProvider
       this.cachedPrKey = prKey;
       this.cachedBody = body;
       try {
+        // When Zuul is failing, only the poll talks to it.
+        const zuul = snapshot.zuul.kind === 'ok' ? currentCtx.zuul : undefined;
         const service = new DependsOnService(
           currentCtx.ghe,
-          currentCtx.zuul,
-          currentCtx.tenant,
-          async () => {
-            const projects = await currentCtx.zuul.listProjects(currentCtx.tenant);
-            return buildTenantProjectSet(projects, currentCtx.project);
-          },
+          zuul?.client,
+          zuul?.tenant,
+          zuul
+            ? async () => {
+                const projects = await zuul.client.listProjects(zuul.tenant);
+                return buildTenantProjectSet(projects, currentCtx.project);
+              }
+            : undefined,
         );
 
         const [upstream, downstream] = await Promise.all([
@@ -328,7 +333,7 @@ export class DependsOnTreeDataProvider
         // Only ask Zuul for the queue when there is something to compare it with.
         let queueAhead: QueuedRef[] | undefined;
         let transitiveUpstream: Set<string> | undefined;
-        if (parseDependsOn(snapshot.pr.body).length > 0 && snapshot.statuses.length > 0) {
+        if (parseDependsOn(snapshot.pr.body).length > 0 && snapshot.statuses.length > 0 && zuul) {
           try {
             [queueAhead, transitiveUpstream] = await Promise.all([
               service.getQueueAhead(snapshot.pr),

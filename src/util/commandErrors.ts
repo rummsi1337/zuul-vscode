@@ -1,11 +1,19 @@
 import { HttpError } from '../clients/http';
+import { RateLimitedError } from '../clients/rateLimit';
+import { formatClock } from './clock';
 import { type Logger } from './logger';
 
 export const SIGN_IN_ACTION = 'Sign in';
 const MAX_REASON_LENGTH = 120;
 
 export function isRateLimitError(err: unknown): boolean {
-  return err instanceof HttpError && err.status === 403 && /rate limit/i.test(err.body);
+  if (err instanceof RateLimitedError) {
+    return true;
+  }
+  return (
+    err instanceof HttpError &&
+    (err.status === 429 || (err.status === 403 && /rate limit/i.test(err.body)))
+  );
 }
 
 /** A 401, or a 403 that is not a rate limit, can be fixed by signing in. */
@@ -21,8 +29,11 @@ export function shortReason(err: unknown): string {
     if (err.status === 401) {
       return 'not signed in, or the token was rejected (HTTP 401)';
     }
+    if (err instanceof RateLimitedError) {
+      return `rate limit reached, try again at ${formatClock(err.retryAt)}`;
+    }
     if (isRateLimitError(err)) {
-      return 'rate limit reached (HTTP 403)';
+      return `rate limit reached (HTTP ${err.status})`;
     }
     if (err.status === 403) {
       return 'access denied (HTTP 403)';

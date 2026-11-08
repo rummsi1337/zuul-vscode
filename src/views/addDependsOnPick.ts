@@ -221,22 +221,33 @@ export async function pickAndAddDependsOn(options: AddDependsOnOptions): Promise
     return false;
   }
 
+  const zuul = snapshot.zuul.kind === 'ok' ? currentCtx.zuul : undefined;
+
   const selfKey = prRefKey({
     owner: currentCtx.owner,
     repo: currentCtx.repo,
     number: snapshot.pr.number,
   });
 
-  let tenantProjectsPromise: Promise<Set<string>> | undefined;
-  const getTenantProjects = (): Promise<Set<string>> => {
+  // Undefined means the tenant's projects can't be read, so no tenant filter is applied.
+  let tenantProjectsPromise: Promise<Set<string> | undefined> | undefined;
+  const getTenantProjects = (): Promise<Set<string> | undefined> => {
     if (!tenantProjectsPromise) {
       tenantProjectsPromise = (async () => {
+        if (!zuul) {
+          options.logger.warn(
+            '[DependsOn] Zuul is not available; skipping the tenant check for Depends-On',
+          );
+          return undefined;
+        }
         try {
-          const projects = await currentCtx.zuul.listProjects(currentCtx.tenant);
+          const projects = await zuul.client.listProjects(zuul.tenant);
           return buildTenantProjectSet(projects, currentCtx.project);
         } catch (err) {
-          options.logger.error('[DependsOn] Failed to list tenant projects', err);
-          return buildTenantProjectSet([], currentCtx.project);
+          options.logger.warn(
+            `[DependsOn] Failed to list tenant projects; skipping the tenant check: ${err instanceof Error ? err.message : String(err)}`,
+          );
+          return undefined;
         }
       })();
     }
@@ -292,7 +303,7 @@ export async function pickAndAddDependsOn(options: AddDependsOnOptions): Promise
       if (seenRepos.has(repoKey)) {
         continue;
       }
-      if (!isInTenant(gitCtx.owner, gitCtx.repo, tenantProjects)) {
+      if (tenantProjects && !isInTenant(gitCtx.owner, gitCtx.repo, tenantProjects)) {
         continue;
       }
       seenRepos.add(repoKey);
@@ -330,8 +341,14 @@ export async function pickAndAddDependsOn(options: AddDependsOnOptions): Promise
 
   const tenantProjects = await getTenantProjects();
   const sameHost = normalizeHost(candidate.host) === normalizeHost(currentCtx.host);
-  if (!sameHost || !isInTenant(candidate.owner, candidate.repo, tenantProjects)) {
-    const message = `Repository ${candidate.owner}/${candidate.repo} is not part of tenant ${currentCtx.tenant}`;
+  if (!sameHost) {
+    const message = `Depends-On points to another host (${candidate.host})`;
+    options.logger.warn(`[DependsOn] ${message}`);
+    void vscode.window.showErrorMessage(message);
+    return false;
+  }
+  if (tenantProjects && !isInTenant(candidate.owner, candidate.repo, tenantProjects)) {
+    const message = `Repository ${candidate.owner}/${candidate.repo} is not part of tenant ${currentCtx.zuul?.tenant ?? ''}`;
     options.logger.warn(`[DependsOn] ${message}`);
     void vscode.window.showErrorMessage(message);
     return false;
@@ -339,9 +356,9 @@ export async function pickAndAddDependsOn(options: AddDependsOnOptions): Promise
 
   const service = new DependsOnService(
     currentCtx.ghe,
-    currentCtx.zuul,
-    currentCtx.tenant,
-    async () => tenantProjects,
+    zuul?.client,
+    zuul?.tenant,
+    tenantProjects ? async () => tenantProjects : undefined,
   );
 
   const createsCycle = await service.wouldCreateCycle(

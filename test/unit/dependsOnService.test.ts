@@ -248,6 +248,28 @@ describe('DependsOnService.getUpstream', () => {
     expect(maxInFlight).toBeGreaterThan(1);
   });
 
+  it('treats every repo as in the tenant when the projects cannot be read', async () => {
+    const ghe = {
+      getPr: vi.fn(async (owner: string, repo: string, num: number) =>
+        makePr({ owner, repo, number: num }),
+      ),
+      searchPrs: vi.fn(),
+    };
+    const zuul = { getChangeStatus: vi.fn().mockResolvedValue([]) };
+    const service = new DependsOnService(ghe, zuul, 'tenant-a', async () => {
+      throw new Error('HTTP 401');
+    });
+
+    const deps = await service.getUpstream(
+      makePr({ body: 'Depends-On: https://ghe.example.com/org/repo/pull/7' }),
+    );
+
+    expect(deps).toHaveLength(1);
+    expect(deps[0].inTenant).toBe(true);
+    expect(deps[0].warning).toBeUndefined();
+    expect(zuul.getChangeStatus).not.toHaveBeenCalled();
+  });
+
   it('falls back to zuul.listProjects when tenantProjects callback is omitted', async () => {
     const ghe = {
       getPr: vi.fn(async (owner: string, repo: string, num: number) =>

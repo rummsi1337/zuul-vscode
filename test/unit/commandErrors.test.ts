@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { HttpError } from '../../src/clients/http';
+import { RateLimitedError } from '../../src/clients/rateLimit';
 import {
   formatCommandError,
+  isRateLimitError,
   offersSignIn,
   shortReason,
   SIGN_IN_ACTION,
@@ -118,5 +120,19 @@ describe('wrapCommand', () => {
 
   it('formats an action and a reason', () => {
     expect(formatCommandError('refresh', new Error('x'))).toBe('Could not refresh: x');
+  });
+});
+
+describe('rate limit errors', () => {
+  it('recognises RateLimitedError and 429 and names the retry time', () => {
+    const retryAt = new Date(2026, 10, 8, 14, 32).getTime();
+    const limited = new RateLimitedError(403, 'x', retryAt);
+    expect(isRateLimitError(limited)).toBe(true);
+    expect(isRateLimitError(new HttpError(429, 'slow down'))).toBe(true);
+    expect(isRateLimitError(new HttpError(403, 'forbidden'))).toBe(false);
+    expect(shortReason(limited)).toBe('rate limit reached, try again at 14:32');
+    expect(shortReason(new HttpError(429, 'x'))).toBe('rate limit reached (HTTP 429)');
+    expect(offersSignIn(limited)).toBe(false);
+    expect(offersSignIn(new HttpError(429, 'x'))).toBe(false);
   });
 });

@@ -69,12 +69,15 @@ export class PrGateTreeDataProvider
     if (!snapshot || !rc) {
       return undefined;
     }
-    const rules = resolveGateRules(this.getRules(), rc.tenant);
+    const rules = resolveGateRules(this.getRules(), rc.zuul?.tenant);
+    // When Zuul is failing, only the poll talks to it.
+    const zuul = snapshot.zuul.kind === 'ok' ? rc.zuul : undefined;
     const key = JSON.stringify([
       rc.host,
       rc.owner,
       rc.repo,
-      rc.tenant,
+      rc.zuul?.tenant ?? '',
+      zuul ? 'zuul' : 'no-zuul',
       snapshot.pr.number,
       snapshot.pr.head.sha,
       snapshot.pr.updated_at ?? '',
@@ -84,8 +87,8 @@ export class PrGateTreeDataProvider
       return await this.cache.get(key, async () => {
         try {
           const [root, upstream] = await Promise.all([
-            collectGateFacts(rc.ghe, rc.zuul, rc.tenant, snapshot.pr),
-            collectUpstreamFacts(rc.ghe, rc.zuul, rc.tenant, snapshot.pr),
+            collectGateFacts(rc.ghe, zuul?.client, zuul?.tenant, snapshot.pr),
+            collectUpstreamFacts(rc.ghe, zuul?.client, zuul?.tenant, snapshot.pr),
           ]);
           return evaluateGate(root, upstream, rules);
         } catch (err) {

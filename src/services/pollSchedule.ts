@@ -1,8 +1,9 @@
 import { type ChangeStatus } from '../clients/zuulTypes';
 
-export const FAST_POLL_DELAY_MS = 3_000;
-export const QUEUED_POLL_DELAY_MS = 15_000;
-export const IDLE_POLL_DELAY_MS = 60_000;
+export const TRIGGER_POLL_DELAY_MS = 15_000;
+export const IDLE_POLL_MULTIPLIER = 5;
+/** Wait before each retry after a failure. One more failure after the last entry stops polling. */
+export const RETRY_DELAYS_MS = [30_000, 60_000, 120_000];
 
 export interface PollSnapshotLike {
   readonly statuses: readonly ChangeStatus[];
@@ -10,14 +11,15 @@ export interface PollSnapshotLike {
 
 export function nextPollDelayMs(
   snapshot: PollSnapshotLike | undefined,
+  intervalMs: number,
   fastUntil?: number,
   now: number = Date.now(),
 ): number {
   if (fastUntil !== undefined && now < fastUntil) {
-    return FAST_POLL_DELAY_MS;
+    return Math.min(TRIGGER_POLL_DELAY_MS, intervalMs);
   }
-  if (snapshot && snapshot.statuses.length > 0) {
-    return QUEUED_POLL_DELAY_MS;
+  if (snapshot && snapshot.statuses.some((s) => s.live)) {
+    return intervalMs;
   }
-  return IDLE_POLL_DELAY_MS;
+  return intervalMs * IDLE_POLL_MULTIPLIER;
 }

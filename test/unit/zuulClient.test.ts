@@ -124,10 +124,31 @@ describe('ZuulClient', () => {
       .mockResolvedValueOnce(new Response('Not Found', { status: 404 }))
       .mockResolvedValueOnce(new Response('Server Error', { status: 500 }));
 
-    const client = new ZuulClient('https://zuul.example.com', undefined, fetchFn);
+    let time = 0;
+    const client = new ZuulClient('https://zuul.example.com', undefined, fetchFn, () => time);
 
     expect(await client.getChangeStatus('acme', 42, 'deadbeef')).toEqual([]);
+    time += 10_000;
     await expect(client.getChangeStatus('acme', 42, 'deadbeef')).rejects.toThrowError(HttpError);
+  });
+
+  it('reuses change status and builds for 5 seconds, ignoring project case', async () => {
+    const fetchFn = vi
+      .fn<typeof fetch>()
+      .mockImplementation(async () => new Response('[]', { status: 200 }));
+    let time = 0;
+    const client = new ZuulClient('https://zuul.example.com', undefined, fetchFn, () => time);
+
+    await client.getChangeStatus('acme', 42, 'abc');
+    await client.getChangeStatus('acme', 42, 'abc');
+    await client.listBuilds('acme', { project: 'Org/Repo', change: 42 });
+    await client.listBuilds('acme', { project: 'org/repo', change: 42 });
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+
+    time += 6_000;
+    await client.getChangeStatus('acme', 42, 'abc');
+    await client.listBuilds('acme', { project: 'org/repo', change: 42 });
+    expect(fetchFn).toHaveBeenCalledTimes(4);
   });
 
   it('maps both flat build fields and nested ref objects in listBuilds and listBuildsets', async () => {
@@ -474,6 +495,7 @@ describe('ZuulClient', () => {
   });
 
   it('starts the next call for a tenant with the token that worked', async () => {
+    let time = 0;
     const fetchFn = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(new Response('Unauthorized', { status: 401 }))
@@ -483,11 +505,13 @@ describe('ZuulClient', () => {
       'https://zuul.example.com',
       async () => ['bad-token', 'good-token'],
       fetchFn,
+      () => time,
     );
 
     await client.listBuilds('acme');
     expect(fetchFn).toHaveBeenCalledTimes(2);
 
+    time += 10_000;
     await client.listBuilds('acme');
     expect(fetchFn).toHaveBeenCalledTimes(3);
     expect(fetchFn.mock.calls[2][1]?.headers).toEqual(

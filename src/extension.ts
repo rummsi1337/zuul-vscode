@@ -3,7 +3,11 @@ import { AuthService } from './auth/authService';
 import { GhCliAuthProvider } from './auth/ghCliAuthProvider';
 import { PatAuthProvider, validatePatWithGhe } from './auth/patAuthProvider';
 import { ZuulTokenProvider } from './auth/zuulTokenProvider';
-import { readWorkspaceSettings } from './config/settings';
+import {
+  onPollIntervalChanged,
+  onTokenSettingsChanged,
+  readWorkspaceSettings,
+} from './config/settings';
 import { ZuulContextService } from './context/zuulContext';
 import { GitContextService } from './git/gitContext';
 import { normalizeHost } from './git/remoteUrl';
@@ -23,6 +27,7 @@ import {
   type UpstreamDepNode,
 } from './views/dependsOnTreeView';
 import { PrGateTreeDataProvider } from './views/prGateTreeView';
+import { pollStateName, sidebarMessage } from './services/statusBarText';
 import { ZuulStatusBar } from './views/statusBar';
 
 async function resolveTargetHost(
@@ -78,7 +83,9 @@ export function activate(context: vscode.ExtensionContext): void {
     logger,
     cache: context.workspaceState,
   });
-  const prTracker = new PrTracker(zuulContext, logger);
+  const prTracker = new PrTracker(zuulContext, logger, {
+    getPollIntervalMs: () => readWorkspaceSettings().pollIntervalSeconds * 1000,
+  });
   const triggerService = new TriggerService(zuulContext, prTracker, logger);
   const statusBar = new ZuulStatusBar(prTracker, triggerService);
   const buildsTree = new BuildsTreeDataProvider(prTracker);
@@ -122,10 +129,33 @@ export function activate(context: vscode.ExtensionContext): void {
       handler,
     );
 
+  const treeViews = [
+    vscode.window.createTreeView('zuul.gateReadiness', { treeDataProvider: gateTree }),
+    vscode.window.createTreeView('zuul.builds', { treeDataProvider: buildsTree }),
+    vscode.window.createTreeView('zuul.dependencies', { treeDataProvider: dependsOnTree }),
+  ];
+  const refreshPollState = (): void => {
+    const message = sidebarMessage(prTracker.pollStatus, prTracker.snapshot);
+    for (const view of treeViews) {
+      view.message = message;
+    }
+    void vscode.commands.executeCommand(
+      'setContext',
+      'zuul.pollState',
+      pollStateName(prTracker.pollStatus),
+    );
+  };
+  refreshPollState();
+
   let promptedNoZuulUrl = false;
   const checkZuulContextProblem = (): void => {
     const problem = zuulContext.problem ?? (zuulContext.current ? 'none' : 'loading');
     void vscode.commands.executeCommand('setContext', 'zuul.contextProblem', problem);
+    void vscode.commands.executeCommand(
+      'setContext',
+      'zuul.zuulProblem',
+      zuulContext.zuulProblem ?? 'none',
+    );
     if (!promptedNoZuulUrl && zuulContext.problem === 'no-zuul-url') {
       promptedNoZuulUrl = true;
       void Promise.resolve(
@@ -147,9 +177,8 @@ export function activate(context: vscode.ExtensionContext): void {
     buildsTree,
     dependsOnTree,
     gateTree,
-    vscode.window.registerTreeDataProvider('zuul.gateReadiness', gateTree),
-    vscode.window.registerTreeDataProvider('zuul.builds', buildsTree),
-    vscode.window.registerTreeDataProvider('zuul.dependencies', dependsOnTree),
+    ...treeViews,
+    prTracker.onDidChangePollStatus(() => refreshPollState()),
     vscode.commands.registerCommand(OPEN_BUILD_LOG_COMMAND, async (target?: string | JobNode) => {
       await buildsTree.openJobLog(target);
     }),
@@ -161,6 +190,7 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
     prTracker.onDidChange((snapshot) => {
       void vscode.commands.executeCommand('setContext', HAS_PR_CONTEXT_KEY, snapshot !== undefined);
+      refreshPollState();
     }),
     gitContext.onDidChange((ctx) => {
       if (ctx) {
@@ -171,6 +201,12 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     zuulContext.onDidChange(() => {
       checkZuulContextProblem();
+    }),
+    onTokenSettingsChanged(() => {
+      void vscode.commands.executeCommand('zuul.refresh');
+    }),
+    onPollIntervalChanged(() => {
+      prTracker.applyPollInterval();
     }),
     vscode.commands.registerCommand('zuul.setGhePat', async (hostArg?: unknown) => {
       const host = await resolveTargetHost(gitContext, hostArg);
@@ -197,11 +233,11 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('zuul.setTenantToken', async (tenantArg?: unknown) => {
       const explicit =
         typeof tenantArg === 'string' && tenantArg.trim().length > 0 ? tenantArg.trim() : undefined;
-      const suggested = zuulContext.current?.tenant || readWorkspaceSettings().tenant || undefined;
+      const suggested =
+        zuulContext.current?.zuul?.tenant || readWorkspaceSettings().tenant || undefined;
       const token = await zuulTokenProvider.setToken(explicit, suggested);
       if (token) {
-        await zuulContext.recompute();
-        await prTracker.refresh();
+        await vscode.commands.executeCommand('zuul.refresh');
       }
     }),
     vscode.commands.registerCommand('zuul.clearTenantToken', async (tenantArg?: unknown) => {
@@ -245,14 +281,14 @@ export function activate(context: vscode.ExtensionContext): void {
           'Tokens from zuul.tokens or zuul.tokenFile still apply.',
         );
       }
-      await zuulContext.recompute();
-      await prTracker.refresh();
+      await vscode.commands.executeCommand('zuul.refresh');
     }),
     vscode.commands.registerCommand(
       'zuul.refresh',
       guard(
         () => 'refresh Zuul data',
         async () => {
+          zuulContext.clearClientCaches();
           await zuulContext.recompute();
           dependsOnTree.invalidateCache();
           gateTree.invalidateCache();

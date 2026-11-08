@@ -189,7 +189,9 @@ export const window = {
     hide: vi.fn(),
     dispose: vi.fn(),
   })),
-  createTreeView: vi.fn(),
+  createTreeView: vi.fn(
+    () => ({ message: undefined as string | undefined, dispose: vi.fn() }) as never,
+  ),
   registerTreeDataProvider: vi.fn(),
   state: { focused: true, active: true },
   onDidChangeWindowState: vi.fn(() => new Disposable()),

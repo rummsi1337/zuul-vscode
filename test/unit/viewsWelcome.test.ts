@@ -68,6 +68,8 @@ const BASE: Ctx = {
   'zuul.authChecked': true,
   'zuul.signedIn': true,
   'zuul.hasPr': false,
+  'zuul.zuulProblem': 'none',
+  'zuul.pollState': 'no-pr',
 };
 
 const STATES: { name: string; ctx: Ctx; expected: Record<string, string> }[] = [
@@ -92,9 +94,36 @@ const STATES: { name: string; ctx: Ctx; expected: Record<string, string> }[] = [
     expected: all('Could not resolve a Zuul tenant'),
   },
   {
-    name: 'unreachable',
-    ctx: { ...BASE, 'zuul.contextProblem': 'zuul-unreachable' },
-    expected: all('Could not reach Zuul'),
+    name: 'Zuul refused the token, pull request found',
+    ctx: { ...BASE, 'zuul.hasPr': true, 'zuul.zuulProblem': 'zuul-auth' },
+    expected: {
+      'zuul.gateReadiness': '',
+      'zuul.dependencies': '',
+      'zuul.builds': '',
+    },
+  },
+  {
+    name: 'Zuul unreachable, pull request found',
+    ctx: { ...BASE, 'zuul.hasPr': true, 'zuul.zuulProblem': 'zuul-unreachable' },
+    expected: {
+      'zuul.gateReadiness': '',
+      'zuul.dependencies': '',
+      'zuul.builds': '',
+    },
+  },
+  {
+    name: 'Zuul unreachable, no pull request',
+    ctx: { ...BASE, 'zuul.zuulProblem': 'zuul-unreachable' },
+    expected: all('No pull request found'),
+  },
+  {
+    name: 'Zuul problem key not set yet, pull request found',
+    ctx: { ...BASE, 'zuul.hasPr': true, 'zuul.zuulProblem': undefined },
+    expected: {
+      'zuul.gateReadiness': '',
+      'zuul.dependencies': '',
+      'zuul.builds': 'No Zuul builds for this pull request yet.',
+    },
   },
   {
     name: 'loading (set to loading)',
@@ -120,6 +149,31 @@ const STATES: { name: string; ctx: Ctx; expected: Record<string, string> }[] = [
     name: 'token not checked yet, no pull request',
     ctx: { ...BASE, 'zuul.authChecked': undefined, 'zuul.signedIn': undefined },
     expected: all('No pull request found'),
+  },
+  {
+    name: 'load failed (not a missing pull request)',
+    ctx: { ...BASE, 'zuul.pollState': 'failed' },
+    expected: all('Could not load data from GitHub'),
+  },
+  {
+    name: 'GitHub failing, still retrying',
+    ctx: { ...BASE, 'zuul.pollState': 'retrying' },
+    expected: all('Could not load data from GitHub, retrying'),
+  },
+  {
+    name: 'no token while retrying',
+    ctx: { ...BASE, 'zuul.signedIn': false, 'zuul.pollState': 'retrying' },
+    expected: all('No GitHub token available'),
+  },
+  {
+    name: 'no token while polling stopped on auth',
+    ctx: { ...BASE, 'zuul.signedIn': false, 'zuul.pollState': 'auth' },
+    expected: all('No GitHub token available'),
+  },
+  {
+    name: 'rate limited',
+    ctx: { ...BASE, 'zuul.pollState': 'rate-limited' },
+    expected: all('Could not load data from GitHub'),
   },
   {
     name: 'pull request found',

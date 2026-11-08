@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   onSettingsChanged,
+  onPollIntervalChanged,
+  onTokenSettingsChanged,
   readGheHost,
   readSettings,
   readWorkspaceSettings,
@@ -37,7 +39,19 @@ describe('settings', () => {
         blockingLabels: ['do-not-merge', 'wip'],
         gateStatusChecks: ['{tenant}/gate'],
       },
+      pollIntervalSeconds: 60,
     });
+  });
+
+  it('clamps pollIntervalSeconds to 10..3600 and falls back to 60', () => {
+    const read = (value: unknown) =>
+      readSettings((key) => (key === 'pollIntervalSeconds' ? value : undefined))
+        .pollIntervalSeconds;
+    expect(read(5)).toBe(10);
+    expect(read(30)).toBe(30);
+    expect(read(99999)).toBe(3600);
+    expect(read('fast')).toBe(60);
+    expect(read(Number.NaN)).toBe(60);
   });
 
   it('reads valid configured values and strips trailing slashes from url', () => {
@@ -89,6 +103,7 @@ describe('settings', () => {
         blockingLabels: ['hold'],
         gateStatusChecks: ['my-tenant/gate'],
       },
+      pollIntervalSeconds: 60,
     });
   });
 
@@ -129,6 +144,7 @@ describe('settings', () => {
         blockingLabels: ['do-not-merge', 'wip'],
         gateStatusChecks: ['{tenant}/gate'],
       },
+      pollIntervalSeconds: 60,
     });
   });
 
@@ -206,6 +222,53 @@ describe('settings', () => {
         url: 'https://zuul.internal',
       }),
     );
+  });
+
+  it('notifies onPollIntervalChanged only for zuul.pollIntervalSeconds', () => {
+    let capturedListener: Listener<ConfigurationChangeEvent> | undefined;
+    workspace.onDidChangeConfiguration.mockImplementationOnce((listener) => {
+      capturedListener = listener;
+      return new Disposable();
+    });
+    const changed = (setting: string): ConfigurationChangeEvent => ({
+      affectsConfiguration: (section) => section === 'zuul' || section === setting,
+    });
+
+    const cb = vi.fn();
+    onPollIntervalChanged(cb);
+
+    capturedListener?.(changed('zuul.tokens'));
+    expect(cb).not.toHaveBeenCalled();
+
+    capturedListener?.(changed('zuul.pollIntervalSeconds'));
+    expect(cb).toHaveBeenCalledTimes(1);
+  });
+
+  it('notifies onTokenSettingsChanged only for the settings that decide the tokens', () => {
+    let capturedListener: Listener<ConfigurationChangeEvent> | undefined;
+    workspace.onDidChangeConfiguration.mockImplementationOnce((listener) => {
+      capturedListener = listener;
+      return new Disposable();
+    });
+    const changed = (setting: string): ConfigurationChangeEvent => ({
+      affectsConfiguration: (section) => section === 'zuul' || section === setting,
+    });
+
+    const cb = vi.fn();
+    const disposable = onTokenSettingsChanged(cb);
+    expect(disposable).toBeInstanceOf(Disposable);
+
+    capturedListener?.(changed('zuul.pollIntervalSeconds'));
+    expect(cb).not.toHaveBeenCalled();
+
+    capturedListener?.(changed('zuul.tokens'));
+    expect(cb).toHaveBeenCalledTimes(1);
+
+    capturedListener?.(changed('zuul.tokenFile'));
+    expect(cb).toHaveBeenCalledTimes(2);
+
+    capturedListener?.(changed('zuul.auth.method'));
+    expect(cb).toHaveBeenCalledTimes(3);
   });
 });
 

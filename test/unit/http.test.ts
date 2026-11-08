@@ -1,6 +1,6 @@
 import { gzipSync } from 'node:zlib';
 import { describe, expect, it, vi } from 'vitest';
-import { HttpClient, HttpError } from '../../src/clients/http';
+import { HttpClient, HttpError, NoTokenError } from '../../src/clients/http';
 
 function jsonResponse(data: unknown, status = 200, headers?: Record<string, string>): Response {
   return new Response(JSON.stringify(data), {
@@ -274,5 +274,149 @@ describe('HttpClient', () => {
     expect(warns).toContain(
       '[HTTP] GET https://zuul.example.com/api/broken -> 500: Internal Server Error',
     );
+  });
+
+  describe('conditionalGet', () => {
+    const base = 'https://ghe.example.com/api/v3';
+    const sentHeaders = (fetchFn: ReturnType<typeof vi.fn<typeof fetch>>, i: number) =>
+      (fetchFn.mock.calls[i]?.[1] as { headers: Record<string, string> }).headers;
+
+    it('sends If-None-Match on the second GET and returns the first body on 304', async () => {
+      const fetchFn = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(jsonResponse({ a: 1 }, 200, { ETag: '"v1"', Link: 'x' }))
+        .mockResolvedValueOnce(new Response(null, { status: 304 }));
+      const client = new HttpClient({ baseUrl: base, fetchFn, conditionalGet: true });
+
+      await client.getJsonWithHeaders('/x');
+      const second = await client.getJsonWithHeaders<{ a: number }>('/x');
+
+      expect(sentHeaders(fetchFn, 0)['If-None-Match']).toBeUndefined();
+      expect(sentHeaders(fetchFn, 1)['If-None-Match']).toBe('"v1"');
+      expect(second.data).toEqual({ a: 1 });
+      expect(second.headers.get('link')).toBe('x');
+    });
+
+    it('uses If-Modified-Since when only last-modified is present', async () => {
+      const lm = 'Wed, 21 Oct 2015 07:28:00 GMT';
+      const fetchFn = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(jsonResponse({ a: 1 }, 200, { 'Last-Modified': lm }))
+        .mockResolvedValueOnce(new Response(null, { status: 304 }));
+      const client = new HttpClient({ baseUrl: base, fetchFn, conditionalGet: true });
+      await client.getJson('/x');
+      await client.getJson('/x');
+      expect(sentHeaders(fetchFn, 1)['If-Modified-Since']).toBe(lm);
+      expect(sentHeaders(fetchFn, 1)['If-None-Match']).toBeUndefined();
+    });
+
+    it('revalidates each page of a two-page list on its own', async () => {
+      const fetchFn = vi.fn<typeof fetch>(async (url, init) => {
+        const h = (init as { headers: Record<string, string> }).headers;
+        const etag = String(url).includes('page=2') ? '"p2"' : '"p1"';
+        if (h['If-None-Match'] === etag) return new Response(null, { status: 304 });
+        return jsonResponse([1], 200, { ETag: etag });
+      });
+      const client = new HttpClient({ baseUrl: base, fetchFn, conditionalGet: true });
+      await client.getJson('/list');
+      await client.getJson('/list', { page: 2 });
+      await client.getJson('/list');
+      await client.getJson('/list', { page: 2 });
+
+      expect(fetchFn).toHaveBeenCalledTimes(4);
+      expect(sentHeaders(fetchFn, 2)['If-None-Match']).toBe('"p1"');
+      expect(sentHeaders(fetchFn, 3)['If-None-Match']).toBe('"p2"');
+    });
+
+    it('drops stored entries when the Authorization value changes', async () => {
+      let token = 'Bearer a';
+      const fetchFn = vi.fn<typeof fetch>(async () =>
+        jsonResponse({ a: 1 }, 200, { ETag: '"v1"' }),
+      );
+      const client = new HttpClient({
+        baseUrl: base,
+        fetchFn,
+        conditionalGet: true,
+        getAuthHeader: async () => token,
+      });
+      await client.getJson('/x');
+      token = 'Bearer b';
+      await client.getJson('/x');
+      expect(sentHeaders(fetchFn, 1)['If-None-Match']).toBeUndefined();
+      await client.getJson('/x');
+      expect(sentHeaders(fetchFn, 2)['If-None-Match']).toBe('"v1"');
+    });
+
+    it('does not store an answer sent with a token that has since changed', async () => {
+      let token = 'Bearer a';
+      let finishOld: (res: Response) => void = () => undefined;
+      const fetchFn = vi
+        .fn<typeof fetch>()
+        .mockImplementationOnce(
+          () =>
+            new Promise<Response>((resolve) => {
+              finishOld = resolve;
+            }),
+        )
+        .mockResolvedValueOnce(jsonResponse({ who: 'b' }, 200, { ETag: '"b"' }))
+        .mockResolvedValue(new Response(null, { status: 304 }));
+      const client = new HttpClient({
+        baseUrl: base,
+        fetchFn,
+        conditionalGet: true,
+        getAuthHeader: async () => token,
+      });
+
+      const oldRequest = client.getJson('/x');
+      await vi.waitFor(() => expect(fetchFn).toHaveBeenCalledTimes(1));
+      token = 'Bearer b';
+      await client.getJson('/x');
+      finishOld(jsonResponse({ who: 'a' }, 200, { ETag: '"a"' }));
+      await oldRequest;
+
+      await expect(client.getJson('/x')).resolves.toEqual({ who: 'b' });
+      expect(sentHeaders(fetchFn, 2)['If-None-Match']).toBe('"b"');
+    });
+
+    it('keeps at most 200 entries, dropping the oldest', async () => {
+      const fetchFn = vi.fn<typeof fetch>(async () => jsonResponse({}, 200, { ETag: '"e"' }));
+      const client = new HttpClient({ baseUrl: base, fetchFn, conditionalGet: true });
+      for (let i = 0; i < 201; i++) await client.getJson(`/p${i}`);
+      fetchFn.mockClear();
+      await client.getJson('/p0');
+      await client.getJson('/p200');
+      expect(sentHeaders(fetchFn, 0)['If-None-Match']).toBeUndefined();
+      expect(sentHeaders(fetchFn, 1)['If-None-Match']).toBe('"e"');
+    });
+
+    it('does nothing unless enabled, and never for POST', async () => {
+      const fetchFn = vi.fn<typeof fetch>(async () => jsonResponse({}, 200, { ETag: '"e"' }));
+      const off = new HttpClient({ baseUrl: base, fetchFn });
+      await off.getJson('/x');
+      await off.getJson('/x');
+      expect(sentHeaders(fetchFn, 1)['If-None-Match']).toBeUndefined();
+
+      const on = new HttpClient({ baseUrl: base, fetchFn, conditionalGet: true });
+      await on.postJson('/x', {});
+      await on.postJson('/x', {});
+      expect(sentHeaders(fetchFn, 3)['If-None-Match']).toBeUndefined();
+    });
+  });
+
+  it('throws a 401 without any network call when requireAuth is set and there is no token', async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => jsonResponse({}));
+    const client = new HttpClient({
+      baseUrl: 'https://ghe.example.com/api/v3',
+      getAuthHeader: async () => undefined,
+      fetchFn,
+      requireAuth: true,
+    });
+
+    await expect(client.getJson('/user')).rejects.toMatchObject({ status: 401 });
+    await expect(client.getJson('/user')).rejects.toBeInstanceOf(NoTokenError);
+    await expect(
+      client.graphql('https://ghe.example.com/api/graphql', 'query{x}'),
+    ).rejects.toMatchObject({ status: 401 });
+    expect(fetchFn).not.toHaveBeenCalled();
   });
 });

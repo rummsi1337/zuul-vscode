@@ -23,6 +23,7 @@ function makeSnapshot(overrides?: Partial<PrSnapshot>): PrSnapshot {
     statuses: [],
     builds: [],
     fetchedAt: 1700000000000,
+    zuul: { kind: 'ok' },
     ...overrides,
   };
 }

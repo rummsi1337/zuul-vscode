@@ -75,15 +75,6 @@ export interface CheckRun {
   html_url?: string | null;
 }
 
-export interface RequiredStatusChecks {
-  strict?: boolean;
-  contexts: string[];
-  checks?: {
-    context: string;
-    app_id?: number | null;
-  }[];
-}
-
 /** Branch rules besides status checks that can make GHE report a pull request as `blocked`. */
 export interface BranchMergeRules {
   requiredApprovingReviewCount: number;
