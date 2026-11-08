@@ -609,26 +609,61 @@ the code, and the pre-commit checks run.
 
 - **Tier:** sonnet
 - **Risk:** low
-- **Status:** todo
-- **Files:** `src/services/gatePresentation.ts`, `test/unit/gatePresentation.test.ts`,
-  `src/views/prGateTreeView.ts`
+- **Status:** done
+- **Files:** `src/services/gatePresentation.ts`, `src/views/prGateTreeView.ts`,
+  `test/unit/gatePresentation.test.ts`, `test/unit/prGateTreeView.test.ts`,
+  `test/unit/prGateTreeViewIds.test.ts`
 - **Do:**
   - VS Code menus are static, so the toolbar can't have one button per configured trigger. Tree rows
-    can.
-  - `buildGateChildren`: add a last root node `Triggers` (expanded) with one child per
-    `zuul.triggerComments` entry, only when there is at least one. Pass the list in as a parameter
-    so the function stays pure.
-  - `prGateTreeView` renders each child with label = trigger `label`, description = `comment`,
-    `iconPath: new vscode.ThemeIcon(icon ?? 'comment')` and
-    `command: { command: 'zuul.postTrigger', arguments: [comment] }`. That command already accepts a
-    comment and shows the confirmation modal, so no new command is needed.
-  - `prGateTreeView` reads the list with `readWorkspaceSettings()` at render time and re-renders on
-    `onSettingsChanged`.
+    can. `zuul.postTrigger` already accepts a comment and shows the confirmation modal, so no new
+    command is needed.
+  - `gatePresentation.ts`: add these two types, export them and add them to `GateTreeNode`. Use
+    `import { type TriggerComment } from '../config/settings'`. It must stay type-only, because this
+    module has no runtime `vscode` import.
+
+    ```ts
+    export interface GateTriggersNode {
+      readonly kind: 'triggers';
+      readonly triggers: readonly TriggerComment[];
+    }
+
+    export interface GateTriggerNode {
+      readonly kind: 'trigger';
+      readonly label: string;
+      readonly comment: string;
+      readonly icon: string;
+    }
+    ```
+
+  - `buildGateChildren(element, report, triggers: readonly TriggerComment[] = [])`:
+    - At the root, after the PR nodes, push `{ kind: 'triggers', triggers }` only when
+      `triggers.length > 0`.
+    - For a `triggers` element, checked before the `element.kind !== 'pr'` return: one `trigger` node
+      per entry, in configured order, with `icon: t.icon ?? 'comment'`. The default lives here so
+      the pure tests can see it.
+  - `prGateTreeView.getTreeItem`:
+    - `triggers`: label `Triggers`, `TreeItemCollapsibleState.Expanded`, `item.id = 'gate/triggers'`,
+      `contextValue = 'zuulGateTriggers'`.
+    - `trigger`: label = `element.label`, `TreeItemCollapsibleState.None`, description =
+      `element.comment`, `iconPath = new vscode.ThemeIcon(element.icon)`,
+      `contextValue = 'zuulGateTrigger'`, and `command: { command: 'zuul.postTrigger', title: 'Post
+      Trigger Comment', arguments: [element.comment] }`. No `item.id` (leaf rows have none, see Step 10).
+  - `prGateTreeView.getChildren` at the root: pass `readWorkspaceSettings().triggerComments` as the
+    third argument. With no report it still returns `[]`, so there are no trigger rows without a PR.
+    The call for a child element does not change, because the `triggers` node carries its own list.
+  - `PrGateTreeDataProvider` constructor: add
+    `onSettingsChanged(() => { this.emitter.fire(undefined); })` to `this.disposables`.
+  - `prGateTreeViewIds.test.ts`: the vscode mock returns the default config, one `Recheck` trigger, so
+    `[header, ...prs]` now also picks up the `Triggers` node. Filter `prs` to `kind === 'pr'`.
 - **Don't:** remove the toolbar button, add a webview, or count these rows as blockers.
 - **Done when:**
   - `npm run check` passes
-  - Tests: rows follow the configured order; the default icon is `comment`; an empty list gives no
-    `Triggers` node; the header and PR nodes come first
+  - Tests in `gatePresentation.test.ts`: rows follow the configured order; the default icon is
+    `comment` and a configured icon is kept; an empty list gives no `Triggers` node; the header and
+    PR nodes come first
+  - Tests in `prGateTreeView.test.ts`: a `trigger` row has the label, description, icon and
+    `command.arguments` of `[comment]`, and no `id`; the `Triggers` row has id `gate/triggers`; a
+    `zuul` settings change fires `onDidChangeTreeData`; no snapshot gives no `Triggers` node
 
 ## Out of scope
 

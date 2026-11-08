@@ -1,3 +1,4 @@
+import { type TriggerComment } from '../config/settings';
 import { type GateReport } from './gateReadiness';
 
 export interface GateHeaderNode {
@@ -20,7 +21,20 @@ export interface GateCheckNode {
   readonly message?: string;
 }
 
-export type GateTreeNode = GateHeaderNode | GatePrNode | GateCheckNode;
+export interface GateTriggersNode {
+  readonly kind: 'triggers';
+  readonly triggers: readonly TriggerComment[];
+}
+
+export interface GateTriggerNode {
+  readonly kind: 'trigger';
+  readonly label: string;
+  readonly comment: string;
+  readonly icon: string;
+}
+
+export type GateTreeNode =
+  GateHeaderNode | GatePrNode | GateCheckNode | GateTriggersNode | GateTriggerNode;
 
 export function formatGateHeader(report: GateReport): { label: string; icon: string } {
   if (report.ready) {
@@ -33,6 +47,7 @@ export function formatGateHeader(report: GateReport): { label: string; icon: str
 export function buildGateChildren(
   element: GateTreeNode | undefined,
   report: GateReport,
+  triggers: readonly TriggerComment[] = [],
 ): GateTreeNode[] {
   if (!element) {
     const nodes: GateTreeNode[] = [{ kind: 'header', report }];
@@ -45,7 +60,18 @@ export function buildGateChildren(
         report,
       });
     });
+    if (triggers.length > 0) {
+      nodes.push({ kind: 'triggers', triggers });
+    }
     return nodes;
+  }
+  if (element.kind === 'triggers') {
+    return element.triggers.map((t) => ({
+      kind: 'trigger',
+      label: t.label,
+      comment: t.comment,
+      icon: t.icon ?? 'comment',
+    }));
   }
   if (element.kind !== 'pr') {
     return [];

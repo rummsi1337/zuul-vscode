@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { onSettingsChanged, readWorkspaceSettings } from '../config/settings';
 import { type ResolvedContext } from '../context/zuulContext';
 import { collectGateFacts, collectUpstreamFacts } from '../services/gateFacts';
 import {
@@ -50,6 +51,9 @@ export class PrGateTreeDataProvider
     this.cache = new KeyedAsyncCache<GateReport>(GATE_REFRESH_MIN_INTERVAL_MS, now);
     this.disposables.push(
       this.tracker.onDidChange(() => {
+        this.emitter.fire(undefined);
+      }),
+      onSettingsChanged(() => {
         this.emitter.fire(undefined);
       }),
     );
@@ -127,6 +131,24 @@ export class PrGateTreeDataProvider
       }
       return item;
     }
+    if (element.kind === 'triggers') {
+      const item = new vscode.TreeItem('Triggers', vscode.TreeItemCollapsibleState.Expanded);
+      item.id = 'gate/triggers';
+      item.contextValue = 'zuulGateTriggers';
+      return item;
+    }
+    if (element.kind === 'trigger') {
+      const item = new vscode.TreeItem(element.label, vscode.TreeItemCollapsibleState.None);
+      item.description = element.comment;
+      item.iconPath = new vscode.ThemeIcon(element.icon);
+      item.contextValue = 'zuulGateTrigger';
+      item.command = {
+        command: 'zuul.postTrigger',
+        title: 'Post Trigger Comment',
+        arguments: [element.comment],
+      };
+      return item;
+    }
     const item = new vscode.TreeItem(element.label, vscode.TreeItemCollapsibleState.None);
     item.iconPath = new vscode.ThemeIcon(element.ok ? 'check' : 'x');
     if (element.message) {
@@ -145,7 +167,7 @@ export class PrGateTreeDataProvider
     if (!report) {
       return [];
     }
-    const nodes = buildGateChildren(undefined, report);
+    const nodes = buildGateChildren(undefined, report, readWorkspaceSettings().triggerComments);
     const prNodes = nodes.filter((n) => n.kind === 'pr');
     const ids = uniqueIds(prNodes.map((n) => `gate/pr/${n.pr}`));
     prNodes.forEach((n, i) => this.prIds.set(n, ids[i]));
