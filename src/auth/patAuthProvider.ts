@@ -86,8 +86,4 @@ export class PatAuthProvider implements TokenProvider {
   async clear(host: string): Promise<void> {
     await this.secrets.delete(patSecretKey(host));
   }
-
-  async invalidate(host: string): Promise<void> {
-    await this.clear(host);
-  }
 }

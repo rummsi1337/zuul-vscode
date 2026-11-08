@@ -396,28 +396,53 @@ the code, and the pre-commit checks run.
 
 - **Tier:** sonnet
 - **Risk:** high
-- **Status:** todo
+- **Status:** done (`npm run check` stops at Prettier only on the untracked `future-work.md`; eslint, tsc, tests and build all pass)
 - **Files:** `src/clients/http.ts`, `src/clients/gheClient.ts`, `src/context/zuulContext.ts`,
-  `src/context/tenantResolver.ts`, `src/auth/*`, `src/git/gitContext.ts`, `src/extension.ts`,
+  `src/context/tenantResolver.ts`, `src/auth/*`, `src/config/settings.ts`, `src/extension.ts`,
   `src/views/buildsTreeView.ts`, `src/views/dependsOnTreeView.ts`, tests
 - **Do:**
-  - `http.ts`: attach `Authorization` only when the request URL has the same origin as `baseUrl`. The
-    GHE GraphQL URL must keep its token (test github.com and GHE).
-  - Delete `PatAuthProvider.invalidate`; a 401 must not erase a stored token.
-  - `AuthService.getToken`: a provider that throws counts as no token and still reports the result.
-  - `wrappedFetch` in `zuulContext.ts`: toast only when the request carried `Authorization`, at most
-    once per host until the token changes.
-  - Delete `wrapGheClient` and `handledErrors`. Every 401 already goes through `wrappedFetch`, so the
-    proxy is dead in production. Rewrite the tests at `zuulContext.test.ts:207-272` to use a fake fetch.
+  - Corrected 2026-11-08 after commit `803e5ea` (per-tenant Zuul tokens), which landed after this step
+    was written and changed `http.ts`, `zuulClient.ts`, `tenantResolver.ts` and `zuulContext.ts`.
+  - `http.ts`: send `Authorization` only when the request URL has the same origin as `baseUrl`. The
+    GHE GraphQL URL must keep its token (test github.com and GHE). Zuul tokens arrive as a per-call
+    header from `ZuulClient.withAuth`, not from `getAuthHeader`. So pass the URL into `buildHeaders`
+    and, for another origin, skip `getAuthHeader` and also delete any `Authorization` in the `extra`
+    headers.
+  - Delete `PatAuthProvider.invalidate`; a 401 must not erase a stored token. Keep `invalidate?` on
+    `TokenProvider` and `GhCliAuthProvider.invalidate` (it only drops a cached token). Change the
+    `reportUnauthorized` log text from `invalidating credentials` to `clearing cached credentials`.
+  - `AuthService`: in `resolveToken`, a provider that throws is logged as a warning and counts as no
+    token (move on to the next provider). `getToken` still reports the result.
+  - `wrappedFetch` in `zuulContext.ts` (GHE only). On a 401:
+    - No `Authorization` on the request (read it with `new Headers(init?.headers)`): return the
+      response unchanged, with no `reportUnauthorized` and no toast.
+    - With one: always call `auth.reportUnauthorized`, so a renewed `gh` token is picked up. Toast
+      only if that `Authorization` value differs from the last one toasted for this host (a
+      `Map<host, value>`, like `zuulAuthNotices`).
+  - Delete `wrapGheClient` and `handleGheError` (that proxy is its only caller). Every 401 already goes
+    through `wrappedFetch`, so the proxy is dead in production. Keep `handledErrors` and the Zuul
+    proxy: `handleZuulError` uses them. Only remove the GHE uses of `handledErrors`. Rewrite the two
+    GHE 401 tests in `zuulContext.test.ts` (`passes interactive: false to auth.getToken ...` and
+    `does not trigger reportUnauthorized ...`) to use a fake fetch.
   - `getPrRollup`: rethrow 401 and 403 instead of swallowing them.
   - `encodeURIComponent` owner and repo in GHE paths. `openExternal` only for http/https.
-  - `zuul.ghe.host`: strip scheme and path. `resolveTenant`: try/catch per tenant, compare lowercase,
-    include the host in the cache key.
-  - `setGhePat` and `clearGhePat`: show a confirmation and call `zuul.refresh`.
+  - `zuul.ghe.host`: strip scheme and path in `readWorkspaceSettings` (`settings.ts`), the one place
+    it is read. Keep a port if there is one.
+  - `resolveTenant`: the per-tenant try/catch already skips 401 and 403. Widen it so any error skips
+    that tenant and the first non-auth error is kept. If no tenant matches, throw
+    `authError ?? otherError`, so Step 10 can still report network and 5xx errors. `matchesProject`
+    compares lowercase. New signatures: `resolveTenant(zuul, host, project, configured, cache)` and
+    `tenantCacheKey(zuulUrl, host, project)`, with `host` passed through `normalizeHost`.
+    `zuulContext.ts` passes `gitCtx.host`. Old cache entries are simply ignored.
+  - `setGhePat` and `clearGhePat`: after a successful change, `showInformationMessage`
+    (`Saved token for <host>` / `Removed token for <host>`; a notice, not a question) and
+    `await vscode.commands.executeCommand('zuul.refresh')`. Do neither if the user cancelled.
 - **Done when:**
   - `npm run check` passes
-  - Tests: a `Link` to another origin gets no token; a 401 keeps the PAT; repeated 401s give one
-    toast; no token gives no toast; a throwing provider reports signed out
+  - Tests: a `Link` to another origin gets no token; a per-call `Authorization` to another origin is
+    dropped; a 401 keeps the PAT; repeated 401s give one toast; a changed token gives a new toast; no
+    token gives no toast; a throwing provider reports signed out; a tenant that fails with a 500 does
+    not stop a later tenant matching; a 500 with no match still rejects
 
 ### Step 9: Make Depends-On edits and PR targeting safe
 
@@ -570,3 +595,8 @@ the code, and the pre-commit checks run.
 - Non-standard ports on GHE remotes.
 - Fork workflows (recorded as out of scope in Step 2).
 - Required approval count from branch protection (Future work in `.plan/zuul-vscode.md`).
+- Project name casing, found in the Step 8 review and not verified against a live Zuul. `resolveTenant`
+  now matches case-insensitively, but `ResolvedContext.project` keeps the git remote's casing and is
+  sent as the builds filter (`src/services/prTracker.ts`). If the casing differs on a case-sensitive
+  Zuul database, the view could show no builds where it used to report `no-tenant`. Fix later by having
+  tenant resolution return Zuul's own project name.

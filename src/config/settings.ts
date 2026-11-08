@@ -134,7 +134,7 @@ export function readSettings(get: (key: string) => unknown): ZuulSettings {
     tenant: readString(get('tenant'), ''),
     tokens: readTokens(get('tokens')),
     tokenFile: readString(get('tokenFile'), ''),
-    gheHost: readString(get('ghe.host'), ''),
+    gheHost: readGheHost(get('ghe.host')),
     authMethod: readAuthMethod(get('auth.method')),
     oauthClientId: readString(get('ghe.oauthClientId'), ''),
     triggerComments: readTriggerComments(get('triggerComments')),
@@ -147,6 +147,14 @@ export function readSettings(get: (key: string) => unknown): ZuulSettings {
       gateStatusChecks: readStringArray(get('gate.gateStatusChecks'), DEFAULT_GATE_STATUS_CHECKS),
     },
   };
+}
+
+export function readGheHost(value: unknown): string {
+  const raw = readString(value, '').trim();
+  return raw
+    .replace(/^[a-z][a-z0-9+.-]*:\/\//i, '')
+    .replace(/[/?#].*$/, '')
+    .trim();
 }
 
 export function readWorkspaceSettings(): ZuulSettings {

@@ -48,7 +48,15 @@ export class AuthService {
       if (!provider) {
         continue;
       }
-      const token = await provider.getToken(normalizedHost, opts);
+      let token: string | undefined;
+      try {
+        token = await provider.getToken(normalizedHost, opts);
+      } catch (err) {
+        this.logger.warn(
+          `[Auth] Provider ${provider.id} failed for ${normalizedHost}: ${String(err)}`,
+        );
+        continue;
+      }
       if (token) {
         this.logger.info(`[Auth] Resolved token for ${normalizedHost} using ${provider.id}`);
         return token;
@@ -65,7 +73,7 @@ export class AuthService {
       return;
     }
 
-    this.logger.warn(`[Auth] Unauthorized for ${normalizedHost}; invalidating credentials`);
+    this.logger.warn(`[Auth] Unauthorized for ${normalizedHost}; clearing cached credentials`);
     for (const provider of this.providers) {
       if (provider.invalidate) {
         await provider.invalidate(normalizedHost);

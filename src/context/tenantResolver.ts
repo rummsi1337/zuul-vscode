@@ -1,6 +1,7 @@
 import { HttpError } from '../clients/http';
 import { type ZuulClient } from '../clients/zuulClient';
 import { type ZuulProject } from '../clients/zuulTypes';
+import { normalizeHost } from '../git/remoteUrl';
 
 export interface KeyValueStore {
   get(key: string): string | undefined;
@@ -9,17 +10,18 @@ export interface KeyValueStore {
 
 export type TenantDiscoveryClient = Pick<ZuulClient, 'baseUrl' | 'listTenants' | 'listProjects'>;
 
-export function tenantCacheKey(zuulUrl: string, project: string): string {
-  return `tenant:${zuulUrl.replace(/\/+$/, '')}:${project}`;
+export function tenantCacheKey(zuulUrl: string, host: string, project: string): string {
+  return `tenant:${zuulUrl.replace(/\/+$/, '')}:${normalizeHost(host)}:${project}`;
 }
 
 function matchesProject(zuulProject: ZuulProject, project: string): boolean {
-  if (zuulProject.name === project) {
+  const wanted = project.toLowerCase();
+  if (zuulProject.name.toLowerCase() === wanted) {
     return true;
   }
   if (
     typeof zuulProject.canonical_name === 'string' &&
-    zuulProject.canonical_name.endsWith(`/${project}`)
+    zuulProject.canonical_name.toLowerCase().endsWith(`/${wanted}`)
   ) {
     return true;
   }
@@ -28,6 +30,7 @@ function matchesProject(zuulProject: ZuulProject, project: string): boolean {
 
 export async function resolveTenant(
   zuul: TenantDiscoveryClient,
+  host: string,
   project: string,
   configured?: string,
   cache?: KeyValueStore,
@@ -37,7 +40,7 @@ export async function resolveTenant(
     return trimmedConfigured;
   }
 
-  const cacheKey = tenantCacheKey(zuul.baseUrl, project);
+  const cacheKey = tenantCacheKey(zuul.baseUrl, host, project);
   const cached = cache?.get(cacheKey)?.trim();
   if (cached) {
     return cached;
@@ -45,6 +48,7 @@ export async function resolveTenant(
 
   const tenants = await zuul.listTenants();
   let authError: HttpError | undefined;
+  let otherError: unknown;
   for (const tenant of tenants) {
     let projects: ZuulProject[];
     try {
@@ -52,9 +56,10 @@ export async function resolveTenant(
     } catch (err) {
       if (err instanceof HttpError && (err.status === 401 || err.status === 403)) {
         authError ??= err;
-        continue;
+      } else {
+        otherError ??= err;
       }
-      throw err;
+      continue;
     }
     if (projects.some((p) => matchesProject(p, project))) {
       if (cache) {
@@ -64,8 +69,8 @@ export async function resolveTenant(
     }
   }
 
-  if (authError) {
-    throw authError;
+  if (authError ?? otherError) {
+    throw authError ?? otherError;
   }
   return undefined;
 }

@@ -71,6 +71,43 @@ describe('HttpClient', () => {
     expect(lastInit.headers.Authorization).toBeUndefined();
   });
 
+  it('sends no token to another origin and drops a per-call Authorization there', async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => jsonResponse({}));
+    const getAuthHeader = vi.fn(async () => 'Bearer secret');
+    const client = new HttpClient({
+      baseUrl: 'https://ghe.example.com/api/v3',
+      getAuthHeader,
+      fetchFn,
+    });
+
+    await client.getJson('https://evil.example.org/next?page=2');
+    let init = fetchFn.mock.calls.at(-1)?.[1] as { headers: Record<string, string> };
+    expect(init.headers.Authorization).toBeUndefined();
+    expect(getAuthHeader).not.toHaveBeenCalled();
+
+    await client.getJson('https://evil.example.org/x', undefined, { authorization: 'Bearer zuul' });
+    init = fetchFn.mock.calls.at(-1)?.[1] as { headers: Record<string, string> };
+    expect(Object.keys(init.headers).map((k) => k.toLowerCase())).not.toContain('authorization');
+
+    // Same origin keeps its token, including the GHE GraphQL URL.
+    await client.getJson('https://ghe.example.com/api/graphql');
+    init = fetchFn.mock.calls.at(-1)?.[1] as { headers: Record<string, string> };
+    expect(init.headers.Authorization).toBe('Bearer secret');
+  });
+
+  it('keeps the token for the github.com GraphQL URL', async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => jsonResponse({ data: { ok: 1 } }));
+    const client = new HttpClient({
+      baseUrl: 'https://api.github.com',
+      getAuthHeader: async () => 'Bearer secret',
+      fetchFn,
+    });
+
+    await client.graphql('https://api.github.com/graphql', 'query { a }');
+    const init = fetchFn.mock.calls.at(-1)?.[1] as { headers: Record<string, string> };
+    expect(init.headers.Authorization).toBe('Bearer secret');
+  });
+
   it('sends JSON bodies for postJson and patchJson and handles empty responses', async () => {
     const fetchFn = vi
       .fn<typeof fetch>()

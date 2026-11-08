@@ -80,11 +80,31 @@ export class HttpClient {
     return url;
   }
 
-  private async buildHeaders(extra?: Record<string, string>): Promise<Record<string, string>> {
+  private isSameOrigin(url: string): boolean {
+    try {
+      return new URL(url).origin === new URL(this.baseUrl).origin;
+    } catch {
+      return false;
+    }
+  }
+
+  private async buildHeaders(
+    url: string,
+    extra?: Record<string, string>,
+  ): Promise<Record<string, string>> {
     const headers: Record<string, string> = {
       'User-Agent': this.userAgent,
       ...extra,
     };
+
+    if (!this.isSameOrigin(url)) {
+      for (const key of Object.keys(headers)) {
+        if (key.toLowerCase() === 'authorization') {
+          delete headers[key];
+        }
+      }
+      return headers;
+    }
 
     if (this.getAuthHeader) {
       const auth = await this.getAuthHeader();
@@ -107,7 +127,7 @@ export class HttpClient {
   ): Promise<Response> {
     const url = this.resolveUrl(path, opts?.query);
     this.logger?.info(`[HTTP] ${method} ${url}`);
-    const headers = await this.buildHeaders(opts?.headers);
+    const headers = await this.buildHeaders(url, opts?.headers);
 
     let res: Response;
     try {

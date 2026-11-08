@@ -140,7 +140,7 @@ describe('PatAuthProvider', () => {
     expect(secrets.store).toHaveBeenCalledWith('zuul.pat.ghe.example.com', 'ghp_interactive');
   });
 
-  it('clears and invalidates stored PAT', async () => {
+  it('clears only the requested host and has no invalidate method', async () => {
     const secrets = createSecretStorage({
       'zuul.pat.ghe.example.com': 'ghp_one',
       'zuul.pat.other.example.com': 'ghp_two',
@@ -150,10 +150,9 @@ describe('PatAuthProvider', () => {
     await provider.clear('ghe.example.com');
     expect(secrets.data.has('zuul.pat.ghe.example.com')).toBe(false);
 
-    await provider.invalidate('other.example.com');
-    expect(secrets.data.has('zuul.pat.other.example.com')).toBe(false);
-
-    expect(secrets.delete).toHaveBeenCalledTimes(2);
+    expect('invalidate' in provider).toBe(false);
+    expect(secrets.data.has('zuul.pat.other.example.com')).toBe(true);
+    expect(secrets.delete).toHaveBeenCalledTimes(1);
   });
 
   it('validates PAT with GheClient.getUser()', async () => {

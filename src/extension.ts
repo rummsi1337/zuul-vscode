@@ -153,6 +153,8 @@ export function activate(context: vscode.ExtensionContext): void {
       const token = await patProvider.setToken(host);
       if (token) {
         logger.info(`[Auth] Stored PAT for ${host}`);
+        void vscode.window.showInformationMessage(`Saved token for ${host}`);
+        await vscode.commands.executeCommand('zuul.refresh');
       }
     }),
     vscode.commands.registerCommand('zuul.clearGhePat', async (hostArg?: unknown) => {
@@ -162,6 +164,8 @@ export function activate(context: vscode.ExtensionContext): void {
       }
       await patProvider.clear(host);
       logger.info(`[Auth] Cleared PAT for ${host}`);
+      void vscode.window.showInformationMessage(`Removed token for ${host}`);
+      await vscode.commands.executeCommand('zuul.refresh');
     }),
     vscode.commands.registerCommand('zuul.setTenantToken', async (tenantArg?: unknown) => {
       const explicit =

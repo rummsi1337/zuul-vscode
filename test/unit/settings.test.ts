@@ -1,5 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { onSettingsChanged, readSettings, readWorkspaceSettings } from '../../src/config/settings';
+import {
+  onSettingsChanged,
+  readGheHost,
+  readSettings,
+  readWorkspaceSettings,
+} from '../../src/config/settings';
 import {
   type ConfigurationChangeEvent,
   Disposable,
@@ -201,5 +206,14 @@ describe('settings', () => {
         url: 'https://zuul.internal',
       }),
     );
+  });
+});
+
+describe('readGheHost', () => {
+  it('strips scheme and path and keeps a port', () => {
+    expect(readGheHost('https://ghe.example.com/')).toBe('ghe.example.com');
+    expect(readGheHost(' http://ghe.example.com:8443/api/v3 ')).toBe('ghe.example.com:8443');
+    expect(readGheHost('ghe.example.com')).toBe('ghe.example.com');
+    expect(readGheHost(42)).toBe('');
   });
 });

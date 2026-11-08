@@ -29,7 +29,13 @@ describe('resolveTenant', () => {
     };
     const cache = createMemoryCache();
 
-    const result = await resolveTenant(zuul, 'acme/service', '  corp-tenant  ', cache);
+    const result = await resolveTenant(
+      zuul,
+      'ghe.example.com',
+      'acme/service',
+      '  corp-tenant  ',
+      cache,
+    );
 
     expect(result).toBe('corp-tenant');
     expect(cache.get).not.toHaveBeenCalled();
@@ -38,8 +44,8 @@ describe('resolveTenant', () => {
   });
 
   it('returns cached tenant on cache hit without querying Zuul API', async () => {
-    const key = tenantCacheKey('https://zuul.example.com/', 'acme/service');
-    expect(key).toBe('tenant:https://zuul.example.com:acme/service');
+    const key = tenantCacheKey('https://zuul.example.com/', 'GHE.example.com ', 'acme/service');
+    expect(key).toBe('tenant:https://zuul.example.com:ghe.example.com:acme/service');
 
     const cache = createMemoryCache({ [key]: 'cached-tenant' });
     const zuul: TenantDiscoveryClient = {
@@ -48,10 +54,12 @@ describe('resolveTenant', () => {
       listProjects: vi.fn(),
     };
 
-    const result = await resolveTenant(zuul, 'acme/service', '   ', cache);
+    const result = await resolveTenant(zuul, 'ghe.example.com', 'acme/service', '   ', cache);
 
     expect(result).toBe('cached-tenant');
-    expect(cache.get).toHaveBeenCalledWith('tenant:https://zuul.example.com:acme/service');
+    expect(cache.get).toHaveBeenCalledWith(
+      'tenant:https://zuul.example.com:ghe.example.com:acme/service',
+    );
     expect(zuul.listTenants).not.toHaveBeenCalled();
   });
 
@@ -73,11 +81,13 @@ describe('resolveTenant', () => {
     };
     const cache = createMemoryCache();
 
-    const result = await resolveTenant(zuul, 'acme/service', undefined, cache);
+    const result = await resolveTenant(zuul, 'ghe.example.com', 'acme/service', undefined, cache);
 
     expect(result).toBe('beta');
     expect(callOrder).toEqual(['alpha', 'beta']);
-    expect(cache.store.get('tenant:https://zuul.example.com:acme/service')).toBe('beta');
+    expect(cache.store.get('tenant:https://zuul.example.com:ghe.example.com:acme/service')).toBe(
+      'beta',
+    );
   });
 
   it('discovers tenant by canonical_name ending with /<owner/repo>', async () => {
@@ -103,10 +113,12 @@ describe('resolveTenant', () => {
     };
     const cache = createMemoryCache();
 
-    const result = await resolveTenant(zuul, 'acme/service', '', cache);
+    const result = await resolveTenant(zuul, 'ghe.example.com', 'acme/service', '', cache);
 
     expect(result).toBe('second');
-    expect(cache.store.get('tenant:https://zuul.example.com:acme/service')).toBe('second');
+    expect(cache.store.get('tenant:https://zuul.example.com:ghe.example.com:acme/service')).toBe(
+      'second',
+    );
   });
 
   it('returns undefined and does not write cache when no tenant contains the project', async () => {
@@ -117,7 +129,7 @@ describe('resolveTenant', () => {
     };
     const cache = createMemoryCache();
 
-    const result = await resolveTenant(zuul, 'acme/missing', undefined, cache);
+    const result = await resolveTenant(zuul, 'ghe.example.com', 'acme/missing', undefined, cache);
 
     expect(result).toBeUndefined();
     expect(cache.update).not.toHaveBeenCalled();
@@ -135,7 +147,7 @@ describe('resolveTenant', () => {
       }),
     };
 
-    await expect(resolveTenant(zuul, 'acme/service')).resolves.toBe('beta');
+    await expect(resolveTenant(zuul, 'ghe.example.com', 'acme/service')).resolves.toBe('beta');
   });
 
   it('rejects with HttpError when all tenants are forbidden', async () => {
@@ -147,10 +159,28 @@ describe('resolveTenant', () => {
       }),
     };
 
-    await expect(resolveTenant(zuul, 'acme/service')).rejects.toBeInstanceOf(HttpError);
+    await expect(resolveTenant(zuul, 'ghe.example.com', 'acme/service')).rejects.toBeInstanceOf(
+      HttpError,
+    );
   });
 
-  it('propagates non-auth errors', async () => {
+  it('skips a tenant that fails with a 500 and still matches a later tenant', async () => {
+    const zuul: TenantDiscoveryClient = {
+      baseUrl: 'https://zuul.example.com',
+      listTenants: vi.fn(async () => [{ name: 'alpha' }, { name: 'beta' }]),
+      listProjects: vi.fn(async (tenant: string) => {
+        if (tenant === 'alpha') {
+          throw new HttpError(500, 'Server error');
+        }
+        return [{ name: 'Acme/Service' }];
+      }),
+    };
+
+    await expect(resolveTenant(zuul, 'ghe.example.com', 'acme/service')).resolves.toBe('beta');
+    expect(zuul.listProjects).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects with the 500 when no tenant matches', async () => {
     const zuul: TenantDiscoveryClient = {
       baseUrl: 'https://zuul.example.com',
       listTenants: vi.fn(async () => [{ name: 'alpha' }, { name: 'beta' }]),
@@ -159,7 +189,23 @@ describe('resolveTenant', () => {
       }),
     };
 
-    await expect(resolveTenant(zuul, 'acme/service')).rejects.toMatchObject({ status: 500 });
-    expect(zuul.listProjects).toHaveBeenCalledTimes(1);
+    await expect(resolveTenant(zuul, 'ghe.example.com', 'acme/service')).rejects.toMatchObject({
+      status: 500,
+    });
+    expect(zuul.listProjects).toHaveBeenCalledTimes(2);
+  });
+
+  it('prefers the auth error over another error when nothing matches', async () => {
+    const zuul: TenantDiscoveryClient = {
+      baseUrl: 'https://zuul.example.com',
+      listTenants: vi.fn(async () => [{ name: 'alpha' }, { name: 'beta' }]),
+      listProjects: vi.fn(async (tenant: string) => {
+        throw tenant === 'alpha' ? new HttpError(500, 'x') : new HttpError(401, 'y');
+      }),
+    };
+
+    await expect(resolveTenant(zuul, 'ghe.example.com', 'acme/service')).rejects.toMatchObject({
+      status: 401,
+    });
   });
 });

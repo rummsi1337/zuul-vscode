@@ -88,7 +88,7 @@ export async function openDependencyPrExternally(
   } else if (target?.kind === 'downstream-dep') {
     url = target.item.html_url;
   }
-  if (!url) {
+  if (!url || !/^https?:\/\//i.test(url)) {
     return;
   }
   await openExternal(vscode.Uri.parse(url));
