@@ -42,6 +42,16 @@ describe('parsePrUrlCandidate', () => {
     expect(parsePrUrlCandidate('hello')).toBeUndefined();
   });
 
+  it('keeps the host of an http URL', () => {
+    expect(parsePrUrlCandidate('http://Other.example.com/org/repo/pull/5')).toMatchObject({
+      host: 'other.example.com',
+      number: 5,
+    });
+    expect(parsePrUrlCandidate('https://other.example.com/org/repo/pull/5')?.host).toBe(
+      'other.example.com',
+    );
+  });
+
   it('matches the HTTP regex only for pull URLs', () => {
     expect(HTTP_PR_URL_RE.test('https://h/o/r/pull/0')).toBe(false);
     expect(HTTP_PR_URL_RE.test('http://h/o/r/pull/3')).toBe(true);
@@ -52,18 +62,16 @@ describe('searchItemToCandidate', () => {
   const base: SearchItem = { number: 3, title: 'Hello', html_url: '', state: 'open' };
 
   it('copies the title onto the candidate', () => {
-    const c = searchItemToCandidate(
-      { ...base, html_url: 'https://ghe.example.com/org/repo/pull/3' },
-      'ghe.example.com',
-    );
+    const c = searchItemToCandidate({
+      ...base,
+      html_url: 'https://ghe.example.com/org/repo/pull/3',
+    });
     expect(c).toMatchObject({ owner: 'org', repo: 'repo', number: 3, title: 'Hello' });
   });
 
   it('returns undefined without a usable html_url', () => {
-    expect(searchItemToCandidate(base, 'ghe.example.com')).toBeUndefined();
-    expect(
-      searchItemToCandidate({ ...base, html_url: 'https://x/y' }, 'ghe.example.com'),
-    ).toBeUndefined();
+    expect(searchItemToCandidate(base)).toBeUndefined();
+    expect(searchItemToCandidate({ ...base, html_url: 'https://x/y' })).toBeUndefined();
   });
 });
 

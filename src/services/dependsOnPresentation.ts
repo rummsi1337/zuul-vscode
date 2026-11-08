@@ -93,8 +93,8 @@ export function resolveUpstreamUrl(dep: UpstreamDep, fallbackHost?: string): str
   return undefined;
 }
 
-export function formatDownstreamLabel(item: SearchItem, fallbackHost = 'github.com'): string {
-  const candidate = searchItemToCandidate(item, fallbackHost);
+export function formatDownstreamLabel(item: SearchItem): string {
+  const candidate = searchItemToCandidate(item);
   if (candidate) {
     return formatPrRef(candidate);
   }
@@ -103,7 +103,7 @@ export function formatDownstreamLabel(item: SearchItem, fallbackHost = 'github.c
 
 export function extractRemovalCoordinates(
   target: unknown,
-): { owner: string; repo: string; number: number } | undefined {
+): { owner: string; repo: string; number: number; host?: string } | undefined {
   if (!target || typeof target !== 'object') {
     return undefined;
   }
@@ -123,6 +123,7 @@ export function extractRemovalCoordinates(
       owner: obj.owner,
       repo: obj.repo,
       number: obj.number,
+      ...(typeof obj.host === 'string' ? { host: obj.host } : {}),
     };
   }
   return undefined;

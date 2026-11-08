@@ -489,4 +489,48 @@ describe('PrTracker', () => {
     await tracker.refresh();
     expect(findOpenPrForBranch).toHaveBeenCalledTimes(2);
   });
+
+  it('clears the snapshot when the branch changes, before polling the new one', async () => {
+    const { findOpenPrForBranch, getChangeStatus, listBuilds, makeResolvedContext } =
+      createMockClients();
+    findOpenPrForBranch.mockResolvedValueOnce(makePr());
+    getChangeStatus.mockResolvedValue([]);
+    listBuilds.mockResolvedValue([]);
+
+    const { source, setContext } = createFakeContextSource(undefined);
+    const { focusEvents } = createFakeFocusEvents(true);
+    const tracker = new PrTracker(source, createFakeLogger(), setTimeout, Date.now, focusEvents);
+    const snapshots: (PrSnapshot | undefined)[] = [];
+    tracker.onDidChange((s) => snapshots.push(s));
+
+    setContext(makeResolvedContext());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(tracker.snapshot?.pr.number).toBe(42);
+
+    // The next lookup never resolves, so only the early clear can empty the snapshot.
+    findOpenPrForBranch.mockReturnValue(new Promise(() => undefined));
+    setContext(makeResolvedContext({ branch: 'other-branch' }));
+    expect(tracker.snapshot).toBeUndefined();
+    expect(snapshots.at(-1)).toBeUndefined();
+    tracker.dispose();
+  });
+
+  it('keeps the snapshot when only the head SHA changes', async () => {
+    const { findOpenPrForBranch, getChangeStatus, listBuilds, makeResolvedContext } =
+      createMockClients();
+    findOpenPrForBranch.mockResolvedValueOnce(makePr());
+    getChangeStatus.mockResolvedValue([]);
+    listBuilds.mockResolvedValue([]);
+
+    const { source, setContext } = createFakeContextSource(undefined);
+    const { focusEvents } = createFakeFocusEvents(true);
+    const tracker = new PrTracker(source, createFakeLogger(), setTimeout, Date.now, focusEvents);
+
+    setContext(makeResolvedContext());
+    await vi.advanceTimersByTimeAsync(0);
+    findOpenPrForBranch.mockReturnValue(new Promise(() => undefined));
+    setContext(makeResolvedContext({ headSha: 'another-local-sha' }));
+    expect(tracker.snapshot?.pr.number).toBe(42);
+    tracker.dispose();
+  });
 });

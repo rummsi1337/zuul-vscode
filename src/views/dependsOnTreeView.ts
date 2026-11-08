@@ -180,7 +180,12 @@ export class DependsOnTreeDataProvider
         refs.map((r) => ({
           label: formatPrRef({ owner: r.owner, repo: r.repo, number: r.number }),
           description: r.raw,
-          coords: { owner: r.owner, repo: r.repo, number: r.number },
+          coords: {
+            owner: r.owner,
+            repo: r.repo,
+            number: r.number,
+            ...(r.host ? { host: r.host } : {}),
+          },
         })),
         { placeHolder: 'Select Depends-On reference to remove' },
       );
@@ -201,15 +206,24 @@ export class DependsOnTreeDataProvider
       return false;
     }
 
-    await applyRemoveDependsOn(
+    const changed = await applyRemoveDependsOn(
       currentCtx.ghe,
       { owner: currentCtx.owner, repo: currentCtx.repo, number: snapshot.pr.number },
       coords,
     );
 
-    this.logger.info(
-      `[DependsOn] Removed Depends-On ${formatPrRef(coords)} from ${formatPrRef({ owner: currentCtx.owner, repo: currentCtx.repo, number: snapshot.pr.number })}`,
-    );
+    const prLabel = formatPrRef({
+      owner: currentCtx.owner,
+      repo: currentCtx.repo,
+      number: snapshot.pr.number,
+    });
+    if (changed) {
+      this.logger.info(`[DependsOn] Removed Depends-On ${formatPrRef(coords)} from ${prLabel}`);
+    } else {
+      this.logger.warn(
+        `[DependsOn] Depends-On ${formatPrRef(coords)} was not removed from ${prLabel}: the body did not change`,
+      );
+    }
 
     this.invalidateCache();
     await this.tracker.refresh();
@@ -412,7 +426,7 @@ export class DependsOnTreeDataProvider
       }
 
       case 'downstream-dep': {
-        const label = formatDownstreamLabel(element.item, element.host);
+        const label = formatDownstreamLabel(element.item);
         const item = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.None);
         item.description = element.item.title;
         item.iconPath = new vscode.ThemeIcon('git-pull-request');

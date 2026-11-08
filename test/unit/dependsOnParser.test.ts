@@ -82,6 +82,17 @@ describe('dependsOnParser', () => {
       ]);
     });
 
+    it('keeps a foreign-host ref that has the same path as an earlier local ref', () => {
+      const body = [
+        'Depends-On: https://ghe.example.com/org/repo/pull/42',
+        'Depends-On: https://other.example.com/org/repo/pull/42',
+        'Depends-On: https://other.example.com/org/repo/pull/42/files',
+        'Depends-On: org/repo#42',
+      ].join('\n');
+      const refs = parseDependsOn(body);
+      expect(refs.map((r) => r.host)).toEqual(['ghe.example.com', 'other.example.com']);
+    });
+
     it('deduplicates by owner/repo#n keeping the first occurrence', () => {
       const body = [
         'Depends-On: https://ghe.example.com/org/repo/pull/42',
@@ -141,11 +152,11 @@ describe('dependsOnParser', () => {
 
     it('appends after a single EOL when body already ends with a blank line', () => {
       const body = '## Summary\nSome details\n';
-      expect(addDependsOn(body, url1)).toBe(`## Summary\nSome details\n\nDepends-On: ${url1}`);
+      expect(addDependsOn(body, url1)).toBe(`## Summary\nSome details\n\nDepends-On: ${url1}\n`);
 
       const crlfBody = '## Summary\r\nSome details\r\n';
       expect(addDependsOn(crlfBody, url1)).toBe(
-        `## Summary\r\nSome details\r\n\r\nDepends-On: ${url1}`,
+        `## Summary\r\nSome details\r\n\r\nDepends-On: ${url1}\r\n`,
       );
     });
 
@@ -169,9 +180,48 @@ describe('dependsOnParser', () => {
     });
   });
 
+  describe('addDependsOn with a foreign ref present', () => {
+    it('adds the local ref when only a ref on another host exists', () => {
+      const foreign = 'https://other.example.com/org/repo/pull/10';
+      const local = 'https://ghe.example.com/org/repo/pull/10';
+      expect(addDependsOn(`Depends-On: ${foreign}`, local)).toBe(
+        `Depends-On: ${foreign}\nDepends-On: ${local}`,
+      );
+    });
+  });
+
   describe('removeDependsOn', () => {
     const url1 = 'https://ghe.example.com/org/repo/pull/10';
     const url2 = 'https://ghe.example.com/org/repo/pull/20';
+
+    it.each(['text', 'text\n', 'a\r\nb\r\n'])('round-trips add then remove for %j', (body) => {
+      const added = addDependsOn(body, url1);
+      expect(added).toContain(`Depends-On: ${url1}`);
+      expect(removeDependsOn(added, { owner: 'org', repo: 'repo', number: 10 })).toBe(body);
+    });
+
+    it('leaves a same-numbered ref on another host alone when a host is given', () => {
+      const other = 'https://other.example.com/org/repo/pull/10';
+      const body = `Depends-On: ${url1}\nDepends-On: ${other}`;
+      expect(
+        removeDependsOn(body, { owner: 'org', repo: 'repo', number: 10, host: 'ghe.example.com' }),
+      ).toBe(`Depends-On: ${other}`);
+    });
+
+    it('removes a line from a body with mixed line endings', () => {
+      const body = `a\r\nDepends-On: ${url1}\nb\r\n`;
+      expect(removeDependsOn(body, { owner: 'org', repo: 'repo', number: 10 })).toBe('a\r\nb\r\n');
+    });
+
+    it('keeps blank lines the removal did not create', () => {
+      const body = `a\n\nDepends-On: ${url1}\n\nb`;
+      expect(removeDependsOn(body, { owner: 'org', repo: 'repo', number: 10 })).toBe('a\n\n\nb');
+    });
+
+    it('still matches Depends-On lines inside code fences, like Zuul does', () => {
+      const body = `\`\`\`\nDepends-On: ${url1}\n\`\`\``;
+      expect(parseDependsOn(body)).toHaveLength(1);
+    });
 
     it('handles empty or null body and non-matching refs as no-op', () => {
       expect(removeDependsOn('', { owner: 'org', repo: 'repo', number: 10 })).toBe('');

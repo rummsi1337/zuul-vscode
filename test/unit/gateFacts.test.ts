@@ -859,7 +859,56 @@ describe('collectGateFacts', () => {
   });
 });
 
+describe('collectUpstreamFacts hosts', () => {
+  const local = 'https://ghe.example.com/acme/service/pull/2';
+
+  it('reads the local ref and blocks on a foreign ref with the same path', async () => {
+    const rootPr = makePr({
+      number: 1,
+      body: `Depends-On: ${local}\nDepends-On: https://other.example.com/acme/service/pull/2`,
+    });
+    const getPr = vi.fn(async (_o: string, _r: string, num: number) =>
+      makePr({ number: num, merged: true, state: 'closed' }),
+    );
+    const facts = await collectUpstreamFacts(makeMockGhe({ getPr }), makeMockZuul(), 't', rootPr);
+    expect(getPr).toHaveBeenCalledTimes(1);
+    expect(facts).toHaveLength(1);
+    expect(facts[0].loadError).toContain('other.example.com');
+  });
+
+  it.each([
+    ['absent', undefined],
+    ['malformed', 'not a url'],
+  ])('fails closed when the root html_url is %s', async (_name, htmlUrl) => {
+    const rootPr = { ...makePr({ number: 1, body: `Depends-On: ${local}` }) } as PullRequest;
+    (rootPr as { html_url?: string }).html_url = htmlUrl;
+    const getPr = vi.fn();
+    const facts = await collectUpstreamFacts(makeMockGhe({ getPr }), makeMockZuul(), 't', rootPr);
+    expect(getPr).not.toHaveBeenCalled();
+    expect(facts).toHaveLength(1);
+    expect(facts[0].checks[0]).toMatchObject({ state: 'error', required: true });
+  });
+});
+
 describe('collectUpstreamFacts', () => {
+  it('gives blocking facts for a Depends-On on another host without fetching it', async () => {
+    const rootPr = makePr({
+      number: 1,
+      body: 'Depends-On: https://other.example.com/acme/service/pull/2',
+    });
+    const getPr = vi.fn();
+    const facts = await collectUpstreamFacts(
+      makeMockGhe({ getPr }),
+      makeMockZuul(),
+      'acme-tenant',
+      rootPr,
+    );
+    expect(getPr).not.toHaveBeenCalled();
+    expect(facts).toHaveLength(1);
+    expect(facts[0].loadError).toContain('other.example.com');
+    expect(facts[0].checks[0]).toMatchObject({ state: 'error', required: true });
+  });
+
   it('recursively collects non-merged upstream PRs, skips merged PRs, and dedupes refs', async () => {
     const rootPr = makePr({
       number: 1,

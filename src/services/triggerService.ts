@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { readWorkspaceSettings, type TriggerComment } from '../config/settings';
 import { type Logger } from '../util/logger';
 import { formatPrRef } from './dependsOnParser';
+import { extractPrCoordinates } from './dependsOnService';
 import { type PrSnapshot, type ZuulContextSource } from './prTracker';
 
 export const WATCH_DURATION_MS = 45_000;
@@ -106,7 +107,15 @@ export class TriggerService implements vscode.Disposable {
       return false;
     }
 
-    const { owner, repo, ghe } = currentCtx;
+    const coords = extractPrCoordinates(snapshot.pr);
+    if (!coords) {
+      this.logger.warn(
+        '[Zuul] Cannot post trigger comment: unknown repository for this pull request',
+      );
+      return false;
+    }
+    const { ghe } = currentCtx;
+    const { owner, repo } = coords;
     const prNumber = snapshot.pr.number;
 
     if (options?.confirm !== false) {
@@ -129,6 +138,11 @@ export class TriggerService implements vscode.Disposable {
     this.logger.info(
       `[Zuul] Posted trigger comment "${trimmed}" on ${formatPrRef({ owner, repo, number: prNumber })}`,
     );
+
+    if (this.tracker.snapshot === undefined) {
+      // The pull request went away while posting; there is nothing left to watch.
+      return true;
+    }
 
     this.rememberBaseline(this.tracker.snapshot ?? snapshot);
     this.watchDeadline = this.now() + WATCH_DURATION_MS;
@@ -238,6 +252,11 @@ export class TriggerService implements vscode.Disposable {
     this.updateHasPrContext(snapshot);
 
     if (!this._waiting || this.disposed) {
+      return;
+    }
+
+    if (snapshot === undefined) {
+      this.stopWaiting();
       return;
     }
 

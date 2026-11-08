@@ -49,6 +49,7 @@ export class PrTracker implements vscode.Disposable {
   private focused: boolean;
   private lastObservedStateFocused: boolean;
   private hasEmittedForContext = false;
+  private lastContextKey: string | undefined;
   private disposed = false;
 
   readonly onDidChange: vscode.Event<PrSnapshot | undefined> = this.emitter.event;
@@ -145,9 +146,20 @@ export class PrTracker implements vscode.Disposable {
     this.hasEmittedForContext = false;
 
     const currentCtx = this.ctx.current;
+    const contextKey = currentCtx
+      ? [currentCtx.host, currentCtx.owner, currentCtx.repo, currentCtx.branch].join('\n')
+      : undefined;
+    const contextChanged = contextKey !== this.lastContextKey;
+    this.lastContextKey = contextKey;
+
     if (!currentCtx?.branch) {
       this.updateSnapshot(undefined, true);
       return;
+    }
+
+    if (contextChanged && this._snapshot !== undefined) {
+      // Never show the old branch's pull request while the new one loads.
+      this.updateSnapshot(undefined, true);
     }
 
     if (this.isFocused()) {

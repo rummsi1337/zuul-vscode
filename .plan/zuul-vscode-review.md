@@ -448,7 +448,7 @@ the code, and the pre-commit checks run.
 
 - **Tier:** sonnet
 - **Risk:** high
-- **Status:** todo
+- **Status:** done
 - **Files:** `src/services/dependsOnParser.ts`, `dependsOnService.ts`, `gateFacts.ts`, `prTracker.ts`,
   `triggerService.ts`, `dependsOnCandidates.ts`, tests
 - **Do:**
@@ -456,20 +456,28 @@ the code, and the pre-commit checks run.
     each line with its own ending, removes only blanks the removal created, and restores one trailing
     ending if the input had one.
   - Log a warning instead of "Removed" when the body did not change. Skip the PATCH when the new body
-    equals the fresh body. Run the cycle check on the fresh body.
+    equals the fresh body. The cycle check needs no change: `wouldCreateCycle` never reads the source
+    PR's body, and every body it walks is fetched fresh.
   - `parsePrUrlCandidate`: use `rawHost.toLowerCase()`, never `fallbackHost`, when a URL has a host.
-  - Keep `host` in `extractValidDependsOnRefs` and in the ref keys. A ref on another host gives blocking
-    facts in the gate and `state: 'missing'` with a warning in `getUpstream`.
+    Remove the fallback-host parameter and the arguments that only forward it.
+  - Keep `host` in `extractValidDependsOnRefs` and in the ref keys, including the dedupe in
+    `parseDependsOn` (a hostless shorthand still collapses onto the first entry with the same
+    coordinates). `addDependsOn` and `removeDependsOn` compare hosts too. A ref on another host gives
+    blocking facts in the gate and `state: 'missing'` with a warning in `getUpstream`. Fail closed: a ref
+    with a host counts as foreign when the root host is unknown. `html_url` is required in `getUpstream`.
   - `prTracker.handleContextChange`: when host, owner, repo or branch changes, clear the snapshot and
     emit before polling (not on `headSha`-only changes).
   - `TriggerService.post`: take owner and repo from `snapshot.pr.base.repo.full_name`. Stop waiting when
-    the snapshot becomes undefined.
+    the snapshot becomes undefined, including while the comment is being posted.
 - **Don't:** skip `Depends-On` lines inside code fences. Zuul's own pattern matches them too; add a test
   that documents this.
 - **Done when:**
   - `npm run check` passes
   - Tests: round trips for `text`, `text\n`, `a\r\nb\r\n`; removal from a mixed body; `http://other/...`
-    keeps its host; a branch switch clears the snapshot; a fresh body differing from the snapshot is used
+    keeps its host; a branch switch clears the snapshot; a fresh body differing from the snapshot is used;
+    local-then-foreign refs both reach the gate and `getUpstream`; an absent or malformed `html_url`
+    blocks; the snapshot going away during the post stops the wait;
+    an unchanged body logs a warning instead of "Removed" and sends no PATCH
 
 ### Step 10: Explain loading, empty and failed states
 
@@ -594,6 +602,8 @@ the code, and the pre-commit checks run.
 - Multi-root repo picking, and showing `owner/repo @ branch` in the view description.
 - Non-standard ports on GHE remotes.
 - Fork workflows (recorded as out of scope in Step 2).
+- `http://` Depends-On lines in PR bodies (user decision, 2026-11-08). They parse as `unknown`, so they
+  add no blocker, row or warning.
 - Required approval count from branch protection (Future work in `.plan/zuul-vscode.md`).
 - Project name casing, found in the Step 8 review and not verified against a live Zuul. `resolveTenant`
   now matches case-insensitively, but `ResolvedContext.project` keeps the git remote's casing and is
