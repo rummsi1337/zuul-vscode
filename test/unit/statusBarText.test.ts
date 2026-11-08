@@ -300,6 +300,26 @@ describe('statusBarText', () => {
       expect(result?.text).toBe('$(error) Zuul check: 1 failed');
     });
 
+    it.each(['CANCELED', 'ABORTED', 'MERGE_CONFLICT', 'CONFIG_ERROR'])(
+      'does not report PASSED for a %s build',
+      (result) => {
+        const builds: Build[] = [
+          {
+            uuid: 'u-1',
+            jobName: 'tox-py311',
+            pipeline: 'check',
+            result: 'SUCCESS',
+            artifacts: [],
+          },
+          { uuid: 'u-2', jobName: 'tox-linters', pipeline: 'check', result, artifacts: [] },
+        ];
+        const snapshot = makeSnapshot({ statuses: [], builds });
+        const text = statusBarText(snapshot, false)?.text ?? '';
+        expect(text).not.toContain('PASSED');
+        expect(text).toBe('$(error) Zuul check: 1 failed');
+      },
+    );
+
     it('uses the latest build per job when an older build failed and a newer one passed', () => {
       const builds: Build[] = [
         {

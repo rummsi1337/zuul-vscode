@@ -7,12 +7,12 @@ import { type Logger } from '../util/logger';
 
 export const GATE_REFRESH_MIN_INTERVAL_MS = 30_000;
 
-export interface GateHeaderNode {
+interface GateHeaderNode {
   readonly kind: 'header';
   readonly report: GateReport;
 }
 
-export interface GatePrNode {
+interface GatePrNode {
   readonly kind: 'pr';
   readonly pr: string;
   readonly isRoot: boolean;

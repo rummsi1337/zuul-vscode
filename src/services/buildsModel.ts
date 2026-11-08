@@ -53,6 +53,21 @@ export function classifyJobResult(result: string): JobState {
   return 'other';
 }
 
+export function pickPrimary<T>(
+  items: readonly T[],
+  getPipeline: (item: T) => string,
+): T | undefined {
+  const gate = items.find((i) => getPipeline(i).trim().toLowerCase() === 'gate');
+  if (gate) {
+    return gate;
+  }
+  const check = items.find((i) => getPipeline(i).trim().toLowerCase() === 'check');
+  if (check) {
+    return check;
+  }
+  return items[0];
+}
+
 export function sortJobs(jobs: readonly JobNode[]): JobNode[] {
   return [...jobs].sort((a, b) => {
     const orderDiff = STATE_ORDER[a.state] - STATE_ORDER[b.state];
@@ -109,7 +124,7 @@ function jobStatusToNode(job: JobStatus): JobNode {
   return node;
 }
 
-function getBuildTime(build: Build): number | undefined {
+export function getBuildTime(build: Build): number | undefined {
   if (build.endTime) {
     const t = Date.parse(build.endTime);
     if (!Number.isNaN(t)) {
@@ -137,7 +152,7 @@ function getBuildDurationMs(build: Build): number | undefined {
   return end - start;
 }
 
-function getLatestBuildsPerJob(builds: readonly Build[]): Build[] {
+export function getLatestBuildsPerJob(builds: readonly Build[]): Build[] {
   const latestByJob = new Map<string, { build: Build; time?: number }>();
 
   for (const build of builds) {

@@ -31,8 +31,8 @@ function createPrompt(inputValue?: string): PromptLike {
 }
 
 describe('PatAuthProvider', () => {
-  it('computes normalized secret key', () => {
-    expect(patSecretKey('  GHE.Example.COM ')).toBe('zuul.pat.ghe.example.com');
+  it('computes the secret key from the host', () => {
+    expect(patSecretKey('ghe.example.com')).toBe('zuul.pat.ghe.example.com');
   });
 
   it('stores valid PAT and returns it via setToken', async () => {
@@ -41,7 +41,7 @@ describe('PatAuthProvider', () => {
     const prompt = createPrompt('  ghp_secret123  ');
     const provider = new PatAuthProvider(secrets, validate, prompt);
 
-    const token = await provider.setToken('GHE.Example.com');
+    const token = await provider.setToken('ghe.example.com');
 
     expect(token).toBe('ghp_secret123');
     expect(prompt.showInputBox).toHaveBeenCalledWith(
@@ -153,16 +153,7 @@ describe('PatAuthProvider', () => {
     await provider.invalidate('other.example.com');
     expect(secrets.data.has('zuul.pat.other.example.com')).toBe(false);
 
-    await provider.clear('   ');
     expect(secrets.delete).toHaveBeenCalledTimes(2);
-  });
-
-  it('handles empty host in setToken and getToken', async () => {
-    const secrets = createSecretStorage();
-    const provider = new PatAuthProvider(secrets, async () => true, createPrompt('ghp_x'));
-
-    expect(await provider.setToken('   ')).toBeUndefined();
-    expect(await provider.getToken('   ', { interactive: true })).toBeUndefined();
   });
 
   it('validates PAT with GheClient.getUser()', async () => {

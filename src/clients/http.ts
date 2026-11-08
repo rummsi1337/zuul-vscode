@@ -2,7 +2,7 @@ import { gunzipSync } from 'node:zlib';
 
 export type QueryParams = Record<string, string | number | boolean | undefined>;
 
-export interface HttpClientOptions {
+interface HttpClientOptions {
   baseUrl: string;
   getAuthHeader?: () => Promise<string | undefined>;
   fetchFn?: typeof fetch;

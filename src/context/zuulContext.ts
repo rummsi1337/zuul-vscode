@@ -4,6 +4,7 @@ import { HttpError } from '../clients/http';
 import { ZuulClient } from '../clients/zuulClient';
 import { onSettingsChanged, readWorkspaceSettings, type ZuulSettings } from '../config/settings';
 import { type GitContext, isSameGitContext } from '../git/gitContext';
+import { normalizeHost } from '../git/remoteUrl';
 import { type Logger } from '../util/logger';
 import { type KeyValueStore, resolveTenant } from './tenantResolver';
 
@@ -198,7 +199,7 @@ export class ZuulContextService implements vscode.Disposable {
   }
 
   private async handleUnauthorizedGhe(host: string): Promise<void> {
-    const normalizedHost = host.trim().toLowerCase();
+    const normalizedHost = normalizeHost(host);
     await this.auth.reportUnauthorized(normalizedHost);
     void Promise.resolve(
       this.showErrorMessage(
@@ -239,7 +240,7 @@ export class ZuulContextService implements vscode.Disposable {
   }
 
   private getOrCreateGheClient(host: string): GheClient {
-    const normalizedHost = host.trim().toLowerCase();
+    const normalizedHost = normalizeHost(host);
     if (this.cachedGheClient && this.cachedGheHost === normalizedHost) {
       return this.cachedGheClient;
     }

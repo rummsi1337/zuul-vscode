@@ -6,7 +6,7 @@ describe('GhCliAuthProvider', () => {
     const execFile = vi.fn(async () => ({ stdout: '  gho_clitoken123\n', stderr: '' }));
     const provider = new GhCliAuthProvider(execFile);
 
-    const token = await provider.getToken('GHE.Example.com', { interactive: false });
+    const token = await provider.getToken('ghe.example.com', { interactive: false });
 
     expect(token).toBe('gho_clitoken123');
     expect(execFile).toHaveBeenCalledWith(
@@ -95,7 +95,7 @@ describe('GhCliAuthProvider', () => {
     expect(execFile).toHaveBeenCalledTimes(3);
   });
 
-  it('supports callback-style execFile and handles empty hosts', async () => {
+  it('supports callback-style execFile', async () => {
     const callbackExec: ExecFileFn = (
       _file: string,
       _args: readonly string[],
@@ -107,7 +107,5 @@ describe('GhCliAuthProvider', () => {
     const provider = new GhCliAuthProvider(callbackExec);
 
     expect(await provider.getToken('ghe.example.com')).toBe('cb_token');
-    expect(await provider.getToken('   ')).toBeUndefined();
-    await provider.invalidate('   ');
   });
 });

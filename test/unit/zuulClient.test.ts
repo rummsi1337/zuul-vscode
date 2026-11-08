@@ -354,10 +354,10 @@ describe('ZuulClient', () => {
     });
     expect(
       normalizeBuild({
-        jobName: 'alt-job',
-        logUrl: 'https://logs.example.com/alt',
-        startTime: '2026-01-01T00:00:00Z',
-        endTime: '2026-01-01T00:01:00Z',
+        job_name: 'alt-job',
+        log_url: 'https://logs.example.com/alt',
+        start_time: '2026-01-01T00:00:00Z',
+        end_time: '2026-01-01T00:01:00Z',
         change: 'not-a-num',
         artifacts: [{}],
       }),

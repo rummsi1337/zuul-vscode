@@ -5,6 +5,7 @@ import { PatAuthProvider, validatePatWithGhe } from './auth/patAuthProvider';
 import { readWorkspaceSettings } from './config/settings';
 import { ZuulContextService } from './context/zuulContext';
 import { GitContextService } from './git/gitContext';
+import { normalizeHost } from './git/remoteUrl';
 import { type JobNode } from './services/buildsModel';
 import { PrTracker } from './services/prTracker';
 import { HAS_PR_CONTEXT_KEY, TriggerService } from './services/triggerService';
@@ -25,7 +26,7 @@ async function resolveTargetHost(
   hostArg?: unknown,
 ): Promise<string | undefined> {
   if (typeof hostArg === 'string' && hostArg.trim().length > 0) {
-    return hostArg.trim().toLowerCase();
+    return normalizeHost(hostArg);
   }
   if (gitContext.current?.host) {
     return gitContext.current.host;
@@ -35,7 +36,7 @@ async function resolveTargetHost(
     placeHolder: 'ghe.example.com',
     ignoreFocusOut: true,
   });
-  const trimmed = input?.trim().toLowerCase();
+  const trimmed = input ? normalizeHost(input) : undefined;
   return trimmed || undefined;
 }
 

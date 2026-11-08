@@ -66,12 +66,7 @@ export class GhCliAuthProvider implements TokenProvider {
     host: string,
     _opts: { interactive: boolean } = { interactive: false },
   ): Promise<string | undefined> {
-    const normalizedHost = host.trim().toLowerCase();
-    if (!normalizedHost) {
-      return undefined;
-    }
-
-    const cached = this.cache.get(normalizedHost);
+    const cached = this.cache.get(host);
     const currentTime = this.now();
     if (cached !== undefined && currentTime < cached.expiresAt) {
       return cached.token;
@@ -81,32 +76,28 @@ export class GhCliAuthProvider implements TokenProvider {
       const stdout = await invokeExecFile(
         this.execFile,
         'gh',
-        ['auth', 'token', '--hostname', normalizedHost],
+        ['auth', 'token', '--hostname', host],
         { timeout: GH_TIMEOUT_MS },
       );
       const token = stdout.trim();
       if (!token) {
-        this.cache.delete(normalizedHost);
+        this.cache.delete(host);
         return undefined;
       }
 
-      this.cache.set(normalizedHost, {
+      this.cache.set(host, {
         token,
         expiresAt: this.now() + CACHE_TTL_MS,
       });
       return token;
     } catch {
-      this.cache.delete(normalizedHost);
+      this.cache.delete(host);
       return undefined;
     }
   }
 
   async invalidate(host: string): Promise<void> {
-    const normalizedHost = host.trim().toLowerCase();
-    if (!normalizedHost) {
-      return;
-    }
-    this.cache.delete(normalizedHost);
+    this.cache.delete(host);
   }
 
   clearCache(): void {

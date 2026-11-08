@@ -26,7 +26,7 @@ export interface QueuedRef {
   url?: string;
 }
 
-export interface BuildArtifact {
+interface BuildArtifact {
   name: string;
   url: string;
 }
@@ -86,7 +86,7 @@ export interface ZuulJobSummary {
   }[];
 }
 
-export interface ZuulPlaybookRef {
+interface ZuulPlaybookRef {
   path: string;
   roles?: unknown[];
   secrets?: unknown[];

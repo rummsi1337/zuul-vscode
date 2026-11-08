@@ -83,11 +83,25 @@ function parseLine(lineText: string, lineNumber: number): DependsOnRef | undefin
   return parseTarget(match[1], lineNumber);
 }
 
-function refKey(ref: { owner?: string; repo?: string; number?: number }): string | undefined {
+export function formatPrRef(ref: { owner: string; repo: string; number: number }): string {
+  return `${ref.owner}/${ref.repo}#${ref.number}`;
+}
+
+export function prRefKey(ref: { owner: string; repo: string; number: number }): string;
+export function prRefKey(ref: {
+  owner?: string;
+  repo?: string;
+  number?: number;
+}): string | undefined;
+export function prRefKey(ref: {
+  owner?: string;
+  repo?: string;
+  number?: number;
+}): string | undefined {
   if (!ref.owner || !ref.repo || ref.number === undefined) {
     return undefined;
   }
-  return `${ref.owner.toLowerCase()}/${ref.repo.toLowerCase()}#${ref.number}`;
+  return formatPrRef({ owner: ref.owner, repo: ref.repo, number: ref.number }).toLowerCase();
 }
 
 export function parseDependsOn(body: string | null): DependsOnRef[] {
@@ -104,7 +118,7 @@ export function parseDependsOn(body: string | null): DependsOnRef[] {
     if (!parsed) {
       continue;
     }
-    const key = refKey(parsed);
+    const key = prRefKey(parsed);
     if (key !== undefined) {
       if (seenKeys.has(key)) {
         continue;
@@ -121,12 +135,12 @@ export function addDependsOn(body: string | null, url: string): string {
   const current = body ?? '';
   const trimmedUrl = url.trim();
   const targetRef = parseTarget(trimmedUrl, 1);
-  const targetKey = refKey(targetRef);
+  const targetKey = prRefKey(targetRef);
   const canonicalUrl = targetRef.url ?? trimmedUrl;
 
   const existing = parseDependsOn(current);
   for (const item of existing) {
-    if (targetKey !== undefined && refKey(item) === targetKey) {
+    if (targetKey !== undefined && prRefKey(item) === targetKey) {
       return current;
     }
     if (item.raw === trimmedUrl || item.raw === canonicalUrl) {
@@ -159,7 +173,7 @@ export function removeDependsOn(
     return '';
   }
 
-  const targetKey = refKey(ref);
+  const targetKey = prRefKey(ref);
   const eol = current.includes('\r\n') ? '\r\n' : '\n';
   const lines = current.split(eol);
   const kept: string[] = [];
@@ -167,7 +181,7 @@ export function removeDependsOn(
 
   for (let i = 0; i < lines.length; i += 1) {
     const parsed = parseLine(lines[i], i + 1);
-    if (parsed && refKey(parsed) === targetKey) {
+    if (parsed && prRefKey(parsed) === targetKey) {
       removed = true;
       continue;
     }
