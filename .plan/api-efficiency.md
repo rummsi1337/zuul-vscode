@@ -510,9 +510,10 @@ When polling resumes:
 
 - **Tier:** sonnet
 - **Risk:** low
-- **Status:** todo
+- **Status:** done
 - **Files:** `src/views/statusBar.ts`, `src/services/statusBarText.ts`, `src/extension.ts`,
-  `package.json`, `test/unit/statusBarText.test.ts`, `test/unit/viewsWelcome.test.ts` (edit)
+  `src/services/prTracker.ts`, `package.json`, `test/unit/statusBarText.test.ts`,
+  `test/unit/viewsWelcome.test.ts`, `test/unit/prTracker.test.ts`, `test/mocks/vscode.ts` (edit)
 - **Do:**
   - Status bar text, with a click action:
 
@@ -525,6 +526,8 @@ When polling resumes:
     | `snapshot.zuul.reason` is `unreachable`, `stopped` true | Normal PR text plus `, Zuul updates stopped (not responding)` | `zuul.refresh` |
     | `snapshot.zuul.reason` is `unreachable`, `stopped` false | Normal PR text plus `, Zuul retrying` | `zuul.refresh` |
 
+  - In every other state, the text is unchanged and the click keeps opening the sidebar
+    (`workbench.view.extension.zuul-explorer`), as it does today.
   - The tooltip carries the full reason and says whether updates have stopped.
   - Show the same state at the top of all three sidebar views with `TreeView.message`, so old data
     can't be mistaken for live data. Switch `extension.ts` from `registerTreeDataProvider` to
@@ -542,13 +545,22 @@ When polling resumes:
     `rate-limited`.
   - `viewsWelcome`: the "No pull request found for the current branch." entries also need
     `zuul.pollState == 'no-pr'`. Add one entry per view for `failed`, `auth` and `rate-limited`:
-    "Could not load data from GitHub. [Retry](command:zuul.refresh)".
+    "Could not load data from GitHub. [Retry](command:zuul.refresh)". These entries also need
+    `(!zuul.authChecked || zuul.signedIn)`, like the "No pull request found" entries, so a missing
+    token shows only the existing "no token" text.
+  - VS Code hides a view's welcome text while `TreeView.message` is set (checked in the installed
+    VS Code, `shouldShowWelcome`). So `sidebarMessage` returns `undefined` when there is no snapshot.
+    With no data on screen, the welcome entries explain the problem and offer Retry.
+  - `PrTracker.resetPollState`: when the context has no branch (detached HEAD), set `no-pr` instead
+    of `active`, so the views still say "No pull request found".
 - **Don't:** add popups. Don't remove the existing Zuul token popup.
 - **Done when:**
   - `npm run check` passes
   - A test shows "No pull request found" is not shown after a failed load
   - Tests show the status bar text and sidebar message for each state name the service that stopped,
     and that the sidebar message clears on resume
+  - Tests show: no sidebar message without a snapshot; with no token and a failed load, only the
+    "no token" welcome text shows; a context with no branch gives `no-pr`
 
 ### Step 10: Lock in a request budget
 

@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { type PollStatus, type PrSnapshot } from '../services/prTracker';
-import { offlineStatusText, statusBarText } from '../services/statusBarText';
+import { statusBarView } from '../services/statusBarText';
 
 export interface StatusBarTrackerSource {
   readonly snapshot: PrSnapshot | undefined;
@@ -67,19 +67,9 @@ export class ZuulStatusBar implements vscode.Disposable {
   }
 
   update(): void {
-    const pollStatus = this.tracker.pollStatus;
-    if (pollStatus?.kind === 'stopped' || pollStatus?.kind === 'rate-limited') {
-      this.item.command = 'zuul.refresh';
-      this.item.text = offlineStatusText(
-        pollStatus.kind === 'stopped' ? pollStatus.lastSuccessAt : undefined,
-      );
-      this.item.tooltip = `Could not update from Zuul or GitHub: ${pollStatus.message}\nClick to refresh.`;
-      this.item.show();
-      return;
-    }
-    this.item.command = 'workbench.view.extension.zuul-explorer';
     const waiting = this.waitingSource ? this.waitingSource.waiting : this.isWaiting;
-    const info = statusBarText(this.tracker.snapshot, waiting);
+    const info = statusBarView(this.tracker.pollStatus, this.tracker.snapshot, waiting);
+    this.item.command = info ? info.command : 'workbench.view.extension.zuul-explorer';
     if (!info) {
       this.item.hide();
       return;

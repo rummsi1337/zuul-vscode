@@ -23,6 +23,7 @@ import {
   type UpstreamDepNode,
 } from './views/dependsOnTreeView';
 import { PrGateTreeDataProvider } from './views/prGateTreeView';
+import { pollStateName, sidebarMessage } from './services/statusBarText';
 import { ZuulStatusBar } from './views/statusBar';
 
 async function resolveTargetHost(
@@ -124,6 +125,24 @@ export function activate(context: vscode.ExtensionContext): void {
       handler,
     );
 
+  const treeViews = [
+    vscode.window.createTreeView('zuul.gateReadiness', { treeDataProvider: gateTree }),
+    vscode.window.createTreeView('zuul.builds', { treeDataProvider: buildsTree }),
+    vscode.window.createTreeView('zuul.dependencies', { treeDataProvider: dependsOnTree }),
+  ];
+  const refreshPollState = (): void => {
+    const message = sidebarMessage(prTracker.pollStatus, prTracker.snapshot);
+    for (const view of treeViews) {
+      view.message = message;
+    }
+    void vscode.commands.executeCommand(
+      'setContext',
+      'zuul.pollState',
+      pollStateName(prTracker.pollStatus),
+    );
+  };
+  refreshPollState();
+
   let promptedNoZuulUrl = false;
   const checkZuulContextProblem = (): void => {
     const problem = zuulContext.problem ?? (zuulContext.current ? 'none' : 'loading');
@@ -154,9 +173,8 @@ export function activate(context: vscode.ExtensionContext): void {
     buildsTree,
     dependsOnTree,
     gateTree,
-    vscode.window.registerTreeDataProvider('zuul.gateReadiness', gateTree),
-    vscode.window.registerTreeDataProvider('zuul.builds', buildsTree),
-    vscode.window.registerTreeDataProvider('zuul.dependencies', dependsOnTree),
+    ...treeViews,
+    prTracker.onDidChangePollStatus(() => refreshPollState()),
     vscode.commands.registerCommand(OPEN_BUILD_LOG_COMMAND, async (target?: string | JobNode) => {
       await buildsTree.openJobLog(target);
     }),
@@ -168,6 +186,7 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
     prTracker.onDidChange((snapshot) => {
       void vscode.commands.executeCommand('setContext', HAS_PR_CONTEXT_KEY, snapshot !== undefined);
+      refreshPollState();
     }),
     gitContext.onDidChange((ctx) => {
       if (ctx) {

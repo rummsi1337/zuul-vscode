@@ -69,6 +69,7 @@ const BASE: Ctx = {
   'zuul.signedIn': true,
   'zuul.hasPr': false,
   'zuul.zuulProblem': 'none',
+  'zuul.pollState': 'no-pr',
 };
 
 const STATES: { name: string; ctx: Ctx; expected: Record<string, string> }[] = [
@@ -148,6 +149,21 @@ const STATES: { name: string; ctx: Ctx; expected: Record<string, string> }[] = [
     name: 'token not checked yet, no pull request',
     ctx: { ...BASE, 'zuul.authChecked': undefined, 'zuul.signedIn': undefined },
     expected: all('No pull request found'),
+  },
+  {
+    name: 'load failed (not a missing pull request)',
+    ctx: { ...BASE, 'zuul.pollState': 'failed' },
+    expected: all('Could not load data from GitHub'),
+  },
+  {
+    name: 'no token while polling stopped on auth',
+    ctx: { ...BASE, 'zuul.signedIn': false, 'zuul.pollState': 'auth' },
+    expected: all('No GitHub token available'),
+  },
+  {
+    name: 'rate limited',
+    ctx: { ...BASE, 'zuul.pollState': 'rate-limited' },
+    expected: all('Could not load data from GitHub'),
   },
   {
     name: 'pull request found',

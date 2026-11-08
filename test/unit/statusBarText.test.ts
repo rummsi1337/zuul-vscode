@@ -2,7 +2,12 @@ import { describe, expect, it, vi } from 'vitest';
 import * as vscode from 'vscode';
 import { type Build, type ChangeStatus } from '../../src/clients/zuulTypes';
 import { type PollStatus, type PrSnapshot } from '../../src/services/prTracker';
-import { statusBarText } from '../../src/services/statusBarText';
+import {
+  pollStateName,
+  sidebarMessage,
+  statusBarText,
+  statusBarView,
+} from '../../src/services/statusBarText';
 import { ZuulStatusBar } from '../../src/views/statusBar';
 import { makePr } from '../helpers';
 
@@ -685,20 +690,112 @@ describe('ZuulStatusBar offline state', () => {
       () => item as unknown as vscode.StatusBarItem,
     );
 
-    expect(item.text).toBe('$(warning) Zuul: offline, last update 09:05');
+    expect(item.text).toBe('$(warning) Zuul: GitHub not responding, updates stopped');
     expect(item.command).toBe('zuul.refresh');
     expect(item.show).toHaveBeenCalled();
 
     pollStatus = { kind: 'rate-limited', until: lastSuccessAt + 60_000, message: 'slow down' };
     errorEmitter.fire();
-    expect(item.text).toBe('$(warning) Zuul: offline');
-    expect(item.command).toBe('zuul.refresh');
+    expect(item.text).toBe('$(clock) Zuul: GitHub rate limit, resumes 09:06');
+    expect(item.command).toBeUndefined();
     expect(item.tooltip).toContain('slow down');
+
+    pollStatus = { kind: 'stopped', reason: 'auth', message: 'bad', at: 1 };
+    errorEmitter.fire();
+    expect(item.text).toBe('$(warning) Zuul: GitHub sign-in needed, updates stopped');
+    expect(item.command).toBe('zuul.setGhePat');
 
     pollStatus = { kind: 'active' };
     errorEmitter.fire();
     expect(item.command).toBe('workbench.view.extension.zuul-explorer');
     expect(item.hide).toHaveBeenCalled();
     statusBar.dispose();
+  });
+});
+
+describe('sidebarMessage and pollStateName', () => {
+  const at = new Date(2026, 10, 8, 9, 5).getTime();
+  const zuul = (o: object): PrSnapshot =>
+    ({ ...makeSnapshot({}), zuul: { kind: 'unavailable', message: 'm', ...o } }) as PrSnapshot;
+
+  it('names each GitHub state', () => {
+    expect(
+      sidebarMessage({ kind: 'stopped', reason: 'failed', message: 'x', at }, makeSnapshot({})),
+    ).toContain('GitHub is not responding');
+    expect(
+      sidebarMessage({ kind: 'stopped', reason: 'auth', message: 'x', at }, makeSnapshot({})),
+    ).toBe('Updates stopped: GitHub sign-in needed.');
+    expect(
+      sidebarMessage({ kind: 'rate-limited', until: at, message: 'x' }, makeSnapshot({})),
+    ).toBe('Updates paused: GitHub rate limit, resumes at 09:05.');
+  });
+
+  it('shows no message without a snapshot, so welcome text can show', () => {
+    expect(
+      sidebarMessage({ kind: 'stopped', reason: 'failed', message: 'x', at }, undefined),
+    ).toBeUndefined();
+  });
+
+  it('names the Zuul states and clears on resume', () => {
+    expect(sidebarMessage(undefined, zuul({ reason: 'unreachable', stopped: true }))).toContain(
+      'Zuul is not responding',
+    );
+    expect(sidebarMessage(undefined, zuul({ reason: 'needs-token', stopped: true }))).toContain(
+      'token was refused',
+    );
+    expect(
+      sidebarMessage(undefined, zuul({ reason: 'unreachable', stopped: false })),
+    ).toBeUndefined();
+    expect(sidebarMessage({ kind: 'active' }, makeSnapshot({}))).toBeUndefined();
+  });
+
+  it('maps poll status to context state', () => {
+    expect(pollStateName(undefined)).toBe('active');
+    expect(pollStateName({ kind: 'no-pr' } as PollStatus)).toBe('no-pr');
+    expect(pollStateName({ kind: 'stopped', reason: 'auth', message: 'x', at })).toBe('auth');
+    expect(pollStateName({ kind: 'rate-limited', until: at, message: 'x' })).toBe('rate-limited');
+  });
+});
+
+describe('statusBarView', () => {
+  const unavailable = (o: object): PrSnapshot =>
+    ({ ...makeSnapshot({}), zuul: { kind: 'unavailable', message: 'm', ...o } }) as PrSnapshot;
+  const base = statusBarText(makeSnapshot({}), false)!.text;
+
+  it('shows the rate limit time with no click action', () => {
+    const until = new Date(2026, 10, 8, 9, 5).getTime();
+    const view = statusBarView({ kind: 'rate-limited', until, message: 'x' }, undefined, false);
+    expect(view?.text).toBe('$(clock) Zuul: GitHub rate limit, resumes 09:05');
+    expect(view?.command).toBeUndefined();
+  });
+
+  it('says the Zuul token is needed and opens the token prompt', () => {
+    const view = statusBarView(
+      undefined,
+      unavailable({ reason: 'needs-token', stopped: true }),
+      false,
+    );
+    expect(view?.text).toBe(`${base}, Zuul updates stopped (token needed)`);
+    expect(view?.command).toBe('zuul.setTenantToken');
+  });
+
+  it('says Zuul stopped responding and runs refresh', () => {
+    const view = statusBarView(
+      undefined,
+      unavailable({ reason: 'unreachable', stopped: true }),
+      false,
+    );
+    expect(view?.text).toBe(`${base}, Zuul updates stopped (not responding)`);
+    expect(view?.command).toBe('zuul.refresh');
+  });
+
+  it('says Zuul is retrying and runs refresh', () => {
+    const view = statusBarView(
+      undefined,
+      unavailable({ reason: 'unreachable', stopped: false }),
+      false,
+    );
+    expect(view?.text).toBe(`${base}, Zuul retrying`);
+    expect(view?.command).toBe('zuul.refresh');
   });
 });

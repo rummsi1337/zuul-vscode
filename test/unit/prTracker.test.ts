@@ -605,6 +605,7 @@ describe('PrTracker', () => {
     setContext(makeResolvedContext({ branch: undefined }));
     expect(tracker.snapshot).toBeUndefined();
     expect(snapshots.at(-1)).toBeUndefined();
+    expect(tracker.pollStatus).toEqual({ kind: 'no-pr' });
 
     tracker.dispose();
   });

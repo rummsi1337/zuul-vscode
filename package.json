@@ -211,8 +211,23 @@
       },
       {
         "view": "zuul.gateReadiness",
-        "when": "workbenchState != 'empty' && zuul.contextProblem == 'none' && (!zuul.authChecked || zuul.signedIn) && !zuul.hasPr",
+        "when": "workbenchState != 'empty' && zuul.contextProblem == 'none' && (!zuul.authChecked || zuul.signedIn) && !zuul.hasPr && zuul.pollState == 'no-pr'",
         "contents": "No pull request found for the current branch."
+      },
+      {
+        "view": "zuul.gateReadiness",
+        "when": "workbenchState != 'empty' && zuul.contextProblem == 'none' && (!zuul.authChecked || zuul.signedIn) && zuul.pollState == 'failed'",
+        "contents": "Could not load data from GitHub. [Retry](command:zuul.refresh)"
+      },
+      {
+        "view": "zuul.gateReadiness",
+        "when": "workbenchState != 'empty' && zuul.contextProblem == 'none' && (!zuul.authChecked || zuul.signedIn) && zuul.pollState == 'auth'",
+        "contents": "Could not load data from GitHub. [Retry](command:zuul.refresh)"
+      },
+      {
+        "view": "zuul.gateReadiness",
+        "when": "workbenchState != 'empty' && zuul.contextProblem == 'none' && (!zuul.authChecked || zuul.signedIn) && zuul.pollState == 'rate-limited'",
+        "contents": "Could not load data from GitHub. [Retry](command:zuul.refresh)"
       },
       {
         "view": "zuul.dependencies",
@@ -246,8 +261,23 @@
       },
       {
         "view": "zuul.dependencies",
-        "when": "workbenchState != 'empty' && zuul.contextProblem == 'none' && (!zuul.authChecked || zuul.signedIn) && !zuul.hasPr",
+        "when": "workbenchState != 'empty' && zuul.contextProblem == 'none' && (!zuul.authChecked || zuul.signedIn) && !zuul.hasPr && zuul.pollState == 'no-pr'",
         "contents": "No pull request found for the current branch."
+      },
+      {
+        "view": "zuul.dependencies",
+        "when": "workbenchState != 'empty' && zuul.contextProblem == 'none' && (!zuul.authChecked || zuul.signedIn) && zuul.pollState == 'failed'",
+        "contents": "Could not load data from GitHub. [Retry](command:zuul.refresh)"
+      },
+      {
+        "view": "zuul.dependencies",
+        "when": "workbenchState != 'empty' && zuul.contextProblem == 'none' && (!zuul.authChecked || zuul.signedIn) && zuul.pollState == 'auth'",
+        "contents": "Could not load data from GitHub. [Retry](command:zuul.refresh)"
+      },
+      {
+        "view": "zuul.dependencies",
+        "when": "workbenchState != 'empty' && zuul.contextProblem == 'none' && (!zuul.authChecked || zuul.signedIn) && zuul.pollState == 'rate-limited'",
+        "contents": "Could not load data from GitHub. [Retry](command:zuul.refresh)"
       },
       {
         "view": "zuul.builds",
@@ -281,8 +311,23 @@
       },
       {
         "view": "zuul.builds",
-        "when": "workbenchState != 'empty' && zuul.contextProblem == 'none' && (!zuul.authChecked || zuul.signedIn) && !zuul.hasPr",
+        "when": "workbenchState != 'empty' && zuul.contextProblem == 'none' && (!zuul.authChecked || zuul.signedIn) && !zuul.hasPr && zuul.pollState == 'no-pr'",
         "contents": "No pull request found for the current branch."
+      },
+      {
+        "view": "zuul.builds",
+        "when": "workbenchState != 'empty' && zuul.contextProblem == 'none' && (!zuul.authChecked || zuul.signedIn) && zuul.pollState == 'failed'",
+        "contents": "Could not load data from GitHub. [Retry](command:zuul.refresh)"
+      },
+      {
+        "view": "zuul.builds",
+        "when": "workbenchState != 'empty' && zuul.contextProblem == 'none' && (!zuul.authChecked || zuul.signedIn) && zuul.pollState == 'auth'",
+        "contents": "Could not load data from GitHub. [Retry](command:zuul.refresh)"
+      },
+      {
+        "view": "zuul.builds",
+        "when": "workbenchState != 'empty' && zuul.contextProblem == 'none' && (!zuul.authChecked || zuul.signedIn) && zuul.pollState == 'rate-limited'",
+        "contents": "Could not load data from GitHub. [Retry](command:zuul.refresh)"
       },
       {
         "view": "zuul.builds",

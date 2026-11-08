@@ -150,7 +150,8 @@ export class PrTracker implements vscode.Disposable {
     this.gheFailures = 0;
     this.zuulFailures = 0;
     this.stoppedZuul = undefined;
-    this.setPollStatus({ kind: 'active' });
+    // Without a branch there is nothing to poll, so say so instead of staying blank.
+    this.setPollStatus(this.ctx.current?.branch ? { kind: 'active' } : { kind: 'no-pr' });
   }
 
   watchFor(ms: number): void {
