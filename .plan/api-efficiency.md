@@ -562,13 +562,16 @@ When polling resumes:
   - Tests show: no sidebar message without a snapshot; with no token and a failed load, only the
     "no token" welcome text shows; a context with no branch gives `no-pr`
 
-### Step 10: Lock in a request budget
+### Step 10: Measure the request budget once (throwaway test)
 
 - **Tier:** sonnet
 - **Risk:** low
-- **Status:** todo
-- **Files:** `test/unit/requestBudget.test.ts` (new)
+- **Status:** done
+- **Files:** `test/unit/requestBudget.test.ts` (new, temporary). Decided by the user on 2026-11-08: the
+  test is run once to check the numbers, then deleted. It does not stay in the repo.
 - **Do:**
+  - For each scenario, log GitHub charged, GitHub total and Zuul, so the report can give the real
+    numbers.
   - Build the real objects with a fake `fetchFn`: `AuthService`, `ZuulTokenProvider`,
     `ZuulContextService`, `PrTracker`, `PrGateTreeDataProvider`, `DependsOnTreeDataProvider`.
   - Mimic a visible view by calling `getChildren()` on every `onDidChangeTreeData`.
@@ -584,9 +587,24 @@ When polling resumes:
     | Idle PR, sidebar closed     |            ≤ 3 |  ≤ 30 |
 
 - **Don't:** loosen a limit to make the test pass without finding out why it is exceeded. Don't add
-  the failure scenarios here, Step 7 already tests them.
+  the failure scenarios here, Step 7 already tests them. Don't change `src/`. If a limit is exceeded,
+  report which one and why, and stop. Don't delete the test file: the orchestrator does that.
 - **Done when:**
   - `npm run check` passes, including this test
+  - The report gives GitHub charged, GitHub total and Zuul for each scenario
+  - Orchestrator, afterwards: the numbers are recorded in this step, the test file is deleted, and
+    `npm run check` still passes without it
+- **Measured on 2026-11-08** (one simulated hour, 60 s interval, fake server):
+
+  | Scenario                             | GitHub charged | GitHub total | Zuul |
+  | ------------------------------------ | -------------: | -----------: | ---: |
+  | Idle PR, sidebar open                |             18 |           62 |   24 |
+  | Idle PR with no builds, sidebar open |             18 |           62 |   36 |
+  | Build running, sidebar open          |             66 |          302 |   60 |
+  | Idle PR, sidebar closed              |              1 |           12 |   24 |
+
+  Only the no-builds PR goes over a limit (Zuul 36, limit 30). PRs with `Depends-On` were not measured.
+  The user decided to leave those 12 extra `listBuildsets` calls as they are. The test file is deleted.
 
 ## Out of scope
 
