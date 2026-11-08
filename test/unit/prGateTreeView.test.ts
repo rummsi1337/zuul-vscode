@@ -42,7 +42,6 @@ function setup() {
     host: 'ghe.example.com',
     owner: 'acme',
     repo: 'service',
-    tenant: 'acme-tenant',
     ghe: {
       getPr: vi.fn(async () => PR),
       getPrRollup: vi.fn(async () => undefined),
@@ -53,15 +52,19 @@ function setup() {
       listReviews,
     },
     zuul: {
-      getChangeStatus: vi.fn(async () => [
-        {
-          pipeline: 'check',
-          queue: '',
-          live: true,
-          jobs: [{ name: 'j', running: false, result: 'SUCCESS', voting: true }],
-          itemsAhead: [],
-        },
-      ]),
+      url: 'https://zuul.example.com',
+      tenant: 'acme-tenant',
+      client: {
+        getChangeStatus: vi.fn(async () => [
+          {
+            pipeline: 'check',
+            queue: '',
+            live: true,
+            jobs: [{ name: 'j', running: false, result: 'SUCCESS', voting: true }],
+            itemsAhead: [],
+          },
+        ]),
+      },
     },
   } as unknown as ResolvedContext;
   const ctx = { current: context };
@@ -114,6 +117,17 @@ describe('PrGateTreeDataProvider', () => {
         message: 'Could not load gate data: HTTP 500',
       },
     ]);
+  });
+
+  it('shows a not-ready report and sends no requests when the context has no Zuul', async () => {
+    const t = setup();
+    t.moveTo({ zuul: undefined });
+
+    const report = await currentReport(t.provider);
+
+    expect(report.ready).toBe(false);
+    expect(report.blockers.map((b) => b.kind)).toEqual(['load-error']);
+    expect(t.listReviews).not.toHaveBeenCalled();
   });
 
   it('does not reuse a report when the rules change', async () => {

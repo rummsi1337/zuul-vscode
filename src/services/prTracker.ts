@@ -281,30 +281,30 @@ export class PrTracker implements vscode.Disposable {
         return;
       }
 
-      this.logger.info(
-        `[Poll] Fetching change status for PR #${pr.number} (head=${pr.head.sha}) on tenant="${currentCtx.tenant}"`,
-      );
-      const statuses = await currentCtx.zuul.getChangeStatus(
-        currentCtx.tenant,
-        pr.number,
-        pr.head.sha,
-      );
-      if (this.disposed || seq !== this.sessionSeq || pollRunId !== this.pollRunSeq) {
-        return;
-      }
-
+      let statuses: ChangeStatus[] = [];
       let builds: Build[] = [];
-      if (statuses.every((s) => !s.live)) {
+      const zuul = currentCtx.zuul;
+      if (zuul) {
         this.logger.info(
-          `[Poll] No live pipeline for PR #${pr.number}; fetching completed builds for project="${currentCtx.project}" change=${pr.number} patchset=${pr.head.sha}`,
+          `[Poll] Fetching change status for PR #${pr.number} (head=${pr.head.sha}) on tenant="${zuul.tenant}"`,
         );
-        builds = await currentCtx.zuul.listBuilds(currentCtx.tenant, {
-          project: currentCtx.project,
-          change: pr.number,
-          patchset: pr.head.sha,
-        });
+        statuses = await zuul.client.getChangeStatus(zuul.tenant, pr.number, pr.head.sha);
         if (this.disposed || seq !== this.sessionSeq || pollRunId !== this.pollRunSeq) {
           return;
+        }
+
+        if (statuses.every((s) => !s.live)) {
+          this.logger.info(
+            `[Poll] No live pipeline for PR #${pr.number}; fetching completed builds for project="${currentCtx.project}" change=${pr.number} patchset=${pr.head.sha}`,
+          );
+          builds = await zuul.client.listBuilds(zuul.tenant, {
+            project: currentCtx.project,
+            change: pr.number,
+            patchset: pr.head.sha,
+          });
+          if (this.disposed || seq !== this.sessionSeq || pollRunId !== this.pollRunSeq) {
+            return;
+          }
         }
       }
 

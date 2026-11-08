@@ -68,6 +68,7 @@ const BASE: Ctx = {
   'zuul.authChecked': true,
   'zuul.signedIn': true,
   'zuul.hasPr': false,
+  'zuul.zuulProblem': 'none',
 };
 
 const STATES: { name: string; ctx: Ctx; expected: Record<string, string> }[] = [
@@ -92,9 +93,36 @@ const STATES: { name: string; ctx: Ctx; expected: Record<string, string> }[] = [
     expected: all('Could not resolve a Zuul tenant'),
   },
   {
-    name: 'unreachable',
-    ctx: { ...BASE, 'zuul.contextProblem': 'zuul-unreachable' },
-    expected: all('Could not reach Zuul'),
+    name: 'Zuul refused the token, pull request found',
+    ctx: { ...BASE, 'zuul.hasPr': true, 'zuul.zuulProblem': 'zuul-auth' },
+    expected: {
+      'zuul.gateReadiness': '',
+      'zuul.dependencies': '',
+      'zuul.builds': 'Zuul refused the token',
+    },
+  },
+  {
+    name: 'Zuul unreachable, pull request found',
+    ctx: { ...BASE, 'zuul.hasPr': true, 'zuul.zuulProblem': 'zuul-unreachable' },
+    expected: {
+      'zuul.gateReadiness': '',
+      'zuul.dependencies': '',
+      'zuul.builds': 'Could not reach Zuul',
+    },
+  },
+  {
+    name: 'Zuul unreachable, no pull request',
+    ctx: { ...BASE, 'zuul.zuulProblem': 'zuul-unreachable' },
+    expected: all('No pull request found'),
+  },
+  {
+    name: 'Zuul problem key not set yet, pull request found',
+    ctx: { ...BASE, 'zuul.hasPr': true, 'zuul.zuulProblem': undefined },
+    expected: {
+      'zuul.gateReadiness': '',
+      'zuul.dependencies': '',
+      'zuul.builds': 'No Zuul builds for this pull request yet.',
+    },
   },
   {
     name: 'loading (set to loading)',

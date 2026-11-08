@@ -10,19 +10,24 @@ import { type Logger } from '../util/logger';
 import { type KeyValueStore, resolveTenant } from './tenantResolver';
 import { SIGN_IN_ACTION, type SignInOption } from '../util/commandErrors';
 
-export type ContextProblem = 'no-repo' | 'no-zuul-url' | 'no-tenant' | 'zuul-unreachable';
+export type ContextProblem = 'no-repo' | 'no-zuul-url' | 'no-tenant';
+export type ZuulProblem = 'zuul-auth' | 'zuul-unreachable';
 
 export { SIGN_IN_ACTION };
 export const SIGN_IN_COMMAND = 'zuul.setGhePat';
 const SET_ZUUL_TOKEN_ACTION = 'Set Zuul Token';
 const SET_ZUUL_TOKEN_COMMAND = 'zuul.setTenantToken';
 
-export interface ResolvedContext extends GitContext {
-  zuulUrl: string;
+export interface ZuulAccess {
+  url: string;
   tenant: string;
+  client: ZuulClient;
+}
+
+export interface ResolvedContext extends GitContext {
   project: string;
   ghe: GheClient;
-  zuul: ZuulClient;
+  zuul?: ZuulAccess;
 }
 
 export interface GitContextSource {
@@ -71,8 +76,8 @@ export function isSameResolvedContext(
   }
   return (
     isSameGitContext(a, b) &&
-    a.zuulUrl === b.zuulUrl &&
-    a.tenant === b.tenant &&
+    a.zuul?.url === b.zuul?.url &&
+    a.zuul?.tenant === b.zuul?.tenant &&
     a.project === b.project
   );
 }
@@ -108,6 +113,7 @@ export class ZuulContextService implements vscode.Disposable {
 
   private _current: ResolvedContext | undefined;
   private _problem: ContextProblem | undefined;
+  private _zuulProblem: ZuulProblem | undefined;
   private cachedGheHost: string | undefined;
   private cachedGheClient: GheClient | undefined;
   private cachedZuulUrl: string | undefined;
@@ -194,6 +200,11 @@ export class ZuulContextService implements vscode.Disposable {
 
   get problem(): ContextProblem | undefined {
     return this._problem;
+  }
+
+  /** Why `current` has no `zuul`, when the GitHub side was published without it. */
+  get zuulProblem(): ZuulProblem | undefined {
+    return this._zuulProblem;
   }
 
   private async init(): Promise<void> {
@@ -347,11 +358,13 @@ export class ZuulContextService implements vscode.Disposable {
   private updateState(
     next: ResolvedContext | undefined,
     problem: ContextProblem | undefined,
+    zuulProblem?: ZuulProblem,
   ): void {
     const contextChanged = !isSameResolvedContext(this._current, next);
-    const problemChanged = this._problem !== problem;
+    const problemChanged = this._problem !== problem || this._zuulProblem !== zuulProblem;
     this._current = next;
     this._problem = problem;
+    this._zuulProblem = zuulProblem;
     if (contextChanged || problemChanged) {
       this.emitter.fire(this._current);
     }
@@ -406,7 +419,12 @@ export class ZuulContextService implements vscode.Disposable {
       }
       this.logger.error(`[Zuul] Failed to resolve tenant for ${project}`, err);
       const authFailure = err instanceof HttpError && (err.status === 401 || err.status === 403);
-      this.updateState(undefined, authFailure ? 'no-tenant' : 'zuul-unreachable');
+      // GitHub features don't need Zuul, so publish the context without it.
+      this.updateState(
+        { ...gitCtx, project, ghe },
+        undefined,
+        authFailure ? 'zuul-auth' : 'zuul-unreachable',
+      );
       await this.handleZuulError(err);
       return;
     }
@@ -423,11 +441,9 @@ export class ZuulContextService implements vscode.Disposable {
 
     const resolved: ResolvedContext = {
       ...gitCtx,
-      zuulUrl,
-      tenant,
       project,
       ghe,
-      zuul,
+      zuul: { url: zuulUrl, tenant, client: zuul },
     };
 
     const changed = !isSameResolvedContext(this._current, resolved);

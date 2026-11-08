@@ -54,7 +54,7 @@ function createHarness(initialSnapshot?: PrSnapshot) {
   let currentCtx: ResolvedContext | undefined = makeResolvedContext({
     headSha: 'pr-head-sha-1',
     ghe,
-    zuul,
+    zuul: { url: 'https://zuul.example.com', tenant: 'main', client: zuul },
   });
   const ctxEmitter = new EventEmitter<ResolvedContext | undefined>();
   const ctx: ZuulContextSource = {

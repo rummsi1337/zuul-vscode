@@ -246,7 +246,7 @@ export class DependsOnTreeDataProvider
     if (!currentCtx) {
       return undefined;
     }
-    return `${currentCtx.tenant}:${currentCtx.project}#${snapshot.pr.number}`;
+    return `${currentCtx.zuul?.tenant ?? ''}:${currentCtx.project}#${snapshot.pr.number}`;
   }
 
   private getCacheKey(snapshot: PrSnapshot): string | undefined {
@@ -310,15 +310,14 @@ export class DependsOnTreeDataProvider
       this.cachedPrKey = prKey;
       this.cachedBody = body;
       try {
-        const service = new DependsOnService(
-          currentCtx.ghe,
-          currentCtx.zuul,
-          currentCtx.tenant,
-          async () => {
-            const projects = await currentCtx.zuul.listProjects(currentCtx.tenant);
-            return buildTenantProjectSet(projects, currentCtx.project);
-          },
-        );
+        const zuul = currentCtx.zuul;
+        if (!zuul) {
+          throw new Error('Zuul is not available');
+        }
+        const service = new DependsOnService(currentCtx.ghe, zuul.client, zuul.tenant, async () => {
+          const projects = await zuul.client.listProjects(zuul.tenant);
+          return buildTenantProjectSet(projects, currentCtx.project);
+        });
 
         const [upstream, downstream] = await Promise.all([
           service.getUpstream(snapshot.pr),

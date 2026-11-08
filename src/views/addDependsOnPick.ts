@@ -221,6 +221,14 @@ export async function pickAndAddDependsOn(options: AddDependsOnOptions): Promise
     return false;
   }
 
+  const zuul = currentCtx.zuul;
+  if (!zuul) {
+    const message = 'Zuul is not available, so a Depends-On cannot be added right now.';
+    options.logger.warn(`[DependsOn] ${message}`);
+    void vscode.window.showErrorMessage(message);
+    return false;
+  }
+
   const selfKey = prRefKey({
     owner: currentCtx.owner,
     repo: currentCtx.repo,
@@ -232,7 +240,7 @@ export async function pickAndAddDependsOn(options: AddDependsOnOptions): Promise
     if (!tenantProjectsPromise) {
       tenantProjectsPromise = (async () => {
         try {
-          const projects = await currentCtx.zuul.listProjects(currentCtx.tenant);
+          const projects = await zuul.client.listProjects(zuul.tenant);
           return buildTenantProjectSet(projects, currentCtx.project);
         } catch (err) {
           options.logger.error('[DependsOn] Failed to list tenant projects', err);
@@ -331,7 +339,7 @@ export async function pickAndAddDependsOn(options: AddDependsOnOptions): Promise
   const tenantProjects = await getTenantProjects();
   const sameHost = normalizeHost(candidate.host) === normalizeHost(currentCtx.host);
   if (!sameHost || !isInTenant(candidate.owner, candidate.repo, tenantProjects)) {
-    const message = `Repository ${candidate.owner}/${candidate.repo} is not part of tenant ${currentCtx.tenant}`;
+    const message = `Repository ${candidate.owner}/${candidate.repo} is not part of tenant ${zuul.tenant}`;
     options.logger.warn(`[DependsOn] ${message}`);
     void vscode.window.showErrorMessage(message);
     return false;
@@ -339,8 +347,8 @@ export async function pickAndAddDependsOn(options: AddDependsOnOptions): Promise
 
   const service = new DependsOnService(
     currentCtx.ghe,
-    currentCtx.zuul,
-    currentCtx.tenant,
+    zuul.client,
+    zuul.tenant,
     async () => tenantProjects,
   );
 

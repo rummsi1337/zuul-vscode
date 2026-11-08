@@ -229,7 +229,7 @@ When polling resumes:
 
 - **Tier:** opus
 - **Risk:** high
-- **Status:** todo
+- **Status:** done
 - **Files:** `src/context/zuulContext.ts`, `src/extension.ts`, `src/services/prTracker.ts`,
   `src/views/prGateTreeView.ts`, `src/views/dependsOnTreeView.ts`, `src/views/addDependsOnPick.ts`,
   `src/services/gateReadiness.ts`, `package.json`, `test/unit/zuulContext.test.ts`,

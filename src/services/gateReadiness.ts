@@ -151,15 +151,18 @@ function otherBlockedCause(facts: PrGateFacts, listedInSettings: boolean): strin
   return undefined;
 }
 
-/** Replaces `{tenant}` in the configured status check names. */
-export function resolveGateRules(rules: GateRules, tenant: string): GateRules {
-  const fill = (name: string): string => name.split('{tenant}').join(tenant);
+/** Replaces `{tenant}` in the configured status check names. Without a tenant, drops those names. */
+export function resolveGateRules(rules: GateRules, tenant: string | undefined): GateRules {
+  const resolve = (names: string[]): string[] =>
+    tenant === undefined
+      ? names.filter((name) => !name.includes('{tenant}'))
+      : names.map((name) => name.split('{tenant}').join(tenant));
   return {
     ...rules,
     requiredStatusChecks: Object.fromEntries(
-      Object.entries(rules.requiredStatusChecks).map(([repo, names]) => [repo, names.map(fill)]),
+      Object.entries(rules.requiredStatusChecks).map(([repo, names]) => [repo, resolve(names)]),
     ),
-    gateStatusChecks: rules.gateStatusChecks.map(fill),
+    gateStatusChecks: resolve(rules.gateStatusChecks),
   };
 }
 

@@ -91,7 +91,11 @@ function createMockClients() {
   } as unknown as ZuulClient;
 
   const makeResolvedContext = (overrides: Partial<ResolvedContext> = {}): ResolvedContext =>
-    makeBaseContext({ ghe, zuul, ...overrides });
+    makeBaseContext({
+      ghe,
+      zuul: { url: 'https://zuul.example.com', tenant: 'main', client: zuul },
+      ...overrides,
+    });
 
   return {
     findOpenPrForBranch,
@@ -161,6 +165,23 @@ describe('PrTracker', () => {
     expect(getChangeStatus).toHaveBeenCalledTimes(2);
     expect(findOpenPrForBranch).toHaveBeenCalledTimes(1);
 
+    tracker.dispose();
+  });
+
+  it('still makes a snapshot, without calling Zuul, when the context has no Zuul', async () => {
+    const { findOpenPrForBranch, getChangeStatus, listBuilds, makeResolvedContext } =
+      createMockClients();
+    const pr = makePr();
+    findOpenPrForBranch.mockResolvedValue(pr);
+
+    const { source } = createFakeContextSource(makeResolvedContext({ zuul: undefined }));
+    const { focusEvents } = createFakeFocusEvents(true);
+    const tracker = new PrTracker(source, createFakeLogger(), setTimeout, Date.now, focusEvents);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(getChangeStatus).not.toHaveBeenCalled();
+    expect(listBuilds).not.toHaveBeenCalled();
+    expect(tracker.snapshot).toEqual({ pr, statuses: [], builds: [], fetchedAt: 1_000_000 });
     tracker.dispose();
   });
 

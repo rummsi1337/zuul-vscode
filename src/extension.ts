@@ -126,6 +126,11 @@ export function activate(context: vscode.ExtensionContext): void {
   const checkZuulContextProblem = (): void => {
     const problem = zuulContext.problem ?? (zuulContext.current ? 'none' : 'loading');
     void vscode.commands.executeCommand('setContext', 'zuul.contextProblem', problem);
+    void vscode.commands.executeCommand(
+      'setContext',
+      'zuul.zuulProblem',
+      zuulContext.zuulProblem ?? 'none',
+    );
     if (!promptedNoZuulUrl && zuulContext.problem === 'no-zuul-url') {
       promptedNoZuulUrl = true;
       void Promise.resolve(
@@ -197,7 +202,8 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('zuul.setTenantToken', async (tenantArg?: unknown) => {
       const explicit =
         typeof tenantArg === 'string' && tenantArg.trim().length > 0 ? tenantArg.trim() : undefined;
-      const suggested = zuulContext.current?.tenant || readWorkspaceSettings().tenant || undefined;
+      const suggested =
+        zuulContext.current?.zuul?.tenant || readWorkspaceSettings().tenant || undefined;
       const token = await zuulTokenProvider.setToken(explicit, suggested);
       if (token) {
         await zuulContext.recompute();

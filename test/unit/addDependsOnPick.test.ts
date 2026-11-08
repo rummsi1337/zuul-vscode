@@ -30,10 +30,13 @@ describe('pickAndAddDependsOn', () => {
       host: 'ghe.example.com',
       owner: 'acme',
       repo: 'service',
-      tenant: 't',
       project: 'acme/service',
       ghe,
-      zuul: { listProjects: vi.fn(async () => []) },
+      zuul: {
+        url: 'https://zuul.example.com',
+        tenant: 't',
+        client: { listProjects: vi.fn(async () => []) },
+      },
     } as unknown as ResolvedContext;
     const snapshot: PrSnapshot = { pr, statuses: [], builds: [], fetchedAt: 0 };
     const logger = createFakeLogger();
@@ -51,5 +54,35 @@ describe('pickAndAddDependsOn', () => {
     expect(updatePrBody).not.toHaveBeenCalled();
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('was not added'));
     expect(logger.info).not.toHaveBeenCalledWith(expect.stringContaining('Added'));
+  });
+
+  it('refuses without writing when the context has no Zuul', async () => {
+    const url = 'https://ghe.example.com/acme/service/pull/7';
+    const pr = {
+      number: 5,
+      html_url: 'https://ghe.example.com/acme/service/pull/5',
+      body: null,
+      head: { sha: 'x', ref: 'f', repo: { full_name: 'acme/service' } },
+      base: { ref: 'main', repo: { full_name: 'acme/service' } },
+    } as unknown as PullRequest;
+    const updatePrBody = vi.fn();
+    const ctx = {
+      host: 'ghe.example.com',
+      owner: 'acme',
+      repo: 'service',
+      project: 'acme/service',
+      ghe: { getPr: vi.fn(async () => pr), updatePrBody, searchPrs: vi.fn(async () => []) },
+    } as unknown as ResolvedContext;
+    const snapshot: PrSnapshot = { pr, statuses: [], builds: [], fetchedAt: 0 };
+
+    const done = await pickAndAddDependsOn({
+      ctx: { current: ctx, onDidChange: new EventEmitter<ResolvedContext | undefined>().event },
+      tracker: { snapshot, refresh: vi.fn(async () => undefined) },
+      logger: createFakeLogger(),
+      targetArg: url,
+    });
+
+    expect(done).toBe(false);
+    expect(updatePrBody).not.toHaveBeenCalled();
   });
 });

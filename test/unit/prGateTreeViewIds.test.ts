@@ -38,9 +38,8 @@ describe('PrGateTreeDataProvider ids', () => {
       host: 'h',
       owner: 'org',
       repo: 'repo',
-      tenant: 't',
       ghe: {},
-      zuul: {},
+      zuul: { url: 'https://zuul.example.com', tenant: 't', client: {} },
     } as unknown as ResolvedContext;
     const provider = new PrGateTreeDataProvider(
       { snapshot, onDidChange: new EventEmitter<PrSnapshot | undefined>().event },
