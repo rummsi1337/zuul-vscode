@@ -191,9 +191,22 @@ export const window = {
   })),
   createTreeView: vi.fn(),
   registerTreeDataProvider: vi.fn(),
-  state: { focused: true },
+  state: { focused: true, active: true },
   onDidChangeWindowState: vi.fn(() => new Disposable()),
-};
+} satisfies Partial<Record<keyof typeof import('vscode').window, unknown>> &
+  Pick<
+    typeof import('vscode').window,
+    | 'showInformationMessage'
+    | 'showWarningMessage'
+    | 'showErrorMessage'
+    | 'showInputBox'
+    | 'setStatusBarMessage'
+    | 'showQuickPick'
+    | 'createTreeView'
+    | 'registerTreeDataProvider'
+    | 'state'
+    | 'onDidChangeWindowState'
+  >;
 
 export interface ConfigurationChangeEvent {
   affectsConfiguration(section: string): boolean;
@@ -217,19 +230,27 @@ export const workspace = {
   })),
   registerTextDocumentContentProvider: vi.fn(() => new Disposable()),
   openTextDocument: vi.fn(),
-};
+} satisfies Partial<Record<keyof typeof import('vscode').workspace, unknown>> &
+  Pick<
+    typeof import('vscode').workspace,
+    | 'onDidChangeConfiguration'
+    | 'workspaceFolders'
+    | 'findFiles'
+    | 'registerTextDocumentContentProvider'
+    | 'openTextDocument'
+  >;
 
 export const commands = {
   registerCommand: vi.fn(
     (_command: string, _callback: (...args: unknown[]) => unknown) => new Disposable(),
   ),
   executeCommand: vi.fn(),
-};
+} satisfies Pick<typeof import('vscode').commands, 'registerCommand' | 'executeCommand'>;
 
 export const extensions = {
   getExtension: vi.fn(),
-};
+} satisfies Pick<typeof import('vscode').extensions, 'getExtension'>;
 
 export const env = {
   openExternal: vi.fn(async (_target: Uri) => true),
-};
+} satisfies Pick<typeof import('vscode').env, 'openExternal'>;

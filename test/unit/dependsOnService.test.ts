@@ -230,7 +230,7 @@ describe('DependsOnService.getUpstream', () => {
       getPr: vi.fn(async (owner: string, repo: string, num: number) => {
         inFlight += 1;
         maxInFlight = Math.max(maxInFlight, inFlight);
-        await new Promise((resolve) => setTimeout(resolve, 10));
+        await Promise.resolve();
         inFlight -= 1;
         return makePr({ owner, repo, number: num });
       }),

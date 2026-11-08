@@ -3,17 +3,7 @@ import { AuthService } from '../../src/auth/authService';
 import { GhCliAuthProvider } from '../../src/auth/ghCliAuthProvider';
 import { PatAuthProvider } from '../../src/auth/patAuthProvider';
 import { type AuthMethodId, type TokenProvider } from '../../src/auth/types';
-import { type Logger } from '../../src/util/logger';
-
-function createFakeLogger(): Logger & { messages: string[] } {
-  const messages: string[] = [];
-  return {
-    messages,
-    info: vi.fn((m: string) => messages.push(`INFO: ${m}`)),
-    warn: vi.fn((m: string) => messages.push(`WARN: ${m}`)),
-    error: vi.fn((m: string) => messages.push(`ERROR: ${m}`)),
-  };
-}
+import { createFakeLogger } from '../helpers';
 
 describe('AuthService', () => {
   it('tries providers in auto priority order (pat then gh-cli) and never logs the token', async () => {

@@ -12,18 +12,8 @@ import {
 } from '../../src/context/zuulContext';
 import { resolveTenant } from '../../src/context/tenantResolver';
 import { type GitContext } from '../../src/git/gitContext';
-import { type Logger } from '../../src/util/logger';
+import { createFakeLogger, type FakeLogger } from '../helpers';
 import { EventEmitter } from '../mocks/vscode';
-
-function createFakeLogger(): Logger & { messages: string[] } {
-  const messages: string[] = [];
-  return {
-    messages,
-    info: vi.fn((m: string) => messages.push(`INFO: ${m}`)),
-    warn: vi.fn((m: string) => messages.push(`WARN: ${m}`)),
-    error: vi.fn((m: string) => messages.push(`ERROR: ${m}`)),
-  };
-}
 
 function createFakeGitSource(initial?: GitContext): {
   source: GitContextSource;
@@ -438,7 +428,7 @@ describe('ZuulContextService', () => {
     showErrorMessage?: (message: string, ...items: string[]) => Promise<string | undefined>;
     resolveTenantFn?: ZuulContextServiceOptions['resolveTenantFn'];
     createZuulClient?: ZuulContextServiceOptions['createZuulClient'];
-    logger?: Logger;
+    logger?: FakeLogger;
   }) {
     const { source } = createFakeGitSource(sampleGitCtx);
     const showErrorMessage = vi.fn(

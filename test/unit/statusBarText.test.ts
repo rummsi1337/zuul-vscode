@@ -1,34 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import * as vscode from 'vscode';
-import { type PullRequest } from '../../src/clients/gheTypes';
 import { type Build, type ChangeStatus } from '../../src/clients/zuulTypes';
 import { type PrSnapshot } from '../../src/services/prTracker';
 import { statusBarText } from '../../src/services/statusBarText';
 import { ZuulStatusBar } from '../../src/views/statusBar';
-
-function makePr(overrides?: Partial<PullRequest>): PullRequest {
-  return {
-    number: 42,
-    html_url: 'https://ghe.example.com/org/repo/pull/42',
-    title: 'Add new feature',
-    state: 'open',
-    draft: false,
-    merged: false,
-    body: 'Some PR description',
-    head: {
-      sha: 'abcdef1234567890',
-      ref: 'feature-branch',
-      repo: { full_name: 'org/repo' },
-    },
-    base: {
-      ref: 'main',
-      repo: { full_name: 'org/repo' },
-    },
-    user: { login: 'alice' },
-    labels: [],
-    ...overrides,
-  };
-}
+import { makePr } from '../helpers';
 
 function makeSnapshot(overrides?: Partial<PrSnapshot>): PrSnapshot {
   return {
@@ -438,7 +414,7 @@ describe('statusBarText', () => {
       const result = statusBarText(snapshot, false);
       expect(result).toEqual({
         text: '$(circle-outline) Zuul: no builds',
-        tooltip: 'PR #42: Add new feature',
+        tooltip: 'PR #42: Add feature X',
       });
     });
   });

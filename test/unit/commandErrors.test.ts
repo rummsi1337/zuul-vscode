@@ -7,10 +7,11 @@ import {
   SIGN_IN_ACTION,
   wrapCommand,
 } from '../../src/util/commandErrors';
+import { createFakeLogger } from '../helpers';
 
 function makeDeps(choice?: string) {
   return {
-    logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    logger: createFakeLogger(),
     showErrorMessage: vi.fn(() => Promise.resolve(choice)),
     runCommand: vi.fn(() => Promise.resolve(undefined)),
     signInFor: vi.fn((_err: unknown) => ({ label: SIGN_IN_ACTION, command: 'zuul.setGhePat' })),

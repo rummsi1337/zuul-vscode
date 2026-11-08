@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type GheClient } from '../../src/clients/gheClient';
-import { type PullRequest } from '../../src/clients/gheTypes';
 import { type ZuulClient } from '../../src/clients/zuulClient';
 import { type Build, type ChangeStatus } from '../../src/clients/zuulTypes';
 import { type ResolvedContext } from '../../src/context/zuulContext';
@@ -17,40 +16,8 @@ import {
   type TriggerTrackerSource,
   WATCH_DURATION_MS,
 } from '../../src/services/triggerService';
-import { type Logger } from '../../src/util/logger';
+import { createFakeLogger, makePr, makeResolvedContext } from '../helpers';
 import { commands, EventEmitter, window } from '../mocks/vscode';
-
-function createFakeLogger(): Logger {
-  return {
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  };
-}
-
-function makePr(overrides: Partial<PullRequest> = {}): PullRequest {
-  return {
-    number: 42,
-    html_url: 'https://ghe.example.com/acme/service/pull/42',
-    title: 'Add feature X',
-    state: 'open',
-    draft: false,
-    merged: false,
-    body: 'PR description',
-    head: {
-      sha: 'pr-head-sha-1',
-      ref: 'feat/x',
-      repo: { full_name: 'acme/service' },
-    },
-    base: {
-      ref: 'main',
-      repo: { full_name: 'acme/service' },
-    },
-    user: { login: 'alice' },
-    labels: [],
-    ...overrides,
-  };
-}
 
 function makeStatus(overrides: Partial<ChangeStatus> = {}): ChangeStatus {
   return {
@@ -84,19 +51,11 @@ function createHarness(initialSnapshot?: PrSnapshot) {
   const ghe = { postIssueComment } as unknown as GheClient;
   const zuul = {} as unknown as ZuulClient;
 
-  let currentCtx: ResolvedContext | undefined = {
-    repoRoot: '/workspace/service',
-    host: 'ghe.example.com',
-    owner: 'acme',
-    repo: 'service',
-    branch: 'feat/x',
+  let currentCtx: ResolvedContext | undefined = makeResolvedContext({
     headSha: 'pr-head-sha-1',
-    zuulUrl: 'https://zuul.example.com',
-    tenant: 'main',
-    project: 'acme/service',
     ghe,
     zuul,
-  };
+  });
   const ctxEmitter = new EventEmitter<ResolvedContext | undefined>();
   const ctx: ZuulContextSource = {
     get current() {
@@ -476,59 +435,100 @@ describe('TriggerService', () => {
     service.dispose();
   });
 
-  it('stops waiting when a status job gets a new UUID and handles edge cases', async () => {
-    const initialSnapshot: PrSnapshot = {
+  describe('post edge cases', () => {
+    const snapshotWithoutEnqueueTime = (): PrSnapshot => ({
       pr: makePr(),
       statuses: [makeStatus({ enqueueTime: undefined })],
       builds: [],
       fetchedAt: 1_000_000,
-    };
-    const { ctx, tracker, postIssueComment, emitSnapshot, setContext } =
-      createHarness(initialSnapshot);
-    const logger = createFakeLogger();
-    const service = new TriggerService(ctx, tracker, logger, Date.now);
-
-    // Empty comment returns false
-    expect(await service.post('   ')).toBe(false);
-
-    // Post without modal confirmation and then re-post while already waiting (resets timer)
-    expect(await service.post('recheck', { confirm: false })).toBe(true);
-    expect(await service.post('recheck', { confirm: false })).toBe(true);
-    expect(service.waiting).toBe(true);
-
-    // Status job with new UUID stops waiting
-    emitSnapshot({
-      pr: makePr(),
-      statuses: [
-        makeStatus({
-          enqueueTime: undefined,
-          jobs: [{ name: 'unit-tests', uuid: 'job-uuid-2', running: true }],
-        }),
-      ],
-      builds: [],
-      fetchedAt: 1_003_000,
     });
-    expect(service.waiting).toBe(false);
 
-    // Cancelled QuickPick and InputBox return false
-    window.showQuickPick.mockResolvedValueOnce(undefined);
-    expect(
-      await service.pickAndPostTrigger([
-        { label: 'Recheck', comment: 'recheck', icon: '$(refresh)' },
-      ]),
-    ).toBe(false);
-    window.showInputBox.mockResolvedValueOnce(undefined);
-    expect(await service.promptAndPostCustomTrigger()).toBe(false);
+    it('returns false for an empty comment', async () => {
+      const { ctx, tracker, postIssueComment } = createHarness(snapshotWithoutEnqueueTime());
+      const service = new TriggerService(ctx, tracker, createFakeLogger(), Date.now);
 
-    // Missing context returns false
-    setContext(undefined);
-    expect(await service.post('recheck')).toBe(false);
-    expect(window.showInformationMessage).toHaveBeenCalledWith(NO_PR_MESSAGE);
-    expect(postIssueComment).toHaveBeenCalledTimes(2);
+      expect(await service.post('   ')).toBe(false);
+      expect(postIssueComment).not.toHaveBeenCalled();
 
-    service.dispose();
-    expect(await service.post('recheck')).toBe(false);
-    expect(await service.pickAndPostTrigger()).toBe(false);
-    expect(await service.promptAndPostCustomTrigger()).toBe(false);
+      service.dispose();
+    });
+
+    it('keeps waiting when the same comment is posted again without confirmation', async () => {
+      const { ctx, tracker, postIssueComment } = createHarness(snapshotWithoutEnqueueTime());
+      const service = new TriggerService(ctx, tracker, createFakeLogger(), Date.now);
+
+      expect(await service.post('recheck', { confirm: false })).toBe(true);
+      expect(await service.post('recheck', { confirm: false })).toBe(true);
+      expect(service.waiting).toBe(true);
+      expect(postIssueComment).toHaveBeenCalledTimes(2);
+      expect(window.showWarningMessage).not.toHaveBeenCalled();
+
+      service.dispose();
+    });
+
+    it('stops waiting when a status job gets a new UUID', async () => {
+      const { ctx, tracker, emitSnapshot } = createHarness(snapshotWithoutEnqueueTime());
+      const service = new TriggerService(ctx, tracker, createFakeLogger(), Date.now);
+
+      expect(await service.post('recheck', { confirm: false })).toBe(true);
+      expect(service.waiting).toBe(true);
+
+      emitSnapshot({
+        pr: makePr(),
+        statuses: [
+          makeStatus({
+            enqueueTime: undefined,
+            jobs: [{ name: 'unit-tests', uuid: 'job-uuid-2', running: true }],
+          }),
+        ],
+        builds: [],
+        fetchedAt: 1_003_000,
+      });
+      expect(service.waiting).toBe(false);
+
+      service.dispose();
+    });
+
+    it('returns false when the QuickPick or the InputBox is cancelled', async () => {
+      const { ctx, tracker, postIssueComment } = createHarness(snapshotWithoutEnqueueTime());
+      const service = new TriggerService(ctx, tracker, createFakeLogger(), Date.now);
+
+      window.showQuickPick.mockResolvedValueOnce(undefined);
+      expect(
+        await service.pickAndPostTrigger([
+          { label: 'Recheck', comment: 'recheck', icon: '$(refresh)' },
+        ]),
+      ).toBe(false);
+      window.showInputBox.mockResolvedValueOnce(undefined);
+      expect(await service.promptAndPostCustomTrigger()).toBe(false);
+      expect(postIssueComment).not.toHaveBeenCalled();
+
+      service.dispose();
+    });
+
+    it('returns false and says so when there is no context', async () => {
+      const { ctx, tracker, postIssueComment, setContext } = createHarness(
+        snapshotWithoutEnqueueTime(),
+      );
+      const service = new TriggerService(ctx, tracker, createFakeLogger(), Date.now);
+
+      setContext(undefined);
+      expect(await service.post('recheck')).toBe(false);
+      expect(window.showInformationMessage).toHaveBeenCalledWith(NO_PR_MESSAGE);
+      expect(postIssueComment).not.toHaveBeenCalled();
+
+      service.dispose();
+    });
+
+    it('returns false from every entry point after dispose', async () => {
+      const { ctx, tracker, postIssueComment } = createHarness(snapshotWithoutEnqueueTime());
+      const service = new TriggerService(ctx, tracker, createFakeLogger(), Date.now);
+
+      service.dispose();
+      expect(await service.post('recheck')).toBe(false);
+      expect(await service.pickAndPostTrigger()).toBe(false);
+      expect(await service.promptAndPostCustomTrigger()).toBe(false);
+      expect(postIssueComment).not.toHaveBeenCalled();
+    });
   });
 });
