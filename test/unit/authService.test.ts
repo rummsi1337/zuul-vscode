@@ -133,3 +133,19 @@ describe('AuthService', () => {
     await service.reportUnauthorized('   ');
   });
 });
+
+describe('AuthService onTokenResult', () => {
+  it('reports signed-in state after every getToken', async () => {
+    let token: string | undefined = 'abc';
+    const provider: TokenProvider = { id: 'pat', getToken: vi.fn(async () => token) };
+    const cb = vi.fn();
+    const service = new AuthService([provider], () => 'pat', createFakeLogger(), cb);
+
+    await service.getToken('Ghe.Example.com');
+    token = undefined;
+    await service.getToken('ghe.example.com');
+
+    expect(cb).toHaveBeenNthCalledWith(1, 'ghe.example.com', true);
+    expect(cb).toHaveBeenNthCalledWith(2, 'ghe.example.com', false);
+  });
+});

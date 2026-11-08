@@ -7,12 +7,15 @@ export class AuthService {
   private readonly providers: readonly TokenProvider[];
   private readonly getMethod: () => 'auto' | AuthMethodId;
   private readonly logger: Logger;
+  private readonly onTokenResult?: (host: string, signedIn: boolean) => void;
 
   constructor(
     providers: readonly TokenProvider[],
     getMethod: () => 'auto' | AuthMethodId,
     logger: Logger,
+    onTokenResult?: (host: string, signedIn: boolean) => void,
   ) {
+    this.onTokenResult = onTokenResult;
     this.providers = providers;
     this.getMethod = getMethod;
     this.logger = logger;
@@ -22,6 +25,15 @@ export class AuthService {
     host: string,
     opts: GetTokenOptions = { interactive: false },
   ): Promise<string | undefined> {
+    const token = await this.resolveToken(host, opts);
+    const normalized = host.trim().toLowerCase();
+    if (normalized) {
+      this.onTokenResult?.(normalized, token !== undefined);
+    }
+    return token;
+  }
+
+  private async resolveToken(host: string, opts: GetTokenOptions): Promise<string | undefined> {
     const normalizedHost = host.trim().toLowerCase();
     if (!normalizedHost) {
       return undefined;

@@ -607,7 +607,7 @@ Good points to build, install, and manually test the extension:
 
 - **Tier:** sonnet
 - **Risk:** low
-- **Status:** todo
+- **Status:** done
 - **Files:** `src/views/prGateTreeView.ts` (new); `src/extension.ts`, `package.json` (edit)
 - **Do:**
   - Tree `zuul.gateReadiness`: header item `$(pass-filled) Ready for gate` or

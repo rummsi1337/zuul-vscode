@@ -96,6 +96,11 @@
           "group": "navigation"
         },
         {
+          "command": "zuul.postTrigger",
+          "when": "view == zuul.gateReadiness",
+          "group": "navigation"
+        },
+        {
           "command": "zuul.refresh",
           "when": "view == zuul.dependencies",
           "group": "navigation"
@@ -182,8 +187,13 @@
       },
       {
         "view": "zuul.gateReadiness",
-        "when": "workbenchState != 'empty' && zuul.contextProblem == 'none'",
-        "contents": "No pull request found for the current branch.\n[Set GitHub Enterprise PAT](command:zuul.setGhePat)"
+        "when": "workbenchState != 'empty' && zuul.contextProblem == 'none' && zuul.signedIn",
+        "contents": "No pull request found for the current branch."
+      },
+      {
+        "view": "zuul.gateReadiness",
+        "when": "workbenchState != 'empty' && zuul.contextProblem == 'none' && !zuul.signedIn",
+        "contents": "No GitHub token available, so the pull request could not be loaded.\n[Set GitHub Enterprise PAT](command:zuul.setGhePat)"
       },
       {
         "view": "zuul.dependencies",

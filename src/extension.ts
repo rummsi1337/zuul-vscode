@@ -17,6 +17,7 @@ import {
   OPEN_DEPENDENCY_PR_COMMAND,
   type UpstreamDepNode,
 } from './views/dependsOnTreeView';
+import { PrGateTreeDataProvider } from './views/prGateTreeView';
 import { ZuulStatusBar } from './views/statusBar';
 
 async function resolveTargetHost(
@@ -51,6 +52,9 @@ export function activate(context: vscode.ExtensionContext): void {
     [patProvider, ghCliProvider],
     () => readWorkspaceSettings().authMethod,
     logger,
+    (_host, signedIn) => {
+      void vscode.commands.executeCommand('setContext', 'zuul.signedIn', signedIn);
+    },
   );
   const zuulContext = new ZuulContextService({
     gitContext,
@@ -62,6 +66,12 @@ export function activate(context: vscode.ExtensionContext): void {
   const triggerService = new TriggerService(zuulContext, prTracker, logger);
   const statusBar = new ZuulStatusBar(prTracker, triggerService);
   const buildsTree = new BuildsTreeDataProvider(prTracker);
+  const gateTree = new PrGateTreeDataProvider(
+    prTracker,
+    zuulContext,
+    () => readWorkspaceSettings().gate,
+    logger,
+  );
   const dependsOnTree = new DependsOnTreeDataProvider(zuulContext, prTracker, logger);
 
   void vscode.commands.executeCommand(
@@ -97,10 +107,8 @@ export function activate(context: vscode.ExtensionContext): void {
     statusBar,
     buildsTree,
     dependsOnTree,
-    vscode.window.registerTreeDataProvider('zuul.gateReadiness', {
-      getTreeItem: (e: vscode.TreeItem) => e,
-      getChildren: () => [],
-    }),
+    gateTree,
+    vscode.window.registerTreeDataProvider('zuul.gateReadiness', gateTree),
     vscode.window.registerTreeDataProvider('zuul.builds', buildsTree),
     vscode.window.registerTreeDataProvider('zuul.dependencies', dependsOnTree),
     vscode.commands.registerCommand(OPEN_BUILD_LOG_COMMAND, async (target?: string | JobNode) => {
@@ -145,6 +153,7 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.commands.registerCommand('zuul.refresh', async () => {
       dependsOnTree.invalidateCache();
+      gateTree.invalidateCache();
       await prTracker.refresh();
     }),
     vscode.commands.registerCommand('zuul.postTrigger', async (commentArg?: unknown) => {
