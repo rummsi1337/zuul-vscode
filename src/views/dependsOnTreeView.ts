@@ -50,6 +50,10 @@ interface NeededByGroupNode {
   readonly host?: string;
 }
 
+interface LoadErrorNode {
+  readonly kind: 'load-error';
+}
+
 export interface UpstreamDepNode {
   readonly kind: 'upstream-dep';
   readonly dep: UpstreamDep;
@@ -68,7 +72,8 @@ export type DependsOnTreeNode =
   | DependsOnGroupNode
   | NeededByGroupNode
   | UpstreamDepNode
-  | DownstreamDepNode;
+  | DownstreamDepNode
+  | LoadErrorNode;
 
 export interface DependsOnTrackerSource {
   readonly snapshot: PrSnapshot | undefined;
@@ -112,6 +117,7 @@ export class DependsOnTreeDataProvider
   private queueAhead: QueuedRef[] | undefined;
   private transitiveUpstream: Set<string> | undefined;
   private hasLoadedOnceForPr = false;
+  private loadFailed = false;
   private disposed = false;
 
   readonly onDidChangeTreeData: vscode.Event<DependsOnTreeNode | undefined | void> =
@@ -264,6 +270,7 @@ export class DependsOnTreeDataProvider
       this.queueAhead = undefined;
       this.transitiveUpstream = undefined;
       this.hasLoadedOnceForPr = false;
+      this.loadFailed = false;
       this.emitter.fire();
       return;
     }
@@ -275,6 +282,7 @@ export class DependsOnTreeDataProvider
       this.queueAhead = undefined;
       this.transitiveUpstream = undefined;
       this.hasLoadedOnceForPr = false;
+      this.loadFailed = false;
     }
 
     this.emitter.fire();
@@ -335,12 +343,15 @@ export class DependsOnTreeDataProvider
         this.queueAhead = queueAhead;
         this.transitiveUpstream = transitiveUpstream;
         this.hasLoadedOnceForPr = true;
+        this.loadFailed = false;
         this.emitter.fire();
       } catch (err) {
         if (this.disposed || !isCurrent()) {
           return;
         }
         this.logger.error('[DependsOn] Failed to load dependencies', err);
+        this.loadFailed = true;
+        this.emitter.fire();
       }
     });
   }
@@ -357,12 +368,24 @@ export class DependsOnTreeDataProvider
 
   getTreeItem(element: DependsOnTreeNode): vscode.TreeItem {
     switch (element.kind) {
+      case 'load-error': {
+        const item = new vscode.TreeItem(
+          'Could not load dependencies, click to retry',
+          vscode.TreeItemCollapsibleState.None,
+        );
+        item.iconPath = new vscode.ThemeIcon('error');
+        item.contextValue = 'zuulDependsOnLoadError';
+        item.command = { command: 'zuul.refresh', title: 'Retry' };
+        return item;
+      }
+
       case 'out-of-sync-root': {
         const item = new vscode.TreeItem(
           '$(warning) Out of sync with Zuul',
           vscode.TreeItemCollapsibleState.Expanded,
         );
         item.iconPath = new vscode.ThemeIcon('warning');
+        item.id = 'dependencies/out-of-sync';
         item.contextValue = 'zuulOutOfSync';
         const details: string[] = [];
         if (element.sync.missingInZuul.length > 0) {
@@ -393,6 +416,7 @@ export class DependsOnTreeDataProvider
           `Depends On (${element.items.length})`,
           vscode.TreeItemCollapsibleState.Expanded,
         );
+        item.id = 'dependencies/depends-on';
         item.contextValue = 'zuulDependsOnGroup';
         return item;
       }
@@ -402,6 +426,7 @@ export class DependsOnTreeDataProvider
           `Needed By (${element.items.length})`,
           vscode.TreeItemCollapsibleState.Expanded,
         );
+        item.id = 'dependencies/needed-by';
         item.contextValue = 'zuulNeededByGroup';
         return item;
       }
@@ -455,6 +480,10 @@ export class DependsOnTreeDataProvider
     if (!element) {
       if (this.needsFetch(snapshot)) {
         await this.ensureDataLoaded(snapshot);
+      }
+
+      if (this.loadFailed) {
+        return [{ kind: 'load-error' }];
       }
 
       const nodes: DependsOnTreeNode[] = [];

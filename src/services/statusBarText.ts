@@ -99,3 +99,13 @@ export function statusBarText(
     tooltip,
   };
 }
+
+export function offlineStatusText(lastSuccessAt: number | undefined): string {
+  if (lastSuccessAt === undefined) {
+    return '$(warning) Zuul: offline';
+  }
+  const d = new Date(lastSuccessAt);
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `$(warning) Zuul: offline, last update ${hh}:${mm}`;
+}

@@ -55,6 +55,7 @@ export function activate(context: vscode.ExtensionContext): void {
     () => readWorkspaceSettings().authMethod,
     logger,
     (_host, signedIn) => {
+      void vscode.commands.executeCommand('setContext', 'zuul.authChecked', true);
       void vscode.commands.executeCommand('setContext', 'zuul.signedIn', signedIn);
     },
   );
@@ -92,13 +93,13 @@ export function activate(context: vscode.ExtensionContext): void {
     prTracker.snapshot !== undefined,
   );
 
+  void vscode.commands.executeCommand('setContext', 'zuul.contextProblem', 'loading');
+  void vscode.commands.executeCommand('setContext', 'zuul.authChecked', false);
+
   let promptedNoZuulUrl = false;
   const checkZuulContextProblem = (): void => {
-    void vscode.commands.executeCommand(
-      'setContext',
-      'zuul.contextProblem',
-      zuulContext.problem ?? 'none',
-    );
+    const problem = zuulContext.problem ?? (zuulContext.current ? 'none' : 'loading');
+    void vscode.commands.executeCommand('setContext', 'zuul.contextProblem', problem);
     if (!promptedNoZuulUrl && zuulContext.problem === 'no-zuul-url') {
       promptedNoZuulUrl = true;
       void Promise.resolve(
@@ -222,9 +223,9 @@ export function activate(context: vscode.ExtensionContext): void {
       await prTracker.refresh();
     }),
     vscode.commands.registerCommand('zuul.refresh', async () => {
+      await zuulContext.recompute();
       dependsOnTree.invalidateCache();
       gateTree.invalidateCache();
-      await zuulContext.recompute();
       await prTracker.refresh();
     }),
     vscode.commands.registerCommand('zuul.postTrigger', async (commentArg?: unknown) => {

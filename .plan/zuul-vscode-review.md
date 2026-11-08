@@ -483,9 +483,11 @@ the code, and the pre-commit checks run.
 
 - **Tier:** sonnet
 - **Risk:** medium
-- **Status:** todo
+- **Status:** done
 - **Files:** `package.json`, `src/extension.ts`, `src/context/zuulContext.ts`, `src/services/prTracker.ts`,
-  `src/views/statusBar.ts`, `prGateTreeView.ts`, `dependsOnTreeView.ts`, `buildsTreeView.ts`, tests
+  `src/services/statusBarText.ts`, `src/views/statusBar.ts`, `prGateTreeView.ts`, `dependsOnTreeView.ts`,
+  `buildsTreeView.ts`, `src/util/treeIds.ts` (new), tests, including `test/unit/treeIds.test.ts` and
+  `test/unit/buildsTreeView.test.ts` (new)
 - **Do:**
   - Set `zuul.contextProblem` to `loading` at activation, and to `none` only once `zuulContext.current`
     is defined. Add `zuul.authChecked`, set after the first token lookup. Use
@@ -495,16 +497,34 @@ the code, and the pre-commit checks run.
     `zuul.hasPr`.
   - Add problem `zuul-unreachable` for network and 5xx errors during tenant discovery: "Could not reach
     Zuul at the configured URL. Check `zuul.url` and your network, then [Refresh](command:zuul.refresh)."
-    Keep `no-tenant` for "reachable, repo not in any tenant".
+    Keep `no-tenant` for "reachable, repo not in any tenant", and for 401 and 403. Decided by the user on
+    2026-11-08: every other error, including a 404, is `zuul-unreachable`, because a wrong `zuul.url` often
+    gives a 404.
   - `zuul.refresh` calls `zuulContext.recompute()` first.
   - A failed load in Dependencies shows one node `Could not load dependencies, click to retry`, never
     "Depends On (0)".
   - `PrTracker` exposes the last poll error. The status bar shows
     `$(warning) Zuul: offline, last update HH:MM` (click runs `zuul.refresh`). No toast per poll.
   - Set stable `item.id` on tree items so collapsed nodes stay collapsed.
+  - Added after review: VS Code requires `item.id` to be unique across the whole tree, and two rows can
+    share one (two `check` status items in `buildTree`; the same `org/repo#1` on two hosts). Only rows
+    that can collapse need an id. A row without one gets its id from its label, and leaf labels don't
+    change.
+    - Remove `item.id` from every row created with `TreeItemCollapsibleState.None`. Delete `jobParents`
+      and `checkParents`.
+    - Add `uniqueIds(ids: readonly string[]): string[]` in `src/util/treeIds.ts`. The first use of a
+      value is unchanged. Repeats get `~2`, `~3` and so on, skipping any value already used.
+    - In root `getChildren`, `BuildsTreeDataProvider` runs it over `builds/<pipeline>` and
+      `PrGateTreeDataProvider` over `gate/pr/<pr>` for the `pr` nodes. Store each result in a `WeakMap`
+      by node. `getTreeItem` sets `item.id` only when the map has an entry. Node types, `buildTree` and
+      `buildGateChildren` do not change.
+    - The Dependencies group rows keep their fixed ids.
 - **Done when:**
   - `npm run check` passes
   - A test walks each ladder state in `package.json` and asserts exactly one clause matches per view
+  - Tests: `uniqueIds` with no repeats, with repeats, and where a generated value is already taken; two
+    statuses in one pipeline give different Builds ids; two Gate items with the same `pr` give different
+    ids
 
 ### Step 11: Give commands and the status bar honest feedback
 

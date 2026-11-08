@@ -112,7 +112,39 @@ describe('ZuulContextService', () => {
     service.dispose();
   });
 
-  it('sets problem to no-tenant when tenant cannot be resolved or throws', async () => {
+  it('sets problem to zuul-unreachable for network and 5xx errors, no-tenant for auth errors', async () => {
+    const { source } = createFakeGitSource(sampleGitCtx);
+    const auth: AuthLike = {
+      getToken: vi.fn(async () => undefined),
+      reportUnauthorized: vi.fn(async () => undefined),
+    };
+    let error: unknown = new Error('network boom');
+    const service = new ZuulContextService({
+      gitContext: source,
+      auth,
+      logger: createFakeLogger(),
+      getSettings: () => ({ url: 'https://zuul.example.com', tenant: '' }),
+      onSettingsChange: () => ({ dispose: () => undefined }),
+      showErrorMessage: vi.fn(async () => undefined),
+      resolveTenantFn: vi.fn(async () => {
+        throw error;
+      }),
+    });
+
+    await service.ready;
+    expect(service.problem).toBe('zuul-unreachable');
+
+    error = new HttpError(503, 'Unavailable');
+    await service.recompute();
+    expect(service.problem).toBe('zuul-unreachable');
+
+    error = new HttpError(401, 'Unauthorized');
+    await service.recompute();
+    expect(service.problem).toBe('no-tenant');
+    service.dispose();
+  });
+
+  it('sets problem to no-tenant when the tenant cannot be resolved, and unreachable when it throws', async () => {
     const { source } = createFakeGitSource(sampleGitCtx);
     const auth: AuthLike = {
       getToken: vi.fn(async () => undefined),
@@ -143,7 +175,7 @@ describe('ZuulContextService', () => {
     shouldThrow = true;
     await service.recompute();
     expect(service.current).toBeUndefined();
-    expect(service.problem).toBe('no-tenant');
+    expect(service.problem).toBe('zuul-unreachable');
     expect(logger.messages.some((m) => m.includes('Failed to resolve tenant'))).toBe(true);
 
     service.dispose();

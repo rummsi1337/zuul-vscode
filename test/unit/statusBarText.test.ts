@@ -577,3 +577,48 @@ describe('ZuulStatusBar', () => {
     statusBar.dispose();
   });
 });
+
+describe('ZuulStatusBar offline state', () => {
+  it('shows an offline label that runs zuul.refresh, then goes back to the normal view', () => {
+    const emitter = new vscode.EventEmitter<PrSnapshot | undefined>();
+    const errorEmitter = new vscode.EventEmitter<void>();
+    const lastSuccessAt = new Date(2026, 10, 8, 9, 5).getTime();
+    let pollError: { message: string; at: number; lastSuccessAt?: number } | undefined = {
+      message: 'boom',
+      at: lastSuccessAt + 1000,
+      lastSuccessAt,
+    };
+    const tracker = {
+      snapshot: undefined,
+      get pollError() {
+        return pollError;
+      },
+      onDidChange: emitter.event,
+      onDidChangePollError: errorEmitter.event,
+    };
+    const item = {
+      text: '',
+      tooltip: '',
+      command: undefined as string | undefined,
+      show: vi.fn(),
+      hide: vi.fn(),
+      dispose: vi.fn(),
+    };
+
+    const statusBar = new ZuulStatusBar(
+      tracker,
+      undefined,
+      () => item as unknown as vscode.StatusBarItem,
+    );
+
+    expect(item.text).toBe('$(warning) Zuul: offline, last update 09:05');
+    expect(item.command).toBe('zuul.refresh');
+    expect(item.show).toHaveBeenCalled();
+
+    pollError = undefined;
+    errorEmitter.fire();
+    expect(item.command).toBe('workbench.view.extension.zuul-explorer');
+    expect(item.hide).toHaveBeenCalled();
+    statusBar.dispose();
+  });
+});

@@ -16,6 +16,7 @@ import {
 import { KeyedAsyncCache } from '../services/keyedAsyncCache';
 import { type PrSnapshot } from '../services/prTracker';
 import { type Logger } from '../util/logger';
+import { uniqueIds } from '../util/treeIds';
 
 export const GATE_REFRESH_MIN_INTERVAL_MS = 30_000;
 
@@ -34,6 +35,7 @@ export class PrGateTreeDataProvider
   private readonly emitter = new vscode.EventEmitter<GateTreeNode | undefined>();
   private readonly disposables: vscode.Disposable[] = [];
   private readonly cache: KeyedAsyncCache<GateReport>;
+  private readonly prIds = new WeakMap<GateTreeNode, string>();
 
   readonly onDidChangeTreeData: vscode.Event<GateTreeNode | undefined> = this.emitter.event;
 
@@ -108,6 +110,10 @@ export class PrGateTreeDataProvider
     if (element.kind === 'pr') {
       const item = new vscode.TreeItem(element.pr, vscode.TreeItemCollapsibleState.Expanded);
       item.description = element.isRoot ? 'this PR' : 'upstream';
+      const id = this.prIds.get(element);
+      if (id !== undefined) {
+        item.id = id;
+      }
       item.contextValue = 'zuulGatePr';
       return item;
     }
@@ -129,7 +135,11 @@ export class PrGateTreeDataProvider
     if (!report) {
       return [];
     }
-    return buildGateChildren(undefined, report);
+    const nodes = buildGateChildren(undefined, report);
+    const prNodes = nodes.filter((n) => n.kind === 'pr');
+    const ids = uniqueIds(prNodes.map((n) => `gate/pr/${n.pr}`));
+    prNodes.forEach((n, i) => this.prIds.set(n, ids[i]));
+    return nodes;
   }
 
   dispose(): void {

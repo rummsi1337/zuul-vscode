@@ -12,6 +12,12 @@ export interface PrSnapshot {
   fetchedAt: number;
 }
 
+export interface PollError {
+  message: string;
+  at: number;
+  lastSuccessAt?: number;
+}
+
 export interface ZuulContextSource {
   readonly current: ResolvedContext | undefined;
   readonly onDidChange: vscode.Event<ResolvedContext | undefined>;
@@ -29,6 +35,7 @@ const PR_REFETCH_INTERVAL_TICKS = 4;
 
 export class PrTracker implements vscode.Disposable {
   private readonly emitter = new vscode.EventEmitter<PrSnapshot | undefined>();
+  private readonly pollErrorEmitter = new vscode.EventEmitter<void>();
   private readonly disposables: vscode.Disposable[] = [];
   private readonly ctx: ZuulContextSource;
   private readonly logger: Logger;
@@ -38,6 +45,8 @@ export class PrTracker implements vscode.Disposable {
   private readonly focusEvents: FocusEvents;
 
   private _snapshot: PrSnapshot | undefined;
+  private _pollError: PollError | undefined;
+  private lastSuccessAt: number | undefined;
   private currentPr: PullRequest | undefined;
   private fastUntil: number | undefined;
   private pollCount = 0;
@@ -53,6 +62,7 @@ export class PrTracker implements vscode.Disposable {
   private disposed = false;
 
   readonly onDidChange: vscode.Event<PrSnapshot | undefined> = this.emitter.event;
+  readonly onDidChangePollError: vscode.Event<void> = this.pollErrorEmitter.event;
 
   constructor(
     ctx: ZuulContextSource,
@@ -87,6 +97,18 @@ export class PrTracker implements vscode.Disposable {
 
   get snapshot(): PrSnapshot | undefined {
     return this._snapshot;
+  }
+
+  get pollError(): PollError | undefined {
+    return this._pollError;
+  }
+
+  private setPollError(next: PollError | undefined): void {
+    if (next === undefined && this._pollError === undefined) {
+      return;
+    }
+    this._pollError = next;
+    this.pollErrorEmitter.fire();
   }
 
   watchFor(ms: number): void {
@@ -144,6 +166,8 @@ export class PrTracker implements vscode.Disposable {
     this.currentPr = undefined;
     this.pollCount = 0;
     this.hasEmittedForContext = false;
+    this.lastSuccessAt = undefined;
+    this.setPollError(undefined);
 
     const currentCtx = this.ctx.current;
     const contextKey = currentCtx
@@ -251,6 +275,8 @@ export class PrTracker implements vscode.Disposable {
         this.logger.info(
           `[Poll] No open PR found for branch="${currentCtx.branch}" on ${currentCtx.owner}/${currentCtx.repo}`,
         );
+        this.lastSuccessAt = this.now();
+        this.setPollError(undefined);
         this.updateSnapshot(undefined);
         return;
       }
@@ -288,6 +314,8 @@ export class PrTracker implements vscode.Disposable {
         builds,
         fetchedAt: this.now(),
       };
+      this.lastSuccessAt = this.now();
+      this.setPollError(undefined);
       this.updateSnapshot(snapshot, true);
     } catch (err) {
       if (this.disposed || seq !== this.sessionSeq || pollRunId !== this.pollRunSeq) {
@@ -297,6 +325,11 @@ export class PrTracker implements vscode.Disposable {
         `[Poll] Failed to poll PR status for branch="${currentCtx.branch}" on ${currentCtx.owner}/${currentCtx.repo} (PR #${this.currentPr?.number ?? 'none'})`,
         err,
       );
+      this.setPollError({
+        message: err instanceof Error ? err.message : String(err),
+        at: this.now(),
+        ...(this.lastSuccessAt !== undefined ? { lastSuccessAt: this.lastSuccessAt } : {}),
+      });
     } finally {
       if (!this.disposed && seq === this.sessionSeq && pollRunId === this.pollRunSeq) {
         this.polling = false;
@@ -313,5 +346,6 @@ export class PrTracker implements vscode.Disposable {
     }
     this.disposables.length = 0;
     this.emitter.dispose();
+    this.pollErrorEmitter.dispose();
   }
 }

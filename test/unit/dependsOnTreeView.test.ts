@@ -71,3 +71,51 @@ describe('DependsOnTreeDataProvider.removeDependsOn', () => {
     provider.dispose();
   });
 });
+
+describe('DependsOnTreeDataProvider load failures', () => {
+  it('shows one retry node instead of "Depends On (0)" when the load fails', async () => {
+    const pr = {
+      number: 5,
+      html_url: 'https://ghe.example.com/acme/service/pull/5',
+      body: 'no deps',
+      state: 'open',
+      merged: false,
+      base: { ref: 'main', repo: { full_name: 'acme/service' } },
+      head: { sha: 'x', ref: 'f', repo: { full_name: 'acme/service' } },
+    } as unknown as PullRequest;
+    const ctx = {
+      host: 'ghe.example.com',
+      owner: 'acme',
+      repo: 'service',
+      tenant: 't',
+      project: 'acme/service',
+      ghe: {
+        getPr: vi.fn(),
+        searchPrs: vi.fn(async () => {
+          throw new Error('boom');
+        }),
+      },
+      zuul: { listProjects: vi.fn(async () => []), getChangeStatus: vi.fn(async () => []) },
+    } as unknown as ResolvedContext;
+    const snapshot: PrSnapshot = { pr, statuses: [], builds: [], fetchedAt: 0 };
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const provider = new DependsOnTreeDataProvider(
+      { current: ctx, onDidChange: new EventEmitter<ResolvedContext | undefined>().event },
+      {
+        snapshot,
+        onDidChange: new EventEmitter<PrSnapshot | undefined>().event,
+        refresh: vi.fn(async () => undefined),
+      },
+      logger,
+    );
+
+    const nodes = await provider.getChildren();
+
+    expect(nodes).toEqual([{ kind: 'load-error' }]);
+    const item = provider.getTreeItem(nodes[0]);
+    expect(item.label).toBe('Could not load dependencies, click to retry');
+    expect(item.command?.command).toBe('zuul.refresh');
+    expect(item.id).toBeUndefined();
+    provider.dispose();
+  });
+});

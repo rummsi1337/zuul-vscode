@@ -186,7 +186,7 @@
       },
       {
         "view": "zuul.gateReadiness",
-        "when": "workbenchState != 'empty' && (!zuul.contextProblem || zuul.contextProblem == 'no-repo')",
+        "when": "workbenchState != 'empty' && zuul.contextProblem == 'no-repo'",
         "contents": "No GitHub or GitHub Enterprise git remote found in this folder.\n[Open Another Folder](command:vscode.openFolder)"
       },
       {
@@ -201,20 +201,107 @@
       },
       {
         "view": "zuul.gateReadiness",
-        "when": "workbenchState != 'empty' && zuul.contextProblem == 'none' && zuul.signedIn",
-        "contents": "No pull request found for the current branch."
+        "when": "workbenchState != 'empty' && zuul.contextProblem == 'zuul-unreachable'",
+        "contents": "Could not reach Zuul at the configured URL. Check `zuul.url` and your network, then [Refresh](command:zuul.refresh)."
       },
       {
         "view": "zuul.gateReadiness",
-        "when": "workbenchState != 'empty' && zuul.contextProblem == 'none' && !zuul.signedIn",
+        "when": "workbenchState != 'empty' && (!zuul.contextProblem || zuul.contextProblem == 'loading')",
+        "contents": "Loading Zuul context..."
+      },
+      {
+        "view": "zuul.gateReadiness",
+        "when": "workbenchState != 'empty' && zuul.contextProblem == 'none' && zuul.authChecked && !zuul.signedIn",
+        "contents": "No GitHub token available, so the pull request could not be loaded.\n[Set GitHub Enterprise PAT](command:zuul.setGhePat)"
+      },
+      {
+        "view": "zuul.gateReadiness",
+        "when": "workbenchState != 'empty' && zuul.contextProblem == 'none' && (!zuul.authChecked || zuul.signedIn) && !zuul.hasPr",
+        "contents": "No pull request found for the current branch."
+      },
+      {
+        "view": "zuul.dependencies",
+        "when": "workbenchState == 'empty'",
+        "contents": "No folder is open in this window.\n[Open Folder](command:vscode.openFolder)"
+      },
+      {
+        "view": "zuul.dependencies",
+        "when": "workbenchState != 'empty' && zuul.contextProblem == 'no-repo'",
+        "contents": "No GitHub or GitHub Enterprise git remote found in this folder.\n[Open Another Folder](command:vscode.openFolder)"
+      },
+      {
+        "view": "zuul.dependencies",
+        "when": "workbenchState != 'empty' && zuul.contextProblem == 'no-zuul-url'",
+        "contents": "Set `zuul.url` in settings to connect to Zuul CI.\n[Configure Zuul URL](command:workbench.action.openSettings?%5B%22zuul.url%22%5D)"
+      },
+      {
+        "view": "zuul.dependencies",
+        "when": "workbenchState != 'empty' && zuul.contextProblem == 'no-tenant'",
+        "contents": "Could not resolve a Zuul tenant for this repository.\n[Configure Zuul Settings](command:workbench.action.openSettings?%5B%22zuul%22%5D)"
+      },
+      {
+        "view": "zuul.dependencies",
+        "when": "workbenchState != 'empty' && zuul.contextProblem == 'zuul-unreachable'",
+        "contents": "Could not reach Zuul at the configured URL. Check `zuul.url` and your network, then [Refresh](command:zuul.refresh)."
+      },
+      {
+        "view": "zuul.dependencies",
+        "when": "workbenchState != 'empty' && (!zuul.contextProblem || zuul.contextProblem == 'loading')",
+        "contents": "Loading Zuul context..."
+      },
+      {
+        "view": "zuul.dependencies",
+        "when": "workbenchState != 'empty' && zuul.contextProblem == 'none' && zuul.authChecked && !zuul.signedIn",
         "contents": "No GitHub token available, so the pull request could not be loaded.\n[Set GitHub Enterprise PAT](command:zuul.setGhePat)"
       },
       {
         "view": "zuul.dependencies",
+        "when": "workbenchState != 'empty' && zuul.contextProblem == 'none' && (!zuul.authChecked || zuul.signedIn) && !zuul.hasPr",
         "contents": "No pull request found for the current branch."
       },
       {
         "view": "zuul.builds",
+        "when": "workbenchState == 'empty'",
+        "contents": "No folder is open in this window.\n[Open Folder](command:vscode.openFolder)"
+      },
+      {
+        "view": "zuul.builds",
+        "when": "workbenchState != 'empty' && zuul.contextProblem == 'no-repo'",
+        "contents": "No GitHub or GitHub Enterprise git remote found in this folder.\n[Open Another Folder](command:vscode.openFolder)"
+      },
+      {
+        "view": "zuul.builds",
+        "when": "workbenchState != 'empty' && zuul.contextProblem == 'no-zuul-url'",
+        "contents": "Set `zuul.url` in settings to connect to Zuul CI.\n[Configure Zuul URL](command:workbench.action.openSettings?%5B%22zuul.url%22%5D)"
+      },
+      {
+        "view": "zuul.builds",
+        "when": "workbenchState != 'empty' && zuul.contextProblem == 'no-tenant'",
+        "contents": "Could not resolve a Zuul tenant for this repository.\n[Configure Zuul Settings](command:workbench.action.openSettings?%5B%22zuul%22%5D)"
+      },
+      {
+        "view": "zuul.builds",
+        "when": "workbenchState != 'empty' && zuul.contextProblem == 'zuul-unreachable'",
+        "contents": "Could not reach Zuul at the configured URL. Check `zuul.url` and your network, then [Refresh](command:zuul.refresh)."
+      },
+      {
+        "view": "zuul.builds",
+        "when": "workbenchState != 'empty' && (!zuul.contextProblem || zuul.contextProblem == 'loading')",
+        "contents": "Loading Zuul context..."
+      },
+      {
+        "view": "zuul.builds",
+        "when": "workbenchState != 'empty' && zuul.contextProblem == 'none' && zuul.authChecked && !zuul.signedIn",
+        "contents": "No GitHub token available, so the pull request could not be loaded.\n[Set GitHub Enterprise PAT](command:zuul.setGhePat)"
+      },
+      {
+        "view": "zuul.builds",
+        "when": "workbenchState != 'empty' && zuul.contextProblem == 'none' && (!zuul.authChecked || zuul.signedIn) && !zuul.hasPr",
+        "contents": "No pull request found for the current branch."
+      },
+      {
+        "view": "zuul.builds",
+        "when": "workbenchState != 'empty' && zuul.contextProblem == 'none' && (!zuul.authChecked || zuul.signedIn) && zuul.hasPr",
         "contents": "No Zuul builds for this pull request yet."
       }
     ],

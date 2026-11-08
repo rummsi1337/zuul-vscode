@@ -9,7 +9,7 @@ import { normalizeHost } from '../git/remoteUrl';
 import { type Logger } from '../util/logger';
 import { type KeyValueStore, resolveTenant } from './tenantResolver';
 
-export type ContextProblem = 'no-repo' | 'no-zuul-url' | 'no-tenant';
+export type ContextProblem = 'no-repo' | 'no-zuul-url' | 'no-tenant' | 'zuul-unreachable';
 
 export const SIGN_IN_ACTION = 'Sign in';
 export const SIGN_IN_COMMAND = 'zuul.setGhePat';
@@ -393,7 +393,8 @@ export class ZuulContextService implements vscode.Disposable {
         return;
       }
       this.logger.error(`[Zuul] Failed to resolve tenant for ${project}`, err);
-      this.updateState(undefined, 'no-tenant');
+      const authFailure = err instanceof HttpError && (err.status === 401 || err.status === 403);
+      this.updateState(undefined, authFailure ? 'no-tenant' : 'zuul-unreachable');
       await this.handleZuulError(err);
       return;
     }
