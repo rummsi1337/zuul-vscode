@@ -1,0 +1,88 @@
+name: Release
+
+# Merge to main    -> pre-release, e.g. 1.2.4-pre.3 (3 merges after v1.2.3)
+# Push tag v1.2.3  -> release 1.2.3
+#
+# Git tags are the only source of truth for the version. The version in
+# package.json is a placeholder: the build stamps the real one in and never
+# commits it back.
+
+on:
+  push:
+    branches: [main]
+    # Exact match, so the v1.2.4-pre.3 tags made below can never count as releases.
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the version is worked out from tags and history
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+
+      - name: Work out version from git tags
+        id: version
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            last_tag=$(git tag --merged HEAD --sort=-v:refname | awk '/^v[0-9]+\.[0-9]+\.[0-9]+$/ { print; exit }')
+            base="${last_tag#v}"
+            IFS=. read -r major minor patch <<< "${base:-0.0.0}"
+            merges=$(git rev-list --count --first-parent "${last_tag:+$last_tag..}HEAD")
+            version="$major.$minor.$((patch + 1))-pre.$merges"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
+      - name: Stamp version into package.json
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: npm version "$VERSION" --no-git-tag-version --allow-same-version
+
+      - name: Package extension
+        run: npm run package -- ${{ github.ref_type == 'branch' && '--pre-release' || '' }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vsix
+          path: '*.vsix'
+          if-no-files-found: error
+
+  # Separate job so npm packages never run alongside a token that can write to the repo.
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: vsix
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.build.outputs.tag }}
+          PRERELEASE: ${{ github.ref_type == 'branch' }}
+        run: |
+          # The release already exists on a re-run, or if it was made in the GitHub UI.
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" ./*.vsix --clobber
+          else
+            gh release create "$TAG" ./*.vsix --target "$GITHUB_SHA" --generate-notes --prerelease="$PRERELEASE"
+          fi
