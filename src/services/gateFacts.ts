@@ -399,6 +399,7 @@ async function collectGateFactsInternal(
 
   const facts: PrGateFacts = {
     ref,
+    ...(pr.html_url ? { url: pr.html_url } : {}),
     draft,
     merged: Boolean(effectivePr.merged),
     state: effectivePr.state,

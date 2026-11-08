@@ -8,8 +8,11 @@ import { ZuulContextService } from './context/zuulContext';
 import { GitContextService } from './git/gitContext';
 import { normalizeHost } from './git/remoteUrl';
 import { type JobNode } from './services/buildsModel';
+import { formatPrRef } from './services/dependsOnParser';
+import { extractPrCoordinates } from './services/dependsOnService';
 import { PrTracker } from './services/prTracker';
 import { HAS_PR_CONTEXT_KEY, TriggerService } from './services/triggerService';
+import { wrapCommand } from './util/commandErrors';
 import { createOutputLogger } from './util/logger';
 import { pickAndAddDependsOn } from './views/addDependsOnPick';
 import { BuildsTreeDataProvider, OPEN_BUILD_LOG_COMMAND } from './views/buildsTreeView';
@@ -96,6 +99,29 @@ export function activate(context: vscode.ExtensionContext): void {
   void vscode.commands.executeCommand('setContext', 'zuul.contextProblem', 'loading');
   void vscode.commands.executeCommand('setContext', 'zuul.authChecked', false);
 
+  const prLabel = (): string => {
+    const snapshot = prTracker.snapshot;
+    const coords = snapshot ? extractPrCoordinates(snapshot.pr) : undefined;
+    return snapshot && coords
+      ? formatPrRef({ owner: coords.owner, repo: coords.repo, number: snapshot.pr.number })
+      : 'the pull request';
+  };
+  const guard = <A extends unknown[], R>(
+    describe: (...args: A) => string,
+    handler: (...args: A) => Promise<R>,
+  ): ((...args: A) => Promise<R | undefined>) =>
+    wrapCommand(
+      {
+        logger,
+        showErrorMessage: (message, ...actions) =>
+          vscode.window.showErrorMessage(message, ...actions),
+        runCommand: (command) => vscode.commands.executeCommand(command),
+        signInFor: (err) => zuulContext.signInFor(err),
+      },
+      describe,
+      handler,
+    );
+
   let promptedNoZuulUrl = false;
   const checkZuulContextProblem = (): void => {
     const problem = zuulContext.problem ?? (zuulContext.current ? 'none' : 'loading');
@@ -103,7 +129,7 @@ export function activate(context: vscode.ExtensionContext): void {
     if (!promptedNoZuulUrl && zuulContext.problem === 'no-zuul-url') {
       promptedNoZuulUrl = true;
       void Promise.resolve(
-        vscode.window.showInformationMessage('Set `zuul.url` to enable Zuul CI', 'Open Settings'),
+        vscode.window.showInformationMessage('Set zuul.url to enable Zuul CI', 'Open Settings'),
       ).then((action) => {
         if (action === 'Open Settings') {
           void vscode.commands.executeCommand('workbench.action.openSettings', 'zuul.url');
@@ -222,43 +248,87 @@ export function activate(context: vscode.ExtensionContext): void {
       await zuulContext.recompute();
       await prTracker.refresh();
     }),
-    vscode.commands.registerCommand('zuul.refresh', async () => {
-      await zuulContext.recompute();
-      dependsOnTree.invalidateCache();
-      gateTree.invalidateCache();
-      await prTracker.refresh();
-    }),
-    vscode.commands.registerCommand('zuul.postTrigger', async (commentArg?: unknown) => {
-      if (typeof commentArg === 'string' && commentArg.trim().length > 0) {
-        await triggerService.post(commentArg.trim());
-        return;
-      }
-      await triggerService.pickAndPostTrigger(readWorkspaceSettings().triggerComments);
-    }),
-    vscode.commands.registerCommand('zuul.postCustomTrigger', async () => {
-      await triggerService.promptAndPostCustomTrigger();
-    }),
-    vscode.commands.registerCommand('zuul.addDependsOn', async (targetArg?: unknown) => {
-      await pickAndAddDependsOn({
-        ctx: zuulContext,
-        tracker: prTracker,
-        logger,
-        onUpdated: () => dependsOnTree.invalidateCache(),
-        targetArg,
-      });
-    }),
-    vscode.commands.registerCommand('zuul.removeDependsOn', async (target?: unknown) => {
-      await dependsOnTree.removeDependsOn(target);
-    }),
-    vscode.commands.registerCommand('zuul.syncViaRecheck', async () => {
-      await triggerService.post('recheck');
-    }),
+    vscode.commands.registerCommand(
+      'zuul.refresh',
+      guard(
+        () => 'refresh Zuul data',
+        async () => {
+          await zuulContext.recompute();
+          dependsOnTree.invalidateCache();
+          gateTree.invalidateCache();
+          await prTracker.refresh();
+        },
+      ),
+    ),
+    vscode.commands.registerCommand(
+      'zuul.postTrigger',
+      guard(
+        (commentArg?: unknown) =>
+          typeof commentArg === 'string' && commentArg.trim().length > 0
+            ? `post "${commentArg.trim()}" on ${prLabel()}`
+            : `post a trigger comment on ${prLabel()}`,
+        async (commentArg?: unknown) => {
+          if (typeof commentArg === 'string' && commentArg.trim().length > 0) {
+            await triggerService.post(commentArg.trim());
+            return;
+          }
+          await triggerService.pickAndPostTrigger(readWorkspaceSettings().triggerComments);
+        },
+      ),
+    ),
+    vscode.commands.registerCommand(
+      'zuul.postCustomTrigger',
+      guard(
+        () => `post a trigger comment on ${prLabel()}`,
+        async () => {
+          await triggerService.promptAndPostCustomTrigger();
+        },
+      ),
+    ),
+    vscode.commands.registerCommand(
+      'zuul.addDependsOn',
+      guard(
+        () => `add a Depends-On to ${prLabel()}`,
+        async (targetArg?: unknown) => {
+          await pickAndAddDependsOn({
+            ctx: zuulContext,
+            tracker: prTracker,
+            logger,
+            onUpdated: () => dependsOnTree.invalidateCache(),
+            targetArg,
+          });
+        },
+      ),
+    ),
+    vscode.commands.registerCommand(
+      'zuul.removeDependsOn',
+      guard(
+        () => `remove a Depends-On from ${prLabel()}`,
+        async (target?: unknown) => {
+          await dependsOnTree.removeDependsOn(target);
+        },
+      ),
+    ),
+    vscode.commands.registerCommand(
+      'zuul.syncViaRecheck',
+      guard(
+        () => `post "recheck" on ${prLabel()}`,
+        async () => {
+          await triggerService.post('recheck');
+        },
+      ),
+    ),
   );
 
   checkZuulContextProblem();
-  void zuulContext.ready.then(() => {
-    checkZuulContextProblem();
-  });
+  void zuulContext.ready
+    .then(() => {
+      checkZuulContextProblem();
+    })
+    .catch((err: unknown) => {
+      logger.error('[Zuul] Failed to resolve the Zuul context', err);
+      checkZuulContextProblem();
+    });
 }
 
 export function deactivate(): void {

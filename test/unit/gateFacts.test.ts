@@ -343,6 +343,7 @@ describe('collectGateFacts', () => {
 
     expect(facts).toEqual({
       ref: 'acme/service#42',
+      url: 'https://ghe.example.com/acme/service/pull/42',
       draft: false,
       merged: false,
       state: 'open',
@@ -405,6 +406,7 @@ describe('collectGateFacts', () => {
 
     expect(facts).toEqual({
       ref: 'acme/service#42',
+      url: 'https://ghe.example.com/acme/service/pull/42',
       draft: true,
       merged: false,
       state: 'open',
@@ -874,6 +876,21 @@ describe('collectUpstreamFacts hosts', () => {
     expect(getPr).toHaveBeenCalledTimes(1);
     expect(facts).toHaveLength(1);
     expect(facts[0].loadError).toContain('other.example.com');
+  });
+
+  it('carries html_url for a real PR and none for a foreign placeholder', async () => {
+    const rootPr = makePr({
+      number: 1,
+      body: `Depends-On: ${local}\nDepends-On: https://other.example.com/acme/service/pull/3`,
+    });
+    const getPr = vi.fn(async (_o: string, _r: string, num: number) => makePr({ number: num }));
+    const facts = await collectUpstreamFacts(makeMockGhe({ getPr }), makeMockZuul(), 't', rootPr);
+    expect(facts).toHaveLength(2);
+    const real = facts.find((f) => !f.loadError);
+    const foreign = facts.find((f) => f.loadError);
+    expect(real?.url).toBe('https://ghe.example.com/acme/service/pull/2');
+    expect(foreign).toBeDefined();
+    expect(foreign?.url).toBeUndefined();
   });
 
   it.each([

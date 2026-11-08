@@ -24,6 +24,7 @@ export interface PrGateCheck {
 
 export interface PrGateFacts {
   ref: string /* owner/repo#n */;
+  url?: string;
   draft: boolean;
   merged: boolean;
   state: 'open' | 'closed';
@@ -65,6 +66,7 @@ export interface GateCheckItem {
 
 export interface PrGateItem {
   pr: string;
+  url?: string;
   checks: GateCheckItem[];
 }
 
@@ -464,6 +466,7 @@ function evaluatePr(
   return {
     item: {
       pr: facts.ref,
+      ...(facts.url ? { url: facts.url } : {}),
       checks,
     },
     blockers,

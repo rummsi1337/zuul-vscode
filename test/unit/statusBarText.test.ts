@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import * as vscode from 'vscode';
 import { type PullRequest } from '../../src/clients/gheTypes';
-import { type Build } from '../../src/clients/zuulTypes';
+import { type Build, type ChangeStatus } from '../../src/clients/zuulTypes';
 import { type PrSnapshot } from '../../src/services/prTracker';
 import { statusBarText } from '../../src/services/statusBarText';
 import { ZuulStatusBar } from '../../src/views/statusBar';
@@ -428,7 +428,7 @@ describe('statusBarText', () => {
       ];
       const snapshot = makeSnapshot({ statuses: [], builds });
       const result = statusBarText(snapshot, false);
-      expect(result?.text).toBe('$(check) Zuul check: PASSED');
+      expect(result?.text).toBe('$(check) Zuul: PASSED');
     });
   });
 
@@ -453,6 +453,101 @@ describe('statusBarText', () => {
       const result = statusBarText(snapshot, false);
       expect(result?.tooltip).toBe('PR #1234: Upgrade React to v19');
     });
+  });
+});
+
+describe('statusBarText: step 11 states', () => {
+  const status = (overrides: Partial<ChangeStatus>): ChangeStatus => ({
+    pipeline: 'check',
+    queue: 'q',
+    live: true,
+    jobs: [],
+    itemsAhead: [],
+    ...overrides,
+  });
+
+  it('shows queued when a live item has no jobs (0/0)', () => {
+    const result = statusBarText(makeSnapshot({ statuses: [status({})] }), false);
+    expect(result?.text).toBe('$(clock) Zuul check: queued');
+  });
+
+  it('shows passed when every job is done without a failure', () => {
+    const result = statusBarText(
+      makeSnapshot({
+        statuses: [
+          status({
+            jobs: [
+              { name: 'a', running: false, result: 'SUCCESS' },
+              { name: 'b', running: false, result: 'SKIPPED' },
+            ],
+          }),
+        ],
+      }),
+      false,
+    );
+    expect(result?.text).toBe('$(check) Zuul check: passed');
+  });
+
+  it('omits the pipeline name when it is empty', () => {
+    expect(statusBarText(makeSnapshot({ statuses: [status({ pipeline: '' })] }), false)?.text).toBe(
+      '$(clock) Zuul: queued',
+    );
+  });
+
+  it('ignores a non-live item without jobs and falls through to builds', () => {
+    const builds: Build[] = [
+      { uuid: 'u1', jobName: 'j', pipeline: 'check', result: 'SUCCESS', artifacts: [] },
+    ];
+    const result = statusBarText(
+      makeSnapshot({ statuses: [status({ live: false })], builds }),
+      false,
+    );
+    expect(result?.text).toBe('$(check) Zuul check: PASSED');
+  });
+
+  it.each(['CANCELED', 'ABORTED', 'MERGE_CONFLICT', 'CONFIG_ERROR'])(
+    'does not report %s builds as passed',
+    (resultText) => {
+      const builds: Build[] = [
+        { uuid: 'u1', jobName: 'j', pipeline: 'check', result: resultText, artifacts: [] },
+      ];
+      const result = statusBarText(makeSnapshot({ builds }), false);
+      expect(result?.text).not.toContain('PASSED');
+    },
+  );
+
+  it('does not report builds without a result as passed', () => {
+    const builds: Build[] = [{ uuid: 'u1', jobName: 'j', pipeline: 'check', artifacts: [] }];
+    expect(statusBarText(makeSnapshot({ builds }), false)?.text).toBe(
+      '$(sync~spin) Zuul check: running',
+    );
+  });
+
+  it('does not count a failed non-voting job as failing', () => {
+    const result = statusBarText(
+      makeSnapshot({
+        statuses: [
+          status({
+            jobs: [
+              { name: 'a', running: false, result: 'SUCCESS' },
+              { name: 'lint', running: false, result: 'FAILURE', voting: false },
+            ],
+          }),
+        ],
+      }),
+      false,
+    );
+    expect(result?.text).toBe('$(check) Zuul check: passed');
+  });
+
+  it('counts a failed voting job as failing', () => {
+    const result = statusBarText(
+      makeSnapshot({
+        statuses: [status({ jobs: [{ name: 'a', running: false, result: 'FAILURE' }] })],
+      }),
+      false,
+    );
+    expect(result?.text).toBe('$(error) Zuul check: 1 failed');
   });
 });
 
@@ -518,7 +613,7 @@ describe('ZuulStatusBar', () => {
     });
     emitter.fire(currentSnapshot);
 
-    expect(mockItem.text).toBe('$(sync~spin) Zuul gate: 1/1');
+    expect(mockItem.text).toBe('$(check) Zuul gate: passed');
     expect(mockItem.tooltip).toBe('PR #7: Test PR');
     expect(mockItem.show).toHaveBeenCalled();
 

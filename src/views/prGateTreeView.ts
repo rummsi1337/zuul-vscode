@@ -16,6 +16,7 @@ import {
 import { KeyedAsyncCache } from '../services/keyedAsyncCache';
 import { type PrSnapshot } from '../services/prTracker';
 import { type Logger } from '../util/logger';
+import { OPEN_DEPENDENCY_PR_COMMAND } from './dependsOnTreeView';
 import { uniqueIds } from '../util/treeIds';
 
 export const GATE_REFRESH_MIN_INTERVAL_MS = 30_000;
@@ -115,6 +116,15 @@ export class PrGateTreeDataProvider
         item.id = id;
       }
       item.contextValue = 'zuulGatePr';
+      const url = element.url;
+      if (url) {
+        item.tooltip = url;
+        item.command = {
+          command: OPEN_DEPENDENCY_PR_COMMAND,
+          title: 'Open Pull Request',
+          arguments: [url],
+        };
+      }
       return item;
     }
     const item = new vscode.TreeItem(element.label, vscode.TreeItemCollapsibleState.None);

@@ -6,7 +6,8 @@ import { extractPrCoordinates } from './dependsOnService';
 import { type PrSnapshot, type ZuulContextSource } from './prTracker';
 
 export const WATCH_DURATION_MS = 45_000;
-export const TIMEOUT_MESSAGE = 'Zuul has not picked up the comment yet.';
+export const REFRESH_ACTION = 'Refresh';
+export const NO_PR_MESSAGE = 'No pull request found for the current branch.';
 export const CONFIRM_POST_ACTION = 'Post';
 export const HAS_PR_CONTEXT_KEY = 'zuul.hasPr';
 
@@ -24,6 +25,10 @@ export interface TriggerQuickPickItem extends vscode.QuickPickItem {
 
 export interface PostTriggerOptions {
   confirm?: boolean;
+}
+
+export function formatTimeoutMessage(comment: string): string {
+  return `Zuul has not reacted to "${comment}" yet. It may still be queued.`;
 }
 
 export function formatTriggerConfirmationMessage(
@@ -61,6 +66,7 @@ export class TriggerService implements vscode.Disposable {
   private knownEnqueueTimes = new Set<number>();
   private knownBuildUuids = new Set<string>();
   private watchDeadline: number | undefined;
+  private watchedComment = '';
   private timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   private disposed = false;
 
@@ -103,15 +109,17 @@ export class TriggerService implements vscode.Disposable {
     const currentCtx = this.ctx.current;
     const snapshot = this.tracker.snapshot;
     if (!currentCtx || !snapshot) {
-      this.logger.warn('[Zuul] Cannot post trigger comment: no active pull request');
+      this.logger.warn('[GHE] Cannot post trigger comment: no active pull request');
+      void vscode.window.showInformationMessage(NO_PR_MESSAGE);
       return false;
     }
 
     const coords = extractPrCoordinates(snapshot.pr);
     if (!coords) {
       this.logger.warn(
-        '[Zuul] Cannot post trigger comment: unknown repository for this pull request',
+        '[GHE] Cannot post trigger comment: unknown repository for this pull request',
       );
+      void vscode.window.showInformationMessage(NO_PR_MESSAGE);
       return false;
     }
     const { ghe } = currentCtx;
@@ -136,8 +144,10 @@ export class TriggerService implements vscode.Disposable {
     }
 
     this.logger.info(
-      `[Zuul] Posted trigger comment "${trimmed}" on ${formatPrRef({ owner, repo, number: prNumber })}`,
+      `[GHE] Posted trigger comment "${trimmed}" on ${formatPrRef({ owner, repo, number: prNumber })}`,
     );
+
+    vscode.window.setStatusBarMessage(`Posted "${trimmed}" on #${prNumber}`, 4000);
 
     if (this.tracker.snapshot === undefined) {
       // The pull request went away while posting; there is nothing left to watch.
@@ -145,6 +155,7 @@ export class TriggerService implements vscode.Disposable {
     }
 
     this.rememberBaseline(this.tracker.snapshot ?? snapshot);
+    this.watchedComment = trimmed;
     this.watchDeadline = this.now() + WATCH_DURATION_MS;
     this.tracker.watchFor(WATCH_DURATION_MS);
     this.setWaiting(true);
@@ -292,7 +303,16 @@ export class TriggerService implements vscode.Disposable {
     }
     this.stopWaiting();
     this.logger.info('[Zuul] Trigger comment watch timed out after 45s');
-    void vscode.window.showInformationMessage(TIMEOUT_MESSAGE);
+    void Promise.resolve(
+      vscode.window.showInformationMessage(
+        formatTimeoutMessage(this.watchedComment),
+        REFRESH_ACTION,
+      ),
+    ).then((action) => {
+      if (action === REFRESH_ACTION) {
+        void vscode.commands.executeCommand('zuul.refresh');
+      }
+    });
   }
 
   private stopWaiting(): void {

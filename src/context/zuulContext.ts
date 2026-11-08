@@ -8,11 +8,14 @@ import { type GitContext, isSameGitContext } from '../git/gitContext';
 import { normalizeHost } from '../git/remoteUrl';
 import { type Logger } from '../util/logger';
 import { type KeyValueStore, resolveTenant } from './tenantResolver';
+import { SIGN_IN_ACTION, type SignInOption } from '../util/commandErrors';
 
 export type ContextProblem = 'no-repo' | 'no-zuul-url' | 'no-tenant' | 'zuul-unreachable';
 
-export const SIGN_IN_ACTION = 'Sign in';
+export { SIGN_IN_ACTION };
 export const SIGN_IN_COMMAND = 'zuul.setGhePat';
+const SET_ZUUL_TOKEN_ACTION = 'Set Zuul Token';
+const SET_ZUUL_TOKEN_COMMAND = 'zuul.setTenantToken';
 
 export interface ResolvedContext extends GitContext {
   zuulUrl: string;
@@ -283,11 +286,20 @@ export class ZuulContextService implements vscode.Disposable {
         ? `Your Zuul token has no access to tenant "${tenant}".`
         : 'Your Zuul token was refused.';
     }
-    void Promise.resolve(this.showErrorMessage(message, 'Set Zuul Token')).then(async (action) => {
-      if (action === 'Set Zuul Token') {
-        await this.executeCommand('zuul.setTenantToken', tenant);
-      }
-    });
+    void Promise.resolve(this.showErrorMessage(message, SET_ZUUL_TOKEN_ACTION)).then(
+      async (action) => {
+        if (action === SET_ZUUL_TOKEN_ACTION) {
+          await this.executeCommand(SET_ZUUL_TOKEN_COMMAND, tenant);
+        }
+      },
+    );
+  }
+
+  /** A Zuul auth failure needs a Zuul token. Everything else is a GitHub sign-in. */
+  signInFor(err: unknown): SignInOption {
+    return err instanceof HttpError && this.handledErrors.has(err)
+      ? { label: SET_ZUUL_TOKEN_ACTION, command: SET_ZUUL_TOKEN_COMMAND }
+      : { label: SIGN_IN_ACTION, command: SIGN_IN_COMMAND };
   }
 
   private wrapZuulClient(client: ZuulClient): ZuulClient {

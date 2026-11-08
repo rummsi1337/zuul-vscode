@@ -15,6 +15,7 @@ import {
 import { formatPrRef, prRefKey, toPrUrl } from '../services/dependsOnParser';
 import { applyAddDependsOn, DependsOnService, isInTenant } from '../services/dependsOnService';
 import { type PrSnapshot, type ZuulContextSource } from '../services/prTracker';
+import { NO_PR_MESSAGE } from '../services/triggerService';
 import { type Logger } from '../util/logger';
 
 export const SEARCH_DEBOUNCE_MS = 300;
@@ -216,6 +217,7 @@ export async function pickAndAddDependsOn(options: AddDependsOnOptions): Promise
   const snapshot = options.tracker.snapshot;
   if (!currentCtx || !snapshot) {
     options.logger.warn('[DependsOn] Cannot add Depends-On: no active pull request');
+    void vscode.window.showInformationMessage(NO_PR_MESSAGE);
     return false;
   }
 
