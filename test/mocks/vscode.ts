@@ -142,6 +142,7 @@ export class ThemeIcon {
 }
 
 export class TreeItem {
+  id?: string;
   label?: string;
   collapsibleState?: TreeItemCollapsibleState;
   description?: string | boolean;

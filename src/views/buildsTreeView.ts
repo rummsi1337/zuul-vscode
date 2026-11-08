@@ -7,6 +7,7 @@ import {
   type PipelineNode,
 } from '../services/buildsModel';
 import { type PrSnapshot } from '../services/prTracker';
+import { uniqueIds } from '../util/treeIds';
 
 export type BuildsTreeNode = PipelineNode | JobNode;
 
@@ -54,6 +55,7 @@ export class BuildsTreeDataProvider
   private readonly emitter = new vscode.EventEmitter<BuildsTreeNode | undefined | void>();
   private readonly disposables: vscode.Disposable[] = [];
   private readonly tracker: BuildsTrackerSource;
+  private readonly pipelineIds = new WeakMap<BuildsTreeNode, string>();
   private readonly openExternal: (uri: vscode.Uri) => Thenable<boolean>;
 
   readonly onDidChangeTreeData: vscode.Event<BuildsTreeNode | undefined | void> =
@@ -84,6 +86,10 @@ export class BuildsTreeDataProvider
   getTreeItem(element: BuildsTreeNode): vscode.TreeItem {
     if (isPipelineNode(element)) {
       const item = new vscode.TreeItem(element.pipeline, vscode.TreeItemCollapsibleState.Expanded);
+      const id = this.pipelineIds.get(element);
+      if (id !== undefined) {
+        item.id = id;
+      }
       item.contextValue = 'zuulPipeline';
       return item;
     }
@@ -113,7 +119,10 @@ export class BuildsTreeDataProvider
 
   getChildren(element?: BuildsTreeNode): BuildsTreeNode[] {
     if (!element) {
-      return buildTree(this.tracker.snapshot);
+      const nodes = buildTree(this.tracker.snapshot);
+      const ids = uniqueIds(nodes.map((n) => `builds/${n.pipeline}`));
+      nodes.forEach((n, i) => this.pipelineIds.set(n, ids[i]));
+      return nodes;
     }
     if (isPipelineNode(element)) {
       return element.jobs;

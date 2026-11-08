@@ -534,3 +534,44 @@ describe('PrTracker', () => {
     tracker.dispose();
   });
 });
+
+describe('PrTracker poll errors', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000_000);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('exposes the last poll error and clears it after a successful poll', async () => {
+    const { findOpenPrForBranch, getChangeStatus, makeResolvedContext } = createMockClients();
+    findOpenPrForBranch.mockResolvedValueOnce(makePr());
+    getChangeStatus.mockResolvedValueOnce([makeStatus()]);
+    findOpenPrForBranch.mockRejectedValueOnce(new Error('network down'));
+    const { source } = createFakeContextSource(makeResolvedContext());
+    const { focusEvents } = createFakeFocusEvents(true);
+    const tracker = new PrTracker(source, createFakeLogger(), setTimeout, Date.now, focusEvents);
+    const changes = vi.fn();
+    tracker.onDidChangePollError(changes);
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(tracker.pollError).toBeUndefined();
+
+    await tracker.refresh();
+    expect(tracker.pollError).toEqual({
+      message: 'network down',
+      at: 1_000_000,
+      lastSuccessAt: 1_000_000,
+    });
+    expect(changes).toHaveBeenCalledTimes(1);
+
+    findOpenPrForBranch.mockResolvedValue(makePr());
+    getChangeStatus.mockResolvedValue([makeStatus()]);
+    await tracker.refresh();
+    expect(tracker.pollError).toBeUndefined();
+    expect(changes).toHaveBeenCalledTimes(2);
+    tracker.dispose();
+  });
+});
