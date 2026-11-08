@@ -1,9 +1,10 @@
 import * as vscode from 'vscode';
 import { type SearchItem } from '../clients/gheTypes';
 import { type ChangeStatus } from '../clients/zuulTypes';
-import { classifyJobResult } from '../services/buildsModel';
+import { classifyJobResult, pickPrimary } from '../services/buildsModel';
 import {
   type DependsOnRef,
+  formatPrRef,
   parseDependsOn,
   removeDependsOn,
   toPrUrl,
@@ -23,24 +24,24 @@ export const DEPENDS_ON_REFRESH_TTL_MS = 60_000;
 export const OPEN_DEPENDENCY_PR_COMMAND = 'zuul.openDependencyPr';
 export const CONFIRM_REMOVE_ACTION = 'Remove';
 
-export interface OutOfSyncRootNode {
+interface OutOfSyncRootNode {
   readonly kind: 'out-of-sync-root';
   readonly sync: SyncState;
 }
 
-export interface OutOfSyncChildNode {
+interface OutOfSyncChildNode {
   readonly kind: 'out-of-sync-item';
   readonly direction: 'missing' | 'extra';
   readonly ref: string;
 }
 
-export interface DependsOnGroupNode {
+interface DependsOnGroupNode {
   readonly kind: 'depends-on-group';
   readonly items: readonly UpstreamDep[];
   readonly host?: string;
 }
 
-export interface NeededByGroupNode {
+interface NeededByGroupNode {
   readonly kind: 'needed-by-group';
   readonly items: readonly SearchItem[];
   readonly host?: string;
@@ -87,21 +88,9 @@ export function getUpstreamIconId(state: UpstreamState): string {
 
 export function formatUpstreamLabel(dep: UpstreamDep): string {
   if (dep.ref.owner && dep.ref.repo && dep.ref.number !== undefined) {
-    return `${dep.ref.owner}/${dep.ref.repo}#${dep.ref.number}`;
+    return formatPrRef({ owner: dep.ref.owner, repo: dep.ref.repo, number: dep.ref.number });
   }
   return dep.ref.raw;
-}
-
-function selectPrimaryStatus(statuses: readonly ChangeStatus[]): ChangeStatus | undefined {
-  const gate = statuses.find((s) => s.pipeline.toLowerCase() === 'gate');
-  if (gate) {
-    return gate;
-  }
-  const check = statuses.find((s) => s.pipeline.toLowerCase() === 'check');
-  if (check) {
-    return check;
-  }
-  return statuses[0];
 }
 
 export function formatUpstreamZuulSummary(zuul: readonly ChangeStatus[] | undefined): string {
@@ -109,7 +98,7 @@ export function formatUpstreamZuulSummary(zuul: readonly ChangeStatus[] | undefi
     return 'not in Zuul';
   }
 
-  const status = selectPrimaryStatus(zuul);
+  const status = pickPrimary(zuul, (st) => st.pipeline);
   if (!status) {
     return 'not in Zuul';
   }
@@ -175,7 +164,7 @@ export function resolveUpstreamUrl(dep: UpstreamDep, fallbackHost?: string): str
 export function formatDownstreamLabel(item: SearchItem, fallbackHost = 'github.com'): string {
   const candidate = searchItemToCandidate(item, fallbackHost);
   if (candidate) {
-    return `${candidate.owner}/${candidate.repo}#${candidate.number}`;
+    return formatPrRef(candidate);
   }
   return `#${item.number}`;
 }
@@ -310,7 +299,7 @@ export class DependsOnTreeDataProvider
       }
       const picked = await vscode.window.showQuickPick(
         refs.map((r) => ({
-          label: `${r.owner}/${r.repo}#${r.number}`,
+          label: formatPrRef({ owner: r.owner, repo: r.repo, number: r.number }),
           description: r.raw,
           coords: { owner: r.owner, repo: r.repo, number: r.number },
         })),
@@ -323,7 +312,7 @@ export class DependsOnTreeDataProvider
       return false;
     }
 
-    const message = `Remove Depends-On ${coords.owner}/${coords.repo}#${coords.number} from ${currentCtx.owner}/${currentCtx.repo}#${snapshot.pr.number}?`;
+    const message = `Remove Depends-On ${formatPrRef(coords)} from ${formatPrRef({ owner: currentCtx.owner, repo: currentCtx.repo, number: snapshot.pr.number })}?`;
     const choice = await vscode.window.showWarningMessage(
       message,
       { modal: true },
@@ -351,7 +340,7 @@ export class DependsOnTreeDataProvider
     );
 
     this.logger.info(
-      `[DependsOn] Removed Depends-On ${coords.owner}/${coords.repo}#${coords.number} from ${currentCtx.owner}/${currentCtx.repo}#${snapshot.pr.number}`,
+      `[DependsOn] Removed Depends-On ${formatPrRef(coords)} from ${formatPrRef({ owner: currentCtx.owner, repo: currentCtx.repo, number: snapshot.pr.number })}`,
     );
 
     this.invalidateCache();

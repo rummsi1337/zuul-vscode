@@ -8,6 +8,7 @@ export interface TokenProvider {
   readonly id: AuthMethodId;
   getToken(host: string, opts: { interactive: boolean }): Promise<string | undefined>;
   invalidate?(host: string): Promise<void>;
+  clearCache?(): void;
 }
 
 export interface SecretStorageLike {

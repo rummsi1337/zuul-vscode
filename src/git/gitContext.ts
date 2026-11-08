@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { onSettingsChanged, readWorkspaceSettings } from '../config/settings';
 import { type API, getGitApi, type Repository } from './gitApi';
-import { parseRemoteUrl } from './remoteUrl';
+import { normalizeHost, parseRemoteUrl } from './remoteUrl';
 
 export interface GitContext {
   repoRoot: string;
@@ -45,7 +45,7 @@ export function computeGitContext(repo: RepoLike, hostOverride?: string): GitCon
   }
 
   const trimmedOverride = hostOverride?.trim();
-  const host = trimmedOverride ? trimmedOverride.toLowerCase() : parsed.host;
+  const host = trimmedOverride ? normalizeHost(trimmedOverride) : parsed.host;
 
   const context: GitContext = {
     repoRoot: repo.rootUri.fsPath,

@@ -36,6 +36,14 @@ const DEFAULT_REQUIRED_APPROVALS = 1;
 const DEFAULT_REQUIRED_LABELS: readonly string[] = [];
 const DEFAULT_BLOCKING_LABELS: readonly string[] = ['do-not-merge', 'wip'];
 
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string');
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 function readString(value: unknown, fallback: string): string {
   return typeof value === 'string' ? value : fallback;
 }
@@ -48,10 +56,10 @@ function readAuthMethod(value: unknown): AuthMethodSetting {
 }
 
 function isTriggerComment(value: unknown): value is TriggerComment {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+  if (!isPlainObject(value)) {
     return false;
   }
-  const candidate = value as Record<string, unknown>;
+  const candidate = value;
   if (typeof candidate.label !== 'string' || typeof candidate.comment !== 'string') {
     return false;
   }
@@ -73,7 +81,7 @@ function readTriggerComments(value: unknown): TriggerComment[] {
 }
 
 function readStringArray(value: unknown, fallback: readonly string[]): string[] {
-  if (!Array.isArray(value) || !value.every((item): item is string => typeof item === 'string')) {
+  if (!isStringArray(value)) {
     return [...fallback];
   }
   return [...value];
@@ -87,15 +95,12 @@ function readRequiredApprovals(value: unknown): number {
 }
 
 function readRequiredStatusChecks(value: unknown): Record<string, string[]> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+  if (!isPlainObject(value)) {
     return {};
   }
   const result: Record<string, string[]> = {};
-  for (const [key, checks] of Object.entries(value as Record<string, unknown>)) {
-    if (
-      !Array.isArray(checks) ||
-      !checks.every((item): item is string => typeof item === 'string')
-    ) {
+  for (const [key, checks] of Object.entries(value)) {
+    if (!isStringArray(checks)) {
       return {};
     }
     result[key] = [...checks];

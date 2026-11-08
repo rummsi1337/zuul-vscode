@@ -9,6 +9,7 @@ import {
   type Review,
   type SearchItem,
 } from './gheTypes';
+import { normalizeHost } from '../git/remoteUrl';
 import { HttpClient, HttpError, type QueryParams } from './http';
 
 const MAX_PAGINATION_PAGES = 10;
@@ -78,7 +79,7 @@ export class GheClient {
   private readonly http: HttpClient;
 
   constructor(host: string, getToken: () => Promise<string | undefined>, fetchFn?: typeof fetch) {
-    const normalizedHost = host.trim().toLowerCase();
+    const normalizedHost = normalizeHost(host);
     this.host = normalizedHost;
     if (normalizedHost === 'github.com') {
       this.restBaseUrl = 'https://api.github.com';

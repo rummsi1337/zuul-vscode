@@ -4,19 +4,23 @@ import { type ZuulProject } from '../clients/zuulTypes';
 import { readWorkspaceSettings } from '../config/settings';
 import { getGitApi } from '../git/gitApi';
 import { computeGitContext, type GitContext } from '../git/gitContext';
-import { addDependsOn, parseDependsOn, toPrUrl } from '../services/dependsOnParser';
-import { DependsOnService, normalizeProjectName } from '../services/dependsOnService';
+import { normalizeHost } from '../git/remoteUrl';
+import {
+  addDependsOn,
+  formatPrRef,
+  parseDependsOn,
+  prRefKey,
+  toPrUrl,
+} from '../services/dependsOnParser';
+import { DependsOnService, isInTenant, normalizeProjectName } from '../services/dependsOnService';
 import { type PrSnapshot, type ZuulContextSource } from '../services/prTracker';
 import { type Logger } from '../util/logger';
 
 export const SEARCH_DEBOUNCE_MS = 300;
 export const CYCLE_ERROR_MESSAGE = 'Would create a dependency cycle';
 
-const initialShowQuickPick = vscode.window.showQuickPick;
-
 const HTTP_PR_URL_RE =
   /^https?:\/\/([^/?#\s]+)\/([^/?#\s]+)\/([^/?#\s]+)\/pull\/([1-9]\d*)(?:\/(?:files\/?)?)?(?:#\S*)?$/i;
-const REPO_URL_RE = /\/repos\/([^/?#\s]+)\/([^/?#\s]+)\/?$/;
 
 export interface DependsOnCandidate {
   host: string;
@@ -75,7 +79,7 @@ export function parsePrUrlCandidate(
   if (!Number.isSafeInteger(prNumber) || prNumber <= 0) {
     return undefined;
   }
-  const host = (fallbackHost?.trim() || rawHost).toLowerCase();
+  const host = normalizeHost(fallbackHost?.trim() || rawHost);
 
   return {
     host,
@@ -100,22 +104,6 @@ export function searchItemToCandidate(
     }
   }
 
-  if (item.repository_url) {
-    const repoMatch = REPO_URL_RE.exec(item.repository_url);
-    if (repoMatch) {
-      const [, owner, repo] = repoMatch;
-      const host = defaultHost.toLowerCase();
-      return {
-        host,
-        owner,
-        repo,
-        number: item.number,
-        url: toPrUrl(host, owner, repo, item.number),
-        title: item.title,
-      };
-    }
-  }
-
   return undefined;
 }
 
@@ -125,49 +113,22 @@ export function buildTenantProjectSet(
 ): Set<string> {
   const set = new Set<string>();
   if (currentProject) {
-    set.add(currentProject);
-    set.add(currentProject.toLowerCase());
     set.add(normalizeProjectName(currentProject).toLowerCase());
   }
   for (const project of projects) {
-    set.add(project.name);
-    set.add(project.name.toLowerCase());
     set.add(normalizeProjectName(project.name).toLowerCase());
     if (project.canonical_name) {
-      const normalized = normalizeProjectName(project.canonical_name);
-      set.add(normalized);
-      set.add(normalized.toLowerCase());
+      set.add(normalizeProjectName(project.canonical_name).toLowerCase());
     }
   }
   return set;
-}
-
-export function isCandidateInTenant(
-  candidate: Pick<DependsOnCandidate, 'owner' | 'repo'>,
-  tenantProjects: ReadonlySet<string>,
-): boolean {
-  const full = `${candidate.owner}/${candidate.repo}`;
-  const lower = full.toLowerCase();
-  if (tenantProjects.has(full) || tenantProjects.has(lower)) {
-    return true;
-  }
-  for (const entry of tenantProjects) {
-    if (entry.toLowerCase() === lower || normalizeProjectName(entry).toLowerCase() === lower) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function candidateKey(candidate: Pick<DependsOnCandidate, 'owner' | 'repo' | 'number'>): string {
-  return `${candidate.owner.toLowerCase()}/${candidate.repo.toLowerCase()}#${candidate.number}`;
 }
 
 function toQuickPickItem(
   candidate: DependsOnCandidate,
   alwaysShow = false,
 ): DependsOnQuickPickItem {
-  const ref = `${candidate.owner}/${candidate.repo}#${candidate.number}`;
+  const ref = formatPrRef(candidate);
   return {
     label: ref,
     description: candidate.title ?? candidate.url,
@@ -178,12 +139,9 @@ function toQuickPickItem(
 }
 
 function makeSeparator(label: string): DependsOnQuickPickItem {
-  const separatorKind =
-    (vscode as unknown as { QuickPickItemKind?: { Separator?: number } }).QuickPickItemKind
-      ?.Separator ?? -1;
   return {
     label,
-    kind: separatorKind as vscode.QuickPickItemKind,
+    kind: vscode.QuickPickItemKind.Separator,
   };
 }
 
@@ -212,42 +170,9 @@ function coerceDirectCandidate(arg: unknown, defaultHost: string): DependsOnCand
     return parsePrUrlCandidate(arg, defaultHost);
   }
   if (arg && typeof arg === 'object') {
-    const obj = arg as Record<string, unknown>;
-    if (typeof obj.candidate === 'object' && obj.candidate !== null) {
-      return coerceDirectCandidate(obj.candidate, defaultHost);
-    }
-    if (
-      typeof obj.owner === 'string' &&
-      typeof obj.repo === 'string' &&
-      typeof obj.number === 'number'
-    ) {
-      const host = typeof obj.host === 'string' && obj.host.trim() ? obj.host.trim() : defaultHost;
-      return {
-        host: host.toLowerCase(),
-        owner: obj.owner,
-        repo: obj.repo,
-        number: obj.number,
-        url: toPrUrl(host, obj.owner, obj.repo, obj.number),
-        title: typeof obj.title === 'string' ? obj.title : undefined,
-      };
-    }
-    if (typeof obj.url === 'string') {
-      return parsePrUrlCandidate(obj.url, defaultHost);
-    }
-    if (typeof obj.detail === 'string') {
-      const fromDetail = parsePrUrlCandidate(obj.detail, defaultHost);
-      if (fromDetail) {
-        return fromDetail;
-      }
-    }
-    if (typeof obj.description === 'string') {
-      const fromDesc = parsePrUrlCandidate(obj.description, defaultHost);
-      if (fromDesc) {
-        return fromDesc;
-      }
-    }
-    if (typeof obj.label === 'string') {
-      return parsePrUrlCandidate(obj.label, defaultHost);
+    const url = (arg as { url?: unknown }).url;
+    if (typeof url === 'string') {
+      return parsePrUrlCandidate(url, defaultHost);
     }
   }
   return undefined;
@@ -264,7 +189,7 @@ export function buildSectionedQuickPickItems(params: {
   if (params.pastedCandidate) {
     items.push(makeSeparator('Pasted URL'));
     items.push({
-      label: `$(link) ${params.pastedCandidate.owner}/${params.pastedCandidate.repo}#${params.pastedCandidate.number}`,
+      label: `$(link) ${formatPrRef(params.pastedCandidate)}`,
       description: params.pastedCandidate.url,
       alwaysShow: true,
       candidate: params.pastedCandidate,
@@ -304,35 +229,7 @@ async function promptForCandidate(params: {
   }>;
   searchOpenPrs: (query: string) => Promise<DependsOnCandidate[]>;
 }): Promise<DependsOnCandidate | undefined> {
-  const showQuickPickOverridden = vscode.window.showQuickPick !== initialShowQuickPick;
-  const createQuickPickFn = (
-    vscode.window as unknown as {
-      createQuickPick?: <T extends vscode.QuickPickItem>() => vscode.QuickPick<T>;
-    }
-  ).createQuickPick;
-
-  if (showQuickPickOverridden || typeof createQuickPickFn !== 'function') {
-    const sections = await params.loadBaseSections();
-    const items = buildSectionedQuickPickItems(sections);
-    const picked = await vscode.window.showQuickPick(items, {
-      placeHolder: 'Select an open pull request or paste a PR URL',
-      matchOnDescription: true,
-      matchOnDetail: true,
-    });
-    return coerceDirectCandidate(picked, params.host);
-  }
-
-  const qp = createQuickPickFn<DependsOnQuickPickItem>();
-  if (!qp) {
-    const sections = await params.loadBaseSections();
-    const items = buildSectionedQuickPickItems(sections);
-    const picked = await vscode.window.showQuickPick(items, {
-      placeHolder: 'Select an open pull request or paste a PR URL',
-      matchOnDescription: true,
-      matchOnDetail: true,
-    });
-    return coerceDirectCandidate(picked, params.host);
-  }
+  const qp = vscode.window.createQuickPick<DependsOnQuickPickItem>();
 
   return new Promise<DependsOnCandidate | undefined>((resolve) => {
     let settled = false;
@@ -382,8 +279,7 @@ async function promptForCandidate(params: {
       clearDebounce();
       const trimmed = value.trim();
       const parsedUrl = parsePrUrlCandidate(trimmed, params.host);
-      pastedCandidate =
-        parsedUrl && candidateKey(parsedUrl) !== params.selfKey ? parsedUrl : undefined;
+      pastedCandidate = parsedUrl && prRefKey(parsedUrl) !== params.selfKey ? parsedUrl : undefined;
 
       if (!trimmed) {
         searchSeq += 1;
@@ -422,13 +318,13 @@ async function promptForCandidate(params: {
     });
 
     qp.onDidAccept(() => {
-      const fromValue = parsePrUrlCandidate(qp.value ?? '', params.host);
+      const fromValue = parsePrUrlCandidate(qp.value, params.host);
       if (fromValue) {
         finish(fromValue);
         return;
       }
-      const selected = qp.selectedItems?.[0] ?? qp.activeItems?.[0];
-      const candidate = coerceDirectCandidate(selected, params.host);
+      const selected = qp.selectedItems[0] ?? qp.activeItems[0];
+      const candidate = selected?.candidate;
       if (candidate) {
         finish(candidate);
       }
@@ -468,7 +364,7 @@ export async function pickAndAddDependsOn(options: AddDependsOnOptions): Promise
     return false;
   }
 
-  const selfKey = candidateKey({
+  const selfKey = prRefKey({
     owner: currentCtx.owner,
     repo: currentCtx.repo,
     number: snapshot.pr.number,
@@ -501,11 +397,11 @@ export async function pickAndAddDependsOn(options: AddDependsOnOptions): Promise
       if (!candidate) {
         continue;
       }
-      const key = candidateKey(candidate);
+      const key = prRefKey(candidate);
       if (seen.has(key)) {
         continue;
       }
-      if (filterTenant && !isCandidateInTenant(candidate, filterTenant)) {
+      if (filterTenant && !isInTenant(candidate.owner, candidate.repo, filterTenant)) {
         continue;
       }
       seen.add(key);
@@ -532,14 +428,14 @@ export async function pickAndAddDependsOn(options: AddDependsOnOptions): Promise
     const seenRepos = new Set<string>([currentRepoKey]);
 
     for (const gitCtx of workspaceContexts) {
-      if (gitCtx.host.toLowerCase() !== currentCtx.host.toLowerCase()) {
+      if (normalizeHost(gitCtx.host) !== normalizeHost(currentCtx.host)) {
         continue;
       }
       const repoKey = `${gitCtx.owner.toLowerCase()}/${gitCtx.repo.toLowerCase()}`;
       if (seenRepos.has(repoKey)) {
         continue;
       }
-      if (!isCandidateInTenant({ owner: gitCtx.owner, repo: gitCtx.repo }, tenantProjects)) {
+      if (!isInTenant(gitCtx.owner, gitCtx.repo, tenantProjects)) {
         continue;
       }
       seenRepos.add(repoKey);
@@ -577,8 +473,8 @@ export async function pickAndAddDependsOn(options: AddDependsOnOptions): Promise
   }
 
   const tenantProjects = await getTenantProjects();
-  const sameHost = candidate.host.toLowerCase() === currentCtx.host.toLowerCase();
-  if (!sameHost || !isCandidateInTenant(candidate, tenantProjects)) {
+  const sameHost = normalizeHost(candidate.host) === normalizeHost(currentCtx.host);
+  if (!sameHost || !isInTenant(candidate.owner, candidate.repo, tenantProjects)) {
     const message = `Repository ${candidate.owner}/${candidate.repo} is not part of tenant ${currentCtx.tenant}`;
     options.logger.warn(`[DependsOn] ${message}`);
     void vscode.window.showErrorMessage(message);
@@ -607,9 +503,7 @@ export async function pickAndAddDependsOn(options: AddDependsOnOptions): Promise
   );
 
   if (createsCycle) {
-    options.logger.warn(
-      `[DependsOn] Rejected ${candidate.owner}/${candidate.repo}#${candidate.number}: ${CYCLE_ERROR_MESSAGE}`,
-    );
+    options.logger.warn(`[DependsOn] Rejected ${formatPrRef(candidate)}: ${CYCLE_ERROR_MESSAGE}`);
     void vscode.window.showErrorMessage(CYCLE_ERROR_MESSAGE);
     return false;
   }
@@ -626,7 +520,7 @@ export async function pickAndAddDependsOn(options: AddDependsOnOptions): Promise
   );
 
   options.logger.info(
-    `[DependsOn] Added Depends-On ${canonicalUrl} on ${currentCtx.owner}/${currentCtx.repo}#${snapshot.pr.number}`,
+    `[DependsOn] Added Depends-On ${canonicalUrl} on ${formatPrRef({ owner: currentCtx.owner, repo: currentCtx.repo, number: snapshot.pr.number })}`,
   );
 
   options.onUpdated?.();

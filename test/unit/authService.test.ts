@@ -39,6 +39,7 @@ describe('AuthService', () => {
 
     expect(token).toBe('secret_pat_value');
     expect(callOrder).toEqual(['pat']);
+    expect(patProvider.getToken).toHaveBeenCalledWith('ghe.example.com', expect.anything());
     expect(ghCliProvider.getToken).not.toHaveBeenCalled();
     expect(logger.messages.some((m) => m.includes('pat'))).toBe(true);
     expect(logger.messages.some((m) => m.includes('secret_pat_value'))).toBe(false);

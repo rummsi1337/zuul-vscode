@@ -4,7 +4,7 @@ import { type PromptLike, type SecretStorageLike, type TokenProvider } from './t
 export { type PromptLike, type SecretStorageLike } from './types';
 
 export function patSecretKey(host: string): string {
-  return `zuul.pat.${host.trim().toLowerCase()}`;
+  return `zuul.pat.${host}`;
 }
 
 export async function validatePatWithGhe(
@@ -38,13 +38,8 @@ export class PatAuthProvider implements TokenProvider {
   }
 
   async setToken(host: string): Promise<string | undefined> {
-    const normalizedHost = host.trim().toLowerCase();
-    if (!normalizedHost) {
-      return undefined;
-    }
-
     const input = await this.prompt.showInputBox({
-      prompt: `Enter Personal Access Token for ${normalizedHost}`,
+      prompt: `Enter Personal Access Token for ${host}`,
       placeHolder: 'ghp_…',
       password: true,
       ignoreFocusOut: true,
@@ -57,17 +52,17 @@ export class PatAuthProvider implements TokenProvider {
 
     let isValid = false;
     try {
-      isValid = await this.validate(normalizedHost, token);
+      isValid = await this.validate(host, token);
     } catch {
       isValid = false;
     }
 
     if (!isValid) {
-      await this.prompt.showErrorMessage(`Invalid Personal Access Token for ${normalizedHost}.`);
+      await this.prompt.showErrorMessage(`Invalid Personal Access Token for ${host}.`);
       return undefined;
     }
 
-    await this.secrets.store(patSecretKey(normalizedHost), token);
+    await this.secrets.store(patSecretKey(host), token);
     return token;
   }
 
@@ -75,30 +70,21 @@ export class PatAuthProvider implements TokenProvider {
     host: string,
     opts: { interactive: boolean } = { interactive: false },
   ): Promise<string | undefined> {
-    const normalizedHost = host.trim().toLowerCase();
-    if (!normalizedHost) {
-      return undefined;
-    }
-
-    const stored = await this.secrets.get(patSecretKey(normalizedHost));
+    const stored = await this.secrets.get(patSecretKey(host));
     const trimmed = stored?.trim();
     if (trimmed) {
       return trimmed;
     }
 
     if (opts.interactive) {
-      return this.setToken(normalizedHost);
+      return this.setToken(host);
     }
 
     return undefined;
   }
 
   async clear(host: string): Promise<void> {
-    const normalizedHost = host.trim().toLowerCase();
-    if (!normalizedHost) {
-      return;
-    }
-    await this.secrets.delete(patSecretKey(normalizedHost));
+    await this.secrets.delete(patSecretKey(host));
   }
 
   async invalidate(host: string): Promise<void> {

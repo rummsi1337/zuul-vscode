@@ -61,7 +61,7 @@ describe('normalizeProjectName & extractPrCoordinates', () => {
     expect(normalizeProjectName('single')).toBe('single');
   });
 
-  it('extracts coordinates from PullRequest base/head/html_url or coordinate object', () => {
+  it('extracts coordinates from PullRequest base repo or coordinate object', () => {
     expect(extractPrCoordinates({ owner: 'org', repo: 'repo', number: 12 })).toEqual({
       owner: 'org',
       repo: 'repo',
@@ -69,24 +69,18 @@ describe('normalizeProjectName & extractPrCoordinates', () => {
       body: undefined,
     });
 
-    const prFromUrlOnly = {
-      ...makePr({ number: 55 }),
-      base: { ref: 'main', repo: { full_name: '' } },
-      head: { sha: 'abc', ref: 'feat', repo: { full_name: '' } },
-      html_url: 'https://ghe.example.com/team/service/pull/55',
-    };
-    expect(extractPrCoordinates(prFromUrlOnly)).toEqual({
+    expect(extractPrCoordinates(makePr({ owner: 'team', repo: 'service', number: 55 }))).toEqual({
       owner: 'team',
       repo: 'service',
       number: 55,
       body: null,
     });
 
-    const invalidPr = {
-      ...prFromUrlOnly,
-      html_url: 'not-a-url',
+    const noBaseRepoName = {
+      ...makePr({ number: 55 }),
+      base: { ref: 'main', repo: { full_name: '' } },
     };
-    expect(extractPrCoordinates(invalidPr)).toBeUndefined();
+    expect(extractPrCoordinates(noBaseRepoName)).toBeUndefined();
   });
 });
 
@@ -154,12 +148,7 @@ describe('DependsOnService.getUpstream', () => {
     const tenantProjects = vi
       .fn()
       .mockResolvedValue(
-        new Set([
-          'org/open-repo',
-          'ghe.example.com/org/merged-repo',
-          'org/closed-repo',
-          'org/missing-repo',
-        ]),
+        new Set(['org/open-repo', 'org/merged-repo', 'org/closed-repo', 'org/missing-repo']),
       );
 
     const service = new DependsOnService(ghe, zuul, 'corp-tenant', tenantProjects);

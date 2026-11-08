@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { readWorkspaceSettings, type TriggerComment } from '../config/settings';
 import { type Logger } from '../util/logger';
+import { formatPrRef } from './dependsOnParser';
 import { type PrSnapshot, type ZuulContextSource } from './prTracker';
 
 export const WATCH_DURATION_MS = 45_000;
@@ -30,7 +31,7 @@ export function formatTriggerConfirmationMessage(
   repo: string,
   prNumber: number,
 ): string {
-  return `Post "${comment}" on ${owner}/${repo}#${prNumber}?`;
+  return `Post "${comment}" on ${formatPrRef({ owner, repo, number: prNumber })}?`;
 }
 
 export function buildTriggerQuickPickItems(
@@ -125,7 +126,9 @@ export class TriggerService implements vscode.Disposable {
       return false;
     }
 
-    this.logger.info(`[Zuul] Posted trigger comment "${trimmed}" on ${owner}/${repo}#${prNumber}`);
+    this.logger.info(
+      `[Zuul] Posted trigger comment "${trimmed}" on ${formatPrRef({ owner, repo, number: prNumber })}`,
+    );
 
     this.rememberBaseline(this.tracker.snapshot ?? snapshot);
     this.watchDeadline = this.now() + WATCH_DURATION_MS;

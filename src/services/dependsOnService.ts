@@ -2,7 +2,8 @@ import { type GheClient } from '../clients/gheClient';
 import { type PullRequest, type SearchItem } from '../clients/gheTypes';
 import { type ZuulClient } from '../clients/zuulClient';
 import { type ChangeStatus } from '../clients/zuulTypes';
-import { type DependsOnRef, parseDependsOn } from './dependsOnParser';
+import { mapWithConcurrency } from '../util/concurrency';
+import { type DependsOnRef, formatPrRef, parseDependsOn, prRefKey } from './dependsOnParser';
 
 export const MAX_UPSTREAM_CONCURRENCY = 5;
 export const MAX_CYCLE_DEPTH = 10;
@@ -49,28 +50,8 @@ export function normalizeProjectName(project: string): string {
   return project.trim();
 }
 
-function formatPrRef(owner: string, repo: string, prNumber: number): string {
-  return `${owner}/${repo}#${prNumber}`;
-}
-
-function formatPrRefKey(owner: string, repo: string, prNumber: number): string {
-  return `${owner.toLowerCase()}/${repo.toLowerCase()}#${prNumber}`;
-}
-
-function isProjectInTenant(owner: string, repo: string, projects: ReadonlySet<string>): boolean {
-  const target = `${owner}/${repo}`.toLowerCase();
-  if (projects.has(`${owner}/${repo}`) || projects.has(target)) {
-    return true;
-  }
-  for (const project of projects) {
-    if (
-      project.toLowerCase() === target ||
-      normalizeProjectName(project).toLowerCase() === target
-    ) {
-      return true;
-    }
-  }
-  return false;
+export function isInTenant(owner: string, repo: string, projects: ReadonlySet<string>): boolean {
+  return projects.has(`${owner}/${repo}`.toLowerCase());
 }
 
 function classifyPrState(pr: PullRequest): 'open' | 'merged' | 'closed' {
@@ -98,58 +79,19 @@ export function extractPrCoordinates(pr: PrIdentifier): PrCoordinates | undefine
     };
   }
 
-  const pull = pr as PullRequest;
-  const fullName = pull.base?.repo?.full_name || pull.head?.repo?.full_name;
-  if (fullName) {
-    const normalized = normalizeProjectName(fullName);
-    const slashIdx = normalized.indexOf('/');
-    if (slashIdx > 0 && slashIdx < normalized.length - 1) {
-      return {
-        owner: normalized.slice(0, slashIdx),
-        repo: normalized.slice(slashIdx + 1),
-        number: pull.number,
-        body: pull.body,
-      };
-    }
-  }
-
-  if (pull.html_url) {
-    const parsed = parseDependsOn(`Depends-On: ${pull.html_url}`)[0];
-    if (parsed?.owner && parsed.repo && parsed.number !== undefined) {
-      return {
-        owner: parsed.owner,
-        repo: parsed.repo,
-        number: parsed.number,
-        body: pull.body,
-      };
-    }
+  const fullName = (pr as PullRequest).base.repo.full_name;
+  const normalized = normalizeProjectName(fullName);
+  const slashIdx = normalized.indexOf('/');
+  if (slashIdx > 0 && slashIdx < normalized.length - 1) {
+    return {
+      owner: normalized.slice(0, slashIdx),
+      repo: normalized.slice(slashIdx + 1),
+      number: (pr as PullRequest).number,
+      body: (pr as PullRequest).body,
+    };
   }
 
   return undefined;
-}
-
-async function mapWithConcurrency<T, R>(
-  items: readonly T[],
-  limit: number,
-  worker: (item: T, index: number) => Promise<R>,
-): Promise<R[]> {
-  if (items.length === 0) {
-    return [];
-  }
-
-  const results = new Array<R>(items.length);
-  let nextIndex = 0;
-  const concurrency = Math.min(Math.max(1, limit), items.length);
-
-  const runners = Array.from({ length: concurrency }, async () => {
-    while (nextIndex < items.length) {
-      const idx = nextIndex++;
-      results[idx] = await worker(items[idx], idx);
-    }
-  });
-
-  await Promise.all(runners);
-  return results;
 }
 
 export function syncState(
@@ -177,9 +119,9 @@ export function syncState(
       if (!owner || !repo || prNum === undefined) {
         continue;
       }
-      const key = formatPrRefKey(owner, repo, prNum);
+      const key = prRefKey({ owner, repo, number: prNum });
       if (!bodyMap.has(key)) {
-        bodyMap.set(key, formatPrRef(owner, repo, prNum));
+        bodyMap.set(key, formatPrRef({ owner, repo, number: prNum }));
       }
     }
   } else {
@@ -189,9 +131,9 @@ export function syncState(
       if (!ref.owner || !ref.repo || ref.number === undefined) {
         continue;
       }
-      const key = formatPrRefKey(ref.owner, ref.repo, ref.number);
+      const key = prRefKey({ owner: ref.owner, repo: ref.repo, number: ref.number });
       if (!bodyMap.has(key)) {
-        bodyMap.set(key, formatPrRef(ref.owner, ref.repo, ref.number));
+        bodyMap.set(key, formatPrRef({ owner: ref.owner, repo: ref.repo, number: ref.number }));
       }
     }
   }
@@ -209,9 +151,9 @@ export function syncState(
       }
       const owner = normalizedProject.slice(0, slashIdx);
       const repo = normalizedProject.slice(slashIdx + 1);
-      const key = formatPrRefKey(owner, repo, item.change);
+      const key = prRefKey({ owner, repo, number: item.change });
       if (!zuulMap.has(key)) {
-        zuulMap.set(key, formatPrRef(owner, repo, item.change));
+        zuulMap.set(key, formatPrRef({ owner, repo, number: item.change }));
       }
     }
   }
@@ -261,9 +203,9 @@ export class DependsOnService {
         const projects = await this.zuul.listProjects(this.tenant);
         const names = new Set<string>();
         for (const p of projects) {
-          names.add(p.name);
+          names.add(normalizeProjectName(p.name).toLowerCase());
           if (p.canonical_name) {
-            names.add(normalizeProjectName(p.canonical_name));
+            names.add(normalizeProjectName(p.canonical_name).toLowerCase());
           }
         }
         return names;
@@ -282,7 +224,7 @@ export class DependsOnService {
     const projects = await this.tenantProjects();
 
     return mapWithConcurrency(parsedRefs, MAX_UPSTREAM_CONCURRENCY, async (ref) => {
-      const inTenant = isProjectInTenant(ref.owner, ref.repo, projects);
+      const inTenant = isInTenant(ref.owner, ref.repo, projects);
       let warning: string | undefined;
       if (ref.kind === 'shorthand') {
         warning = `Zuul ignores \`${ref.owner}/${ref.repo}#${ref.number}\` — use the full URL`;
@@ -362,8 +304,8 @@ export class DependsOnService {
       return false;
     }
 
-    const fromKey = formatPrRefKey(fromCoords.owner, fromCoords.repo, fromCoords.number);
-    const targetKey = formatPrRefKey(targetCoords.owner, targetCoords.repo, targetCoords.number);
+    const fromKey = prRefKey(fromCoords);
+    const targetKey = prRefKey(targetCoords);
     if (fromKey === targetKey) {
       return true;
     }
@@ -380,7 +322,7 @@ export class DependsOnService {
         return false;
       }
 
-      const currentKey = formatPrRefKey(current.owner, current.repo, current.number);
+      const currentKey = prRefKey(current);
       let body: string | null | undefined = bodyCache.get(currentKey);
 
       if (body === undefined && !bodyCache.has(currentKey)) {
@@ -403,7 +345,7 @@ export class DependsOnService {
         if (!ref.owner || !ref.repo || ref.number === undefined) {
           continue;
         }
-        const nextKey = formatPrRefKey(ref.owner, ref.repo, ref.number);
+        const nextKey = prRefKey({ owner: ref.owner, repo: ref.repo, number: ref.number });
         if (nextKey === fromKey) {
           return true;
         }

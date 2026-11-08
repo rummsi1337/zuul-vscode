@@ -1,3 +1,4 @@
+import { normalizeHost } from '../git/remoteUrl';
 import { type Logger } from '../util/logger';
 import { type AuthMethodId, type GetTokenOptions, type TokenProvider } from './types';
 
@@ -26,7 +27,7 @@ export class AuthService {
     opts: GetTokenOptions = { interactive: false },
   ): Promise<string | undefined> {
     const token = await this.resolveToken(host, opts);
-    const normalized = host.trim().toLowerCase();
+    const normalized = normalizeHost(host);
     if (normalized) {
       this.onTokenResult?.(normalized, token !== undefined);
     }
@@ -34,7 +35,7 @@ export class AuthService {
   }
 
   private async resolveToken(host: string, opts: GetTokenOptions): Promise<string | undefined> {
-    const normalizedHost = host.trim().toLowerCase();
+    const normalizedHost = normalizeHost(host);
     if (!normalizedHost) {
       return undefined;
     }
@@ -59,7 +60,7 @@ export class AuthService {
   }
 
   async reportUnauthorized(host: string): Promise<void> {
-    const normalizedHost = host.trim().toLowerCase();
+    const normalizedHost = normalizeHost(host);
     if (!normalizedHost) {
       return;
     }
@@ -69,10 +70,7 @@ export class AuthService {
       if (provider.invalidate) {
         await provider.invalidate(normalizedHost);
       }
-      const maybeClearCache = (provider as { clearCache?: () => void }).clearCache;
-      if (typeof maybeClearCache === 'function') {
-        maybeClearCache.call(provider);
-      }
+      provider.clearCache?.();
     }
   }
 }

@@ -70,15 +70,11 @@ interface RawBuildRef {
 interface RawBuild {
   uuid?: string;
   job_name?: string;
-  jobName?: string;
   result?: string | null;
   pipeline?: string;
   log_url?: string | null;
-  logUrl?: string | null;
   start_time?: string | null;
-  startTime?: string | null;
   end_time?: string | null;
-  endTime?: string | null;
   project?: string;
   change?: number | string | null;
   patchset?: string | number | null;
@@ -239,7 +235,7 @@ export function normalizeChangeStatus(
 export function normalizeBuild(raw: RawBuild): Build {
   const build: Build = {
     uuid: raw.uuid ?? '',
-    jobName: raw.job_name ?? raw.jobName ?? '',
+    jobName: raw.job_name ?? '',
     pipeline: raw.pipeline ?? '',
     artifacts: (raw.artifacts ?? []).map((a) => ({
       name: a.name ?? '',
@@ -250,15 +246,15 @@ export function normalizeBuild(raw: RawBuild): Build {
   if (raw.result) {
     build.result = raw.result;
   }
-  const logUrl = raw.log_url ?? raw.logUrl ?? undefined;
+  const logUrl = raw.log_url ?? undefined;
   if (logUrl) {
     build.logUrl = logUrl;
   }
-  const startTime = raw.start_time ?? raw.startTime ?? undefined;
+  const startTime = raw.start_time ?? undefined;
   if (startTime) {
     build.startTime = startTime;
   }
-  const endTime = raw.end_time ?? raw.endTime ?? undefined;
+  const endTime = raw.end_time ?? undefined;
   if (endTime) {
     build.endTime = endTime;
   }

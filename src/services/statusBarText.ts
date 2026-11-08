@@ -1,4 +1,5 @@
 import { type Build, type ChangeStatus } from '../clients/zuulTypes';
+import { classifyJobResult, getLatestBuildsPerJob, pickPrimary } from './buildsModel';
 import { type PrSnapshot } from './prTracker';
 
 export interface StatusBarInfo {
@@ -6,82 +7,21 @@ export interface StatusBarInfo {
   tooltip: string;
 }
 
-const FAILURE_RESULTS = new Set([
-  'FAILURE',
-  'ERROR',
-  'TIMED_OUT',
-  'POST_FAILURE',
-  'NODE_FAILURE',
-  'RETRY_LIMIT',
-  'EXCEPTION',
-]);
-
-function isJobFailure(result?: string): boolean {
-  if (!result) {
+function isNotPassing(result?: string): boolean {
+  const trimmed = result?.trim();
+  if (!trimmed) {
     return false;
   }
-  const upper = result.trim().toUpperCase();
-  return FAILURE_RESULTS.has(upper) || upper.includes('FAIL');
+  const state = classifyJobResult(trimmed);
+  return state !== 'success' && state !== 'skipped';
 }
 
 function selectStatus(statuses: ChangeStatus[]): ChangeStatus | undefined {
-  const gate = statuses.find((s) => s.pipeline.toLowerCase() === 'gate');
-  if (gate) {
-    return gate;
-  }
-  const check = statuses.find((s) => s.pipeline.toLowerCase() === 'check');
-  if (check) {
-    return check;
-  }
-  return statuses[0];
+  return pickPrimary(statuses, (s) => s.pipeline);
 }
 
 function selectBuildPipeline(builds: Build[]): string {
-  const gate = builds.find((b) => (b.pipeline ?? '').toLowerCase() === 'gate');
-  if (gate && gate.pipeline) {
-    return gate.pipeline;
-  }
-  const check = builds.find((b) => (b.pipeline ?? '').toLowerCase() === 'check');
-  if (check && check.pipeline) {
-    return check.pipeline;
-  }
-  return builds[0]?.pipeline || 'check';
-}
-
-function getBuildTime(build: Build): number | undefined {
-  if (build.endTime) {
-    const t = Date.parse(build.endTime);
-    if (!Number.isNaN(t)) {
-      return t;
-    }
-  }
-  if (build.startTime) {
-    const t = Date.parse(build.startTime);
-    if (!Number.isNaN(t)) {
-      return t;
-    }
-  }
-  return undefined;
-}
-
-function getLatestBuildsPerJob(builds: Build[]): Build[] {
-  const latestByJob = new Map<string, { build: Build; time?: number }>();
-
-  for (const build of builds) {
-    const key = build.jobName || build.uuid;
-    const time = getBuildTime(build);
-    const existing = latestByJob.get(key);
-
-    if (!existing) {
-      latestByJob.set(key, { build, time });
-    } else if (time !== undefined) {
-      if (existing.time === undefined || time > existing.time) {
-        latestByJob.set(key, { build, time });
-      }
-    }
-  }
-
-  return Array.from(latestByJob.values()).map((entry) => entry.build);
+  return pickPrimary(builds, (b) => b.pipeline ?? '')?.pipeline || 'check';
 }
 
 export function statusBarText(
@@ -110,7 +50,7 @@ export function statusBarText(
       const jobs = status.jobs || [];
       const total = jobs.length;
       const done = jobs.filter((j) => Boolean(j.result && j.result.trim().length > 0)).length;
-      const failedCount = jobs.filter((j) => isJobFailure(j.result)).length;
+      const failedCount = jobs.filter((j) => isNotPassing(j.result)).length;
 
       if (failedCount > 0) {
         return {
@@ -139,7 +79,7 @@ export function statusBarText(
     );
     const candidates = matchingBuilds.length > 0 ? matchingBuilds : snapshot.builds;
     const latestBuilds = getLatestBuildsPerJob(candidates);
-    const failedCount = latestBuilds.filter((b) => isJobFailure(b.result)).length;
+    const failedCount = latestBuilds.filter((b) => isNotPassing(b.result)).length;
 
     if (failedCount > 0) {
       return {

@@ -10,7 +10,9 @@ import {
 } from '../clients/gheTypes';
 import { type ZuulClient } from '../clients/zuulClient';
 import { type Build, type Buildset, type ChangeStatus } from '../clients/zuulTypes';
-import { type DependsOnRef, parseDependsOn } from './dependsOnParser';
+import { mapWithConcurrency } from '../util/concurrency';
+import { classifyJobResult, getLatestBuildsPerJob } from './buildsModel';
+import { type DependsOnRef, parseDependsOn, prRefKey } from './dependsOnParser';
 import { extractPrCoordinates } from './dependsOnService';
 import {
   type CheckState,
@@ -101,25 +103,15 @@ function mapRollupChecks(rollup: PrRollup): PrGateCheck[] {
   const contextNodes: RollupContextNode[] = lastCommit?.statusCheckRollup?.contexts?.nodes ?? [];
 
   const byName = new Map<string, PrGateCheck>();
+  const upsert = (name: string, state: CheckState, required: boolean): void => {
+    const existing = byName.get(name);
+    byName.set(name, { name, state, required: required || Boolean(existing?.required) });
+  };
   for (const node of contextNodes) {
     if (node.__typename === 'StatusContext') {
-      const name = node.context;
-      const state = mapStatusContextState(node.state);
-      const existing = byName.get(name);
-      byName.set(name, {
-        name,
-        state,
-        required: Boolean(node.isRequired) || Boolean(existing?.required),
-      });
+      upsert(node.context, mapStatusContextState(node.state), Boolean(node.isRequired));
     } else if (node.__typename === 'CheckRun') {
-      const name = node.name;
-      const state = mapCheckRunState(node.status, node.conclusion);
-      const existing = byName.get(name);
-      byName.set(name, {
-        name,
-        state,
-        required: Boolean(node.isRequired) || Boolean(existing?.required),
-      });
+      upsert(node.name, mapCheckRunState(node.status, node.conclusion), Boolean(node.isRequired));
     }
   }
 
@@ -144,23 +136,21 @@ function mapRestChecks(
   }
 
   const byName = new Map<string, PrGateCheck>();
+  const upsert = (name: string, state: CheckState): void => {
+    const existing = byName.get(name);
+    byName.set(name, {
+      name,
+      state,
+      required: requiredNames.has(name) || Boolean(existing?.required),
+    });
+  };
 
   for (const status of combinedStatus.statuses ?? []) {
-    const existing = byName.get(status.context);
-    byName.set(status.context, {
-      name: status.context,
-      state: mapStatusContextState(status.state),
-      required: requiredNames.has(status.context) || Boolean(existing?.required),
-    });
+    upsert(status.context, mapStatusContextState(status.state));
   }
 
   for (const run of checkRuns) {
-    const existing = byName.get(run.name);
-    byName.set(run.name, {
-      name: run.name,
-      state: mapCheckRunState(run.status, run.conclusion),
-      required: requiredNames.has(run.name) || Boolean(existing?.required),
-    });
+    upsert(run.name, mapCheckRunState(run.status, run.conclusion));
   }
 
   for (const reqName of requiredNames) {
@@ -222,45 +212,9 @@ export function summarizeReviews(reviews: readonly Review[]): {
   return { approvals, changesRequested };
 }
 
-function getBuildTime(build: Build): number | undefined {
-  if (build.endTime) {
-    const t = Date.parse(build.endTime);
-    if (!Number.isNaN(t)) {
-      return t;
-    }
-  }
-  if (build.startTime) {
-    const t = Date.parse(build.startTime);
-    if (!Number.isNaN(t)) {
-      return t;
-    }
-  }
-  return undefined;
-}
-
-function getLatestBuildsPerJob(builds: readonly Build[]): Build[] {
-  const latestByJob = new Map<string, { build: Build; time?: number }>();
-
-  for (const build of builds) {
-    const key = build.jobName || build.uuid;
-    const time = getBuildTime(build);
-    const existing = latestByJob.get(key);
-
-    if (!existing) {
-      latestByJob.set(key, { build, time });
-    } else if (time !== undefined) {
-      if (existing.time === undefined || time > existing.time) {
-        latestByJob.set(key, { build, time });
-      }
-    }
-  }
-
-  return Array.from(latestByJob.values()).map((entry) => entry.build);
-}
-
-function isSuccessfulZuulResult(result: string): boolean {
-  const upper = result.trim().toUpperCase();
-  return upper === 'SUCCESS' || upper === 'SKIPPED';
+function isPassingResult(result: string): boolean {
+  const state = classifyJobResult(result);
+  return state === 'success' || state === 'skipped';
 }
 
 function evaluateBuildsCheckState(builds: readonly Build[]): ZuulCheckState {
@@ -275,9 +229,7 @@ function evaluateBuildsCheckState(builds: readonly Build[]): ZuulCheckState {
     }
   }
 
-  const allSucceeded = latestBuilds.every((b) =>
-    Boolean(b.result && isSuccessfulZuulResult(b.result)),
-  );
+  const allSucceeded = latestBuilds.every((b) => Boolean(b.result && isPassingResult(b.result)));
   return allSucceeded ? 'success' : 'failure';
 }
 
@@ -288,7 +240,7 @@ function evaluateBuildsetCheckState(buildset: Buildset): ZuulCheckState {
   if (!buildset.result || buildset.result.trim().length === 0) {
     return 'running';
   }
-  return isSuccessfulZuulResult(buildset.result) ? 'success' : 'failure';
+  return isPassingResult(buildset.result) ? 'success' : 'failure';
 }
 
 async function resolveZuulCheckState(
@@ -310,7 +262,7 @@ async function resolveZuulCheckState(
     if (hasPendingJob) {
       return 'running';
     }
-    const allSucceeded = jobs.every((j) => Boolean(j.result && isSuccessfulZuulResult(j.result)));
+    const allSucceeded = jobs.every((j) => Boolean(j.result && isPassingResult(j.result)));
     return allSucceeded ? 'success' : 'failure';
   }
 
@@ -349,18 +301,6 @@ async function resolveZuulCheckState(
   return 'none';
 }
 
-function resolvePrCoordinates(pr: PullRequest): { owner: string; repo: string; number: number } {
-  const coords = extractPrCoordinates(pr);
-  if (coords) {
-    return coords;
-  }
-  return {
-    owner: '',
-    repo: '',
-    number: pr.number,
-  };
-}
-
 async function collectGateFactsInternal(
   ghe: GheGateClient,
   zuul: ZuulGateClient,
@@ -368,14 +308,18 @@ async function collectGateFactsInternal(
   pr: PullRequest,
   fetchFreshPr: boolean,
 ): Promise<PrGateFacts> {
-  const { owner, repo, number: prNumber } = resolvePrCoordinates(pr);
+  const coords = extractPrCoordinates(pr);
+  if (!coords) {
+    throw new Error('Pull request has no base repository');
+  }
+  const { owner, repo, number: prNumber } = coords;
   const project = `${owner}/${repo}`;
   const ref = `${project}#${prNumber}`;
   const sha = pr.head.sha;
   const baseBranch = pr.base.ref;
 
   const freshPrPromise =
-    fetchFreshPr && typeof ghe.getPr === 'function' && owner && repo
+    fetchFreshPr && typeof ghe.getPr === 'function'
       ? ghe.getPr(owner, repo, prNumber).catch(() => pr)
       : Promise.resolve(pr);
 
@@ -447,34 +391,6 @@ export async function collectGateFacts(
   return collectGateFactsInternal(ghe, zuul, tenant, pr, true);
 }
 
-async function mapWithConcurrency<T, R>(
-  items: readonly T[],
-  limit: number,
-  worker: (item: T, index: number) => Promise<R>,
-): Promise<R[]> {
-  if (items.length === 0) {
-    return [];
-  }
-
-  const results = new Array<R>(items.length);
-  let nextIndex = 0;
-  const concurrency = Math.min(Math.max(1, limit), items.length);
-
-  const runners = Array.from({ length: concurrency }, async () => {
-    while (nextIndex < items.length) {
-      const idx = nextIndex++;
-      results[idx] = await worker(items[idx], idx);
-    }
-  });
-
-  await Promise.all(runners);
-  return results;
-}
-
-function formatRefKey(owner: string, repo: string, number: number): string {
-  return `${owner.toLowerCase()}/${repo.toLowerCase()}#${number}`;
-}
-
 function extractValidDependsOnRefs(
   body: string | null | undefined,
   seenKeys: Set<string>,
@@ -486,7 +402,7 @@ function extractValidDependsOnRefs(
 
   const result: { owner: string; repo: string; number: number }[] = [];
   for (const ref of parsed) {
-    const key = formatRefKey(ref.owner, ref.repo, ref.number);
+    const key = prRefKey({ owner: ref.owner, repo: ref.repo, number: ref.number });
     if (!seenKeys.has(key)) {
       seenKeys.add(key);
       result.push({
@@ -512,9 +428,9 @@ export async function collectUpstreamFacts(
   }
 
   const seenKeys = new Set<string>();
-  const rootCoords = resolvePrCoordinates(rootPr);
-  if (rootCoords.owner && rootCoords.repo) {
-    seenKeys.add(formatRefKey(rootCoords.owner, rootCoords.repo, rootCoords.number));
+  const rootCoords = extractPrCoordinates(rootPr);
+  if (rootCoords) {
+    seenKeys.add(prRefKey(rootCoords));
   }
 
   let currentLevelRefs = extractValidDependsOnRefs(rootPr.body, seenKeys);

@@ -152,7 +152,7 @@ the code, and the pre-commit checks run.
 
 - **Tier:** sonnet
 - **Risk:** medium
-- **Status:** todo
+- **Status:** done
 - **Files:** `src/services/buildsModel.ts`, `statusBarText.ts`, `gateFacts.ts`, `dependsOnService.ts`,
   `dependsOnParser.ts`, `triggerService.ts`, `prTracker.ts`; `src/views/addDependsOnPick.ts`,
   `dependsOnTreeView.ts`, `buildsTreeView.ts`, `prGateTreeView.ts`, `statusBar.ts`;

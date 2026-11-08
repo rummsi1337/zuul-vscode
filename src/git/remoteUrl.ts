@@ -8,12 +8,16 @@ const SCP_REMOTE_RE = /^git@([^:/?#\s]+):([^/?#\s]+)\/([^/?#\s]+?)\/?$/;
 const URL_REMOTE_RE =
   /^(?:ssh|https?):\/\/(?:[^@/?#\s]+@)?([^:/?#\s]+)(?::(\d+))?\/([^/?#\s]+)\/([^/?#\s]+?)\/?$/;
 
+export function normalizeHost(host: string): string {
+  return host.trim().toLowerCase();
+}
+
 function normalizeParts(
   rawHost: string,
   owner: string,
   rawRepo: string,
 ): ParsedRemoteUrl | undefined {
-  const host = rawHost.toLowerCase();
+  const host = normalizeHost(rawHost);
   const repo = rawRepo.endsWith('.git') ? rawRepo.slice(0, -4) : rawRepo;
   if (
     !host ||
