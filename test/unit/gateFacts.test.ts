@@ -1,11 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  type BranchMergeRules,
   type CheckRun,
   type CombinedStatus,
   type PrRollup,
   type PullRequest,
-  type RequiredStatusChecks,
   type Review,
+  type RollupContextNode,
 } from '../../src/clients/gheTypes';
 import { type Build, type Buildset, type ChangeStatus } from '../../src/clients/zuulTypes';
 import {
@@ -102,6 +103,14 @@ function makeRollup(overrides: Partial<PrRollup> = {}): PrRollup {
   };
 }
 
+function rollupWithContexts(nodes: RollupContextNode[], oid = 'sha-42'): PrRollup {
+  return makeRollup({
+    commits: {
+      nodes: [{ commit: { oid, statusCheckRollup: { state: 'PENDING', contexts: { nodes } } } }],
+    },
+  });
+}
+
 function makeMockGhe(overrides: Partial<GheGateClient> = {}): GheGateClient {
   return {
     getPr: vi.fn(async (_owner: string, _repo: string, num: number) => makePr({ number: num })),
@@ -111,9 +120,8 @@ function makeMockGhe(overrides: Partial<GheGateClient> = {}): GheGateClient {
       statuses: [],
     })),
     listCheckRuns: vi.fn(async (): Promise<CheckRun[]> => []),
-    getRequiredStatusChecks: vi.fn(
-      async (): Promise<RequiredStatusChecks | undefined> => undefined,
-    ),
+    getRequiredContexts: vi.fn(async (): Promise<string[] | undefined> => undefined),
+    getBranchMergeRules: vi.fn(async (): Promise<BranchMergeRules | undefined> => undefined),
     listReviews: vi.fn(async (): Promise<Review[]> => []),
     ...overrides,
   };
@@ -227,6 +235,27 @@ describe('summarizeReviews (latest review per user)', () => {
       changesRequested: 1, // carol
     });
   });
+
+  it('keeps approval when followed by COMMENTED', () => {
+    const reviews: Review[] = [
+      { id: 1, user: { login: 'alice' }, state: 'APPROVED', submitted_at: '2026-11-07T10:00:00Z' },
+      { id: 2, user: { login: 'alice' }, state: 'COMMENTED', submitted_at: '2026-11-07T11:00:00Z' },
+    ];
+    expect(summarizeReviews(reviews)).toEqual({ approvals: 1, changesRequested: 0 });
+  });
+
+  it('keeps changes requested when followed by COMMENTED', () => {
+    const reviews: Review[] = [
+      {
+        id: 1,
+        user: { login: 'bob' },
+        state: 'CHANGES_REQUESTED',
+        submitted_at: '2026-11-07T10:00:00Z',
+      },
+      { id: 2, user: { login: 'bob' }, state: 'COMMENTED', submitted_at: '2026-11-07T11:00:00Z' },
+    ];
+    expect(summarizeReviews(reviews)).toEqual({ approvals: 0, changesRequested: 1 });
+  });
 });
 
 describe('collectGateFacts', () => {
@@ -239,6 +268,7 @@ describe('collectGateFacts', () => {
 
     const ghe = makeMockGhe({
       getPr: vi.fn(async () => makePr({ number: 42, mergeable_state: 'blocked' })),
+      getRequiredContexts: vi.fn(async () => ['zuul/check', 'security-scan']),
       getPrRollup: vi.fn(async () =>
         makeRollup({
           isDraft: false,
@@ -326,12 +356,13 @@ describe('collectGateFacts', () => {
         { name: 'security-scan', state: 'pending', required: true },
         { name: 'flake-job', state: 'failure', required: false },
       ],
+      requiredChecksKnown: true,
       zuulCheck: 'success',
     });
 
     expect(ghe.listCommitStatuses).not.toHaveBeenCalled();
     expect(ghe.listCheckRuns).not.toHaveBeenCalled();
-    expect(ghe.getRequiredStatusChecks).not.toHaveBeenCalled();
+    expect(ghe.getRequiredContexts).toHaveBeenCalledWith('acme', 'service', 'main');
   });
 
   it('falls back to REST endpoints when getPrRollup returns undefined', async () => {
@@ -356,11 +387,12 @@ describe('collectGateFacts', () => {
         { id: 1, name: 'sonarqube', status: 'completed', conclusion: 'failure' },
         { id: 2, name: 'codeql', status: 'queued', conclusion: null },
       ]),
-      getRequiredStatusChecks: vi.fn(async () => ({
-        strict: true,
-        contexts: ['acme-tenant/check', 'missing-status-context'],
-        checks: [{ context: 'sonarqube', app_id: 12 }, { context: 'missing-check-run' }],
-      })),
+      getRequiredContexts: vi.fn(async () => [
+        'acme-tenant/check',
+        'missing-status-context',
+        'sonarqube',
+        'missing-check-run',
+      ]),
       listReviews: vi.fn(async () => [
         { id: 10, user: { login: 'bob' }, state: 'APPROVED' },
         { id: 11, user: { login: 'carol' }, state: 'APPROVED' },
@@ -388,13 +420,14 @@ describe('collectGateFacts', () => {
         { name: 'missing-status-context', state: 'missing', required: true },
         { name: 'missing-check-run', state: 'missing', required: true },
       ],
+      requiredChecksKnown: true,
       zuulCheck: 'none',
     });
 
     expect(facts.reviewDecision).toBeUndefined();
     expect(ghe.listCommitStatuses).toHaveBeenCalledWith('acme', 'service', 'sha-42');
     expect(ghe.listCheckRuns).toHaveBeenCalledWith('acme', 'service', 'sha-42');
-    expect(ghe.getRequiredStatusChecks).toHaveBeenCalledWith('acme', 'service', 'main');
+    expect(ghe.getRequiredContexts).toHaveBeenCalledWith('acme', 'service', 'main');
   });
 
   it('computes zuulCheck from getChangeStatus, listBuilds, and listBuildsets', async () => {
@@ -583,6 +616,247 @@ describe('collectGateFacts', () => {
     const facts = await collectGateFacts(ghe, zuul, 'tenant', pr);
     expect(facts.mergeableState).toBe('clean');
   });
+
+  it('adds missing entries for unreported required checks on the rollup path', async () => {
+    const pr = makePr({ number: 42 });
+    const ghe = makeMockGhe({
+      getPr: vi.fn(async () => pr),
+      getRequiredContexts: vi.fn(async () => ['reported-check', 'unreported-check']),
+      getPrRollup: vi.fn(async () =>
+        makeRollup({
+          commits: {
+            nodes: [
+              {
+                commit: {
+                  oid: 'sha-42',
+                  statusCheckRollup: {
+                    state: 'SUCCESS',
+                    contexts: {
+                      nodes: [
+                        {
+                          __typename: 'StatusContext',
+                          context: 'reported-check',
+                          state: 'SUCCESS',
+                          isRequired: true,
+                        },
+                      ],
+                    },
+                  },
+                },
+              },
+            ],
+          },
+        }),
+      ),
+    });
+    const zuul = makeMockZuul();
+
+    const facts = await collectGateFacts(ghe, zuul, 'tenant', pr);
+    expect(facts.requiredChecksKnown).toBe(true);
+    expect(facts.checks).toContainEqual({
+      name: 'unreported-check',
+      state: 'missing',
+      required: true,
+    });
+  });
+
+  it('ignores non-voting failures in zuulCheck', async () => {
+    const pr = makePr({ number: 42 });
+    const ghe = makeMockGhe({ getPr: vi.fn(async () => pr) });
+    const zuulStatuses = makeMockZuul({
+      getChangeStatus: vi.fn(async () => [
+        {
+          pipeline: 'check',
+          queue: 'shared',
+          live: true,
+          jobs: [
+            { name: 'voting-job', running: false, result: 'SUCCESS', voting: true },
+            { name: 'non-voting-job', running: false, result: 'FAILURE', voting: false },
+          ],
+          itemsAhead: [],
+        },
+      ]),
+    });
+
+    const factsStatus = await collectGateFacts(ghe, zuulStatuses, 'tenant', pr);
+    expect(factsStatus.zuulCheck).toBe('success');
+
+    const zuulBuilds = makeMockZuul({
+      getChangeStatus: vi.fn(async () => []),
+      listBuilds: vi.fn(async () => [
+        {
+          uuid: 'b1',
+          jobName: 'voting-build',
+          pipeline: 'check',
+          result: 'SUCCESS',
+          voting: true,
+          patchset: 'sha-42',
+          artifacts: [],
+        },
+        {
+          uuid: 'b2',
+          jobName: 'non-voting-build',
+          pipeline: 'check',
+          result: 'FAILURE',
+          voting: false,
+          patchset: 'sha-42',
+          artifacts: [],
+        },
+      ]),
+    });
+
+    const factsBuilds = await collectGateFacts(ghe, zuulBuilds, 'tenant', pr);
+    expect(factsBuilds.zuulCheck).toBe('success');
+  });
+
+  it('keeps zuulCheck running until a non-voting job has finished', async () => {
+    const pr = makePr({ number: 42 });
+    const ghe = makeMockGhe({ getPr: vi.fn(async () => pr) });
+    const zuul = makeMockZuul({
+      getChangeStatus: vi.fn(async () => [
+        {
+          pipeline: 'check',
+          queue: 'shared',
+          live: true,
+          jobs: [
+            { name: 'voting-job', running: false, result: 'SUCCESS', voting: true },
+            { name: 'non-voting-job', running: true, voting: false },
+          ],
+          itemsAhead: [],
+        },
+      ]),
+    });
+
+    expect((await collectGateFacts(ghe, zuul, 'tenant', pr)).zuulCheck).toBe('running');
+  });
+
+  it('only counts live Zuul items in the check pipeline or with no pipeline', async () => {
+    const pr = makePr({ number: 42 });
+    const ghe = makeMockGhe({ getPr: vi.fn(async () => pr) });
+    const zuulCheckFor = async (status: Partial<ChangeStatus>): Promise<string | undefined> => {
+      const zuul = makeMockZuul({
+        getChangeStatus: vi.fn(async () => [
+          {
+            pipeline: 'check',
+            queue: '',
+            live: true,
+            jobs: [{ name: 'j', running: false, result: 'FAILURE', voting: true }],
+            itemsAhead: [],
+            ...status,
+          },
+        ]),
+        listBuilds: vi.fn(async () => [
+          {
+            uuid: 'b',
+            jobName: 'j',
+            pipeline: 'check',
+            result: 'SUCCESS',
+            voting: true,
+            patchset: 'sha-42',
+            artifacts: [],
+          },
+        ]),
+      });
+      return (await collectGateFacts(ghe, zuul, 'tenant', pr)).zuulCheck;
+    };
+
+    expect(await zuulCheckFor({})).toBe('failure');
+    expect(await zuulCheckFor({ pipeline: '' })).toBe('failure');
+    expect(await zuulCheckFor({ live: false })).toBe('success');
+    expect(await zuulCheckFor({ pipeline: 'gate' })).toBe('success');
+  });
+
+  it('counts a CONFLICTING rollup as dirty', async () => {
+    const pr = makePr({ number: 42, mergeable_state: 'blocked' });
+    const ghe = makeMockGhe({
+      getPr: vi.fn(async () => pr),
+      getPrRollup: vi.fn(async () => makeRollup({ mergeable: 'CONFLICTING' })),
+    });
+
+    const facts = await collectGateFacts(ghe, makeMockZuul(), 'tenant', pr);
+    expect(facts.mergeableState).toBe('dirty');
+  });
+
+  it('keeps the worst state for same-named checks on both paths', async () => {
+    const pr = makePr({ number: 42 });
+    const passed: RollupContextNode = {
+      __typename: 'StatusContext',
+      context: 'ci',
+      state: 'SUCCESS',
+      isRequired: true,
+    };
+    const failed: RollupContextNode = {
+      __typename: 'CheckRun',
+      name: 'ci',
+      conclusion: 'FAILURE',
+      status: 'COMPLETED',
+      isRequired: false,
+    };
+
+    for (const nodes of [
+      [passed, failed],
+      [failed, passed],
+    ]) {
+      const ghe = makeMockGhe({
+        getPr: vi.fn(async () => pr),
+        getPrRollup: vi.fn(async () => rollupWithContexts(nodes)),
+      });
+      const facts = await collectGateFacts(ghe, makeMockZuul(), 'tenant', pr);
+      expect(facts.checks).toEqual([{ name: 'ci', state: 'failure', required: true }]);
+    }
+
+    const restGhe = makeMockGhe({
+      getPr: vi.fn(async () => pr),
+      getPrRollup: vi.fn(async () => undefined),
+      listCommitStatuses: vi.fn(async () => ({
+        state: 'failure',
+        statuses: [{ context: 'ci', state: 'failure' }],
+      })),
+      listCheckRuns: vi.fn(async () => [
+        { name: 'ci', status: 'completed', conclusion: 'success' },
+      ]),
+    });
+    const restFacts = await collectGateFacts(restGhe, makeMockZuul(), 'tenant', pr);
+    expect(restFacts.checks).toEqual([{ name: 'ci', state: 'failure', required: false }]);
+  });
+
+  it('adds a required pending check when the head commit moves while checking', async () => {
+    const pr = makePr({ number: 42 });
+    const marker = { name: 'Head commit changed while checking', state: 'pending', required: true };
+
+    const moved = makeMockGhe({
+      getPr: vi.fn(async () => pr),
+      getPrRollup: vi.fn(async () => rollupWithContexts([], 'sha-newer')),
+    });
+    expect((await collectGateFacts(moved, makeMockZuul(), 'tenant', pr)).checks).toContainEqual(
+      marker,
+    );
+
+    const same = makeMockGhe({
+      getPr: vi.fn(async () => pr),
+      getPrRollup: vi.fn(async () => rollupWithContexts([])),
+    });
+    expect((await collectGateFacts(same, makeMockZuul(), 'tenant', pr)).checks).not.toContainEqual(
+      marker,
+    );
+  });
+
+  it('reads the merge rules of the fresh base branch', async () => {
+    const pr = makePr({ number: 42 });
+    const fresh = makePr({ number: 42, base: { ...pr.base, ref: 'release' } });
+    const mergeRules: BranchMergeRules = {
+      requiredApprovingReviewCount: 2,
+      requiresConversationResolution: true,
+      requiresSignatures: false,
+    };
+    const getBranchMergeRules = vi.fn(async () => mergeRules);
+    const ghe = makeMockGhe({ getPr: vi.fn(async () => fresh), getBranchMergeRules });
+
+    const facts = await collectGateFacts(ghe, makeMockZuul(), 'tenant', pr);
+
+    expect(getBranchMergeRules).toHaveBeenCalledWith('acme', 'service', 'release');
+    expect(facts.mergeRules).toEqual(mergeRules);
+  });
 });
 
 describe('collectUpstreamFacts', () => {
@@ -672,6 +946,10 @@ describe('collectUpstreamFacts', () => {
       'acme/service#3',
       'acme/service#4',
       'acme/service#5',
+      'acme/service#6',
+    ]);
+    expect(upstreamFacts[5]?.checks).toEqual([
+      { name: 'Dependency chain deeper than 5 levels', state: 'error', required: true },
     ]);
     expect(getPr).toHaveBeenCalledTimes(5);
   });
@@ -735,6 +1013,42 @@ describe('collectUpstreamFacts', () => {
         ].join('\n'),
       }),
     );
-    expect(withMissing.map((f) => f.ref)).toEqual(['acme/service#2']);
+    expect(withMissing.map((f) => f.ref)).toEqual(['acme/service#404', 'acme/service#2']);
+    expect(withMissing[0]?.checks).toEqual([
+      { name: 'Could not read this pull request', state: 'error', required: true },
+    ]);
+  });
+
+  it('returns a blocker when an upstream PR request fails with 500', async () => {
+    const ghe = makeMockGhe({
+      getPr: vi.fn(async () => {
+        throw new Error('500 Internal Server Error');
+      }),
+    });
+    const zuul = makeMockZuul();
+    const facts = await collectUpstreamFacts(
+      ghe,
+      zuul,
+      'tenant',
+      makePr({
+        number: 1,
+        body: 'Depends-On: https://ghe.example.com/acme/service/pull/500',
+      }),
+    );
+    expect(facts).toEqual([
+      {
+        ref: 'acme/service#500',
+        draft: false,
+        merged: false,
+        state: 'open',
+        labels: [],
+        approvals: 0,
+        changesRequested: 0,
+        checks: [{ name: 'Could not read this pull request', state: 'error', required: true }],
+        requiredChecksKnown: false,
+        zuulCheck: 'none',
+        loadError: 'Could not read this pull request',
+      },
+    ]);
   });
 });

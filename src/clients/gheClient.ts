@@ -1,4 +1,5 @@
 import {
+  type BranchMergeRules,
   type CheckRun,
   type CombinedStatus,
   type GheUser,
@@ -14,6 +15,7 @@ import { type Logger } from '../util/logger';
 import { HttpClient, HttpError, type QueryParams } from './http';
 
 const MAX_PAGINATION_PAGES = 10;
+const PER_PAGE = 100;
 
 const PR_ROLLUP_QUERY = `
 query($owner: String!, $repo: String!, $num: Int!) {
@@ -58,6 +60,56 @@ query($owner: String!, $repo: String!, $num: Int!) {
   }
 }
 `.trim();
+
+const REQUIRED_CONTEXTS_QUERY = `
+query($owner: String!, $repo: String!, $qualifiedName: String!) {
+  repository(owner: $owner, name: $repo) {
+    ref(qualifiedName: $qualifiedName) {
+      refUpdateRule {
+        requiredStatusCheckContexts
+      }
+    }
+  }
+}
+`.trim();
+
+interface RequiredContextsData {
+  repository?: {
+    ref?: {
+      refUpdateRule?: { requiredStatusCheckContexts?: (string | null)[] | null } | null;
+    } | null;
+  } | null;
+}
+
+const BRANCH_MERGE_RULES_QUERY = `
+query($owner: String!, $repo: String!, $qualifiedName: String!) {
+  repository(owner: $owner, name: $repo) {
+    ref(qualifiedName: $qualifiedName) {
+      refUpdateRule {
+        requiredApprovingReviewCount
+        requiresConversationResolution
+        requiresSignatures
+      }
+    }
+  }
+}
+`.trim();
+
+interface BranchMergeRulesData {
+  repository?: {
+    ref?: {
+      refUpdateRule?: {
+        requiredApprovingReviewCount?: number | null;
+        requiresConversationResolution?: boolean | null;
+        requiresSignatures?: boolean | null;
+      } | null;
+    } | null;
+  } | null;
+}
+
+function uniqueNames(names: readonly (string | null | undefined)[]): string[] {
+  return Array.from(new Set(names.filter((n): n is string => Boolean(n))));
+}
 
 export function parseNextLink(linkHeader: string | null): string | undefined {
   if (!linkHeader) {
@@ -113,20 +165,34 @@ export class GheClient {
     query?: QueryParams,
     maxPages = MAX_PAGINATION_PAGES,
   ): Promise<T[]> {
-    const results: T[] = [];
+    const pages = await this.fetchPages<T[]>(initialPath, query, maxPages);
+    return pages.flat();
+  }
+
+  /** Follows `Link: rel="next"` up to `maxPages` pages and logs when that limit cuts it short. */
+  private async fetchPages<P>(
+    initialPath: string,
+    query?: QueryParams,
+    maxPages = MAX_PAGINATION_PAGES,
+  ): Promise<P[]> {
+    const pages: P[] = [];
     let nextPath: string | undefined = initialPath;
     let nextQuery: QueryParams | undefined = query;
-    let page = 0;
 
-    while (nextPath && page < maxPages) {
-      page += 1;
-      const { data, headers } = await this.http.getJsonWithHeaders<T[]>(nextPath, nextQuery);
-      results.push(...data);
+    while (nextPath && pages.length < maxPages) {
+      const { data, headers } = await this.http.getJsonWithHeaders<P>(nextPath, nextQuery);
+      pages.push(data);
       nextPath = parseNextLink(headers.get('link'));
       nextQuery = undefined;
     }
 
-    return results;
+    if (nextPath) {
+      this.logger?.warn(
+        `[GHE] Stopped after ${maxPages} pages of ${initialPath}; the results are incomplete`,
+      );
+    }
+
+    return pages;
   }
 
   async getUser(): Promise<GheUser> {
@@ -169,15 +235,21 @@ export class GheClient {
 
   async listCommitStatuses(owner: string, repo: string, sha: string): Promise<CombinedStatus> {
     this.logger?.info(`[GHE] Listing commit statuses for commit=${sha} on ${owner}/${repo}`);
-    return this.http.getJson<CombinedStatus>(`/repos/${owner}/${repo}/commits/${sha}/status`);
+    const pages = await this.fetchPages<CombinedStatus>(
+      `/repos/${owner}/${repo}/commits/${sha}/status`,
+      { per_page: PER_PAGE },
+    );
+    const statuses = pages.flatMap((p) => p.statuses ?? []);
+    return { ...pages[0], state: pages[0]?.state ?? 'pending', statuses };
   }
 
   async listCheckRuns(owner: string, repo: string, sha: string): Promise<CheckRun[]> {
     this.logger?.info(`[GHE] Listing check runs for commit=${sha} on ${owner}/${repo}`);
-    const res = await this.http.getJson<{ check_runs?: CheckRun[] } | CheckRun[]>(
+    const pages = await this.fetchPages<{ check_runs?: CheckRun[] } | CheckRun[]>(
       `/repos/${owner}/${repo}/commits/${sha}/check-runs`,
+      { per_page: PER_PAGE },
     );
-    return Array.isArray(res) ? res : (res.check_runs ?? []);
+    return pages.flatMap((res) => (Array.isArray(res) ? res : (res.check_runs ?? [])));
   }
 
   async getRequiredStatusChecks(
@@ -200,6 +272,73 @@ export class GheClient {
         return undefined;
       }
       throw err;
+    }
+  }
+
+  /**
+   * Names of the status checks the branch requires, or `undefined` when they can't be read.
+   * Tries GraphQL `refUpdateRule` first (its own query, so an older GHE without the field only
+   * fails here), then the REST branch protection endpoint.
+   */
+  async getRequiredContexts(
+    owner: string,
+    repo: string,
+    branch: string,
+  ): Promise<string[] | undefined> {
+    try {
+      const data = await this.http.graphql<RequiredContextsData>(
+        this.graphqlUrl,
+        REQUIRED_CONTEXTS_QUERY,
+        { owner, repo, qualifiedName: `refs/heads/${branch}` },
+      );
+      const contexts = data.repository?.ref?.refUpdateRule?.requiredStatusCheckContexts;
+      if (Array.isArray(contexts)) {
+        return uniqueNames(contexts);
+      }
+    } catch {
+      // Fall back to REST below.
+    }
+
+    const rest = await this.getRequiredStatusChecks(owner, repo, branch);
+    if (!rest) {
+      return undefined;
+    }
+    return uniqueNames([...(rest.contexts ?? []), ...(rest.checks ?? []).map((c) => c?.context)]);
+  }
+
+  /**
+   * Branch rules besides status checks that can also make GHE report `blocked`, or `undefined` when
+   * they can't be read. Its own query, so an older GHE without these fields only fails here.
+   */
+  async getBranchMergeRules(
+    owner: string,
+    repo: string,
+    branch: string,
+  ): Promise<BranchMergeRules | undefined> {
+    this.logger?.info(`[GHE] Querying merge rules for branch="${branch}" on ${owner}/${repo}`);
+    try {
+      const data = await this.http.graphql<BranchMergeRulesData>(
+        this.graphqlUrl,
+        BRANCH_MERGE_RULES_QUERY,
+        { owner, repo, qualifiedName: `refs/heads/${branch}` },
+      );
+      const rule = data.repository?.ref?.refUpdateRule;
+      if (
+        typeof rule?.requiresConversationResolution !== 'boolean' ||
+        typeof rule.requiresSignatures !== 'boolean'
+      ) {
+        return undefined;
+      }
+      return {
+        requiredApprovingReviewCount: rule.requiredApprovingReviewCount ?? 0,
+        requiresConversationResolution: rule.requiresConversationResolution,
+        requiresSignatures: rule.requiresSignatures,
+      };
+    } catch (err) {
+      this.logger?.info(
+        `[GHE] Could not read merge rules for branch="${branch}" on ${owner}/${repo}: ${String(err)}`,
+      );
+      return undefined;
     }
   }
 

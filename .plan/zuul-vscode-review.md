@@ -321,13 +321,14 @@ the code, and the pre-commit checks run.
 
 - **Tier:** sonnet
 - **Risk:** high
-- **Status:** todo
+- **Status:** done
 - **Files:** `src/services/gateFacts.ts`, `src/services/gateReadiness.ts`, `src/clients/gheClient.ts`,
   `src/views/prGateTreeView.ts`, `src/config/settings.ts`, `package.json`, tests
 - **Do:**
   - `collectUpstreamFacts`: on any error return blocking facts (`state: 'open'`, `zuulCheck: 'none'`,
     one required check `{ name: 'Could not read this pull request', state: 'error' }`). Do the same
     with `'Dependency chain deeper than 5 levels'` for refs left when the depth limit is reached.
+    Also set `loadError` to that message, so `evaluatePr` reports one blocker, not one per placeholder.
   - `summarizeReviews`: skip `COMMENTED` and `PENDING` before picking the latest per user.
   - `collectGateFactsInternal`: await the fresh PR first, use its `head.sha`. If the rollup `oid`
     differs, add a required `pending` check `'Head commit changed while checking'`.
@@ -344,7 +345,9 @@ the code, and the pre-commit checks run.
     `zuul.gate.requiredStatusChecks` names checks for this repo.
   - Same-named checks: keep the worst state (error, failure, missing, pending, success).
   - `listCommitStatuses` and `listCheckRuns`: `per_page=100` and pagination. Log when a limit truncates.
-  - zuulCheck: use only `live` statuses whose pipeline is `check` or `''`, and ignore `voting === false`.
+  - zuulCheck: use only `live` statuses whose pipeline is `check` or `''`. A failed `voting === false`
+    job doesn't count. An unfinished one still counts as running: Zuul only reports once every job has
+    finished.
   - `evaluateGate`: stop pushing `upEval.blockers` into `blockers` (each upstream problem counted
     twice); upstream detail stays in `items`.
   - `prGateTreeView`: on failure return a not-ready report with one blocker `Could not load gate data:
@@ -352,6 +355,7 @@ the code, and the pre-commit checks run.
   - Zuul gate rule. New setting `zuul.gate.gateStatusChecks`, default `["{tenant}/gate"]`, described as
     "Status checks that only report once a pull request enters Zuul's gate". The caller substitutes
     `{tenant}` and passes the result as `GateRules.gateStatusChecks`; names match case-insensitively.
+    `{tenant}` is also substituted in `zuul.gate.requiredStatusChecks`.
     Per PR, for a check with one of those names:
 
     | Check state | Result |
@@ -362,8 +366,15 @@ the code, and the pre-commit checks run.
     | `failure`, `error` | Blocker, kind `status-check`: `Zuul gate failed on this commit. It needs a new trigger.` |
 
   - `blocked` is excused only when all of these hold: the required list is known; a gate status check
-    is in that list and is absent or pending; every other required check is `success`; and the PR has
-    no other blocker. Then show row `Merge state`, ok, message `Blocked only by the Zuul gate`.
+    is in that list and is absent or pending; every other required check is `success`; the PR has
+    no other blocker; and no other branch rule could be the cause (next bullet). Then show row
+    `Merge state`, ok, message `Blocked only by the Zuul gate`.
+  - `blocked` has causes the status checks don't show. Add `getBranchMergeRules(owner, repo, branch)`
+    (its own query) reading `requiredApprovingReviewCount`, `requiresConversationResolution` and
+    `requiresSignatures` from `refUpdateRule`. Don't excuse `blocked` when conversations or signatures
+    are required, or when approvals are short of the count and the review decision isn't `APPROVED`.
+    If these rules can't be read, only a list in `zuul.gate.requiredStatusChecks` for this repo allows
+    the excuse.
   - If the required list is unknown, `blocked` stays a blocker with the message `Merge is blocked, and
     this repo's required checks can't be read. List them in zuul.gate.requiredStatusChecks to tell
     whether only the Zuul gate is left.` Never excuse `blocked` on a guess.
@@ -378,8 +389,8 @@ the code, and the pre-commit checks run.
     required check; non-voting failure passes; 31 check runs across pages; one upstream problem
     counts as one blocker; gate status table (absent, pending, success, failure); `blocked` excused
     when only the gate is outstanding; `blocked` still blocks when the list is unknown, when another
-    required check has not reported, or when the gate check is not in the required list;
-    `getRequiredContexts` falls back from GraphQL to REST
+    required check has not reported, when the gate check is not in the required list, or when another
+    branch rule could be the cause; `getRequiredContexts` falls back from GraphQL to REST
 
 ### Step 8: Protect tokens and stop the 401 noise
 

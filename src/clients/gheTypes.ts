@@ -84,6 +84,13 @@ export interface RequiredStatusChecks {
   }[];
 }
 
+/** Branch rules besides status checks that can make GHE report a pull request as `blocked`. */
+export interface BranchMergeRules {
+  requiredApprovingReviewCount: number;
+  requiresConversationResolution: boolean;
+  requiresSignatures: boolean;
+}
+
 export interface RollupStatusContextNode {
   __typename: 'StatusContext';
   context: string;

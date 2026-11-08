@@ -4,7 +4,6 @@ import {
   type CombinedStatus,
   type PrRollup,
   type PullRequest,
-  type RequiredStatusChecks,
   type Review,
   type RollupContextNode,
 } from '../clients/gheTypes';
@@ -12,7 +11,7 @@ import { type ZuulClient } from '../clients/zuulClient';
 import { type Build, type Buildset, type ChangeStatus } from '../clients/zuulTypes';
 import { mapWithConcurrency } from '../util/concurrency';
 import { classifyJobResult, getLatestBuildsPerJob } from './buildsModel';
-import { type DependsOnRef, parseDependsOn, prRefKey } from './dependsOnParser';
+import { type DependsOnRef, formatPrRef, parseDependsOn, prRefKey } from './dependsOnParser';
 import { extractPrCoordinates } from './dependsOnService';
 import {
   type CheckState,
@@ -30,7 +29,8 @@ export type GheGateClient = Pick<
   | 'getPrRollup'
   | 'listCommitStatuses'
   | 'listCheckRuns'
-  | 'getRequiredStatusChecks'
+  | 'getRequiredContexts'
+  | 'getBranchMergeRules'
   | 'listReviews'
   | 'getPr'
 >;
@@ -55,6 +55,15 @@ const FAILURE_CHECK_STATES = new Set([
   'STALE',
 ]);
 const ERROR_CHECK_STATES = new Set(['ERROR', 'STARTUP_FAILURE']);
+
+/** Higher is worse: error, failure, missing, pending, success. */
+const CHECK_STATE_SEVERITY: Record<CheckState, number> = {
+  error: 4,
+  failure: 3,
+  missing: 2,
+  pending: 1,
+  success: 0,
+};
 
 export function mapStatusContextState(state: string | null | undefined): CheckState {
   if (!state) {
@@ -97,74 +106,82 @@ export function mapCheckRunState(
   return 'pending';
 }
 
-function mapRollupChecks(rollup: PrRollup): PrGateCheck[] {
-  const commitNodes = rollup.commits?.nodes ?? [];
-  const lastCommit = commitNodes[commitNodes.length - 1]?.commit;
-  const contextNodes: RollupContextNode[] = lastCommit?.statusCheckRollup?.contexts?.nodes ?? [];
+function worseState(a: CheckState, b: CheckState): CheckState {
+  return CHECK_STATE_SEVERITY[a] >= CHECK_STATE_SEVERITY[b] ? a : b;
+}
 
+function rollupHeadCommit(
+  rollup: PrRollup,
+): PrRollup['commits']['nodes'][number]['commit'] | undefined {
+  const commitNodes = rollup.commits?.nodes ?? [];
+  return commitNodes[commitNodes.length - 1]?.commit;
+}
+
+/** Adds a check, keeping the worst state and the `required` flag across same-named entries. */
+function createCheckCollector(requiredNames: ReadonlySet<string>): {
+  upsert: (name: string, state: CheckState, required?: boolean) => void;
+  finish: () => PrGateCheck[];
+} {
   const byName = new Map<string, PrGateCheck>();
-  const upsert = (name: string, state: CheckState, required: boolean): void => {
-    const existing = byName.get(name);
-    byName.set(name, { name, state, required: required || Boolean(existing?.required) });
+  return {
+    upsert: (name, state, required = false) => {
+      const existing = byName.get(name);
+      byName.set(name, {
+        name,
+        state: existing ? worseState(existing.state, state) : state,
+        required: required || requiredNames.has(name) || Boolean(existing?.required),
+      });
+    },
+    finish: () => {
+      for (const reqName of requiredNames) {
+        if (!byName.has(reqName)) {
+          byName.set(reqName, { name: reqName, state: 'missing', required: true });
+        }
+      }
+      return Array.from(byName.values());
+    },
   };
+}
+
+function mapRollupChecks(rollup: PrRollup, requiredNames: ReadonlySet<string>): PrGateCheck[] {
+  const contextNodes: RollupContextNode[] =
+    rollupHeadCommit(rollup)?.statusCheckRollup?.contexts?.nodes ?? [];
+
+  const collector = createCheckCollector(requiredNames);
   for (const node of contextNodes) {
     if (node.__typename === 'StatusContext') {
-      upsert(node.context, mapStatusContextState(node.state), Boolean(node.isRequired));
+      collector.upsert(node.context, mapStatusContextState(node.state), Boolean(node.isRequired));
     } else if (node.__typename === 'CheckRun') {
-      upsert(node.name, mapCheckRunState(node.status, node.conclusion), Boolean(node.isRequired));
+      collector.upsert(
+        node.name,
+        mapCheckRunState(node.status, node.conclusion),
+        Boolean(node.isRequired),
+      );
     }
   }
 
-  return Array.from(byName.values());
+  return collector.finish();
 }
 
 function mapRestChecks(
   combinedStatus: CombinedStatus,
   checkRuns: readonly CheckRun[],
-  requiredStatusChecks: RequiredStatusChecks | undefined,
+  requiredNames: ReadonlySet<string>,
 ): PrGateCheck[] {
-  const requiredNames = new Set<string>();
-  for (const ctx of requiredStatusChecks?.contexts ?? []) {
-    if (ctx) {
-      requiredNames.add(ctx);
-    }
-  }
-  for (const check of requiredStatusChecks?.checks ?? []) {
-    if (check?.context) {
-      requiredNames.add(check.context);
-    }
-  }
-
-  const byName = new Map<string, PrGateCheck>();
-  const upsert = (name: string, state: CheckState): void => {
-    const existing = byName.get(name);
-    byName.set(name, {
-      name,
-      state,
-      required: requiredNames.has(name) || Boolean(existing?.required),
-    });
-  };
+  const collector = createCheckCollector(requiredNames);
 
   for (const status of combinedStatus.statuses ?? []) {
-    upsert(status.context, mapStatusContextState(status.state));
+    collector.upsert(status.context, mapStatusContextState(status.state));
   }
 
   for (const run of checkRuns) {
-    upsert(run.name, mapCheckRunState(run.status, run.conclusion));
+    collector.upsert(run.name, mapCheckRunState(run.status, run.conclusion));
   }
 
-  for (const reqName of requiredNames) {
-    if (!byName.has(reqName)) {
-      byName.set(reqName, {
-        name: reqName,
-        state: 'missing',
-        required: true,
-      });
-    }
-  }
-
-  return Array.from(byName.values());
+  return collector.finish();
 }
+
+const SKIPPED_REVIEW_STATES = new Set(['COMMENTED', 'PENDING']);
 
 export function summarizeReviews(reviews: readonly Review[]): {
   approvals: number;
@@ -176,6 +193,9 @@ export function summarizeReviews(reviews: readonly Review[]): {
     const review = reviews[i];
     const login = review.user?.login?.trim();
     if (!login) {
+      continue;
+    }
+    if (SKIPPED_REVIEW_STATES.has(review.state.trim().toUpperCase())) {
       continue;
     }
 
@@ -229,7 +249,9 @@ function evaluateBuildsCheckState(builds: readonly Build[]): ZuulCheckState {
     }
   }
 
-  const allSucceeded = latestBuilds.every((b) => Boolean(b.result && isPassingResult(b.result)));
+  const allSucceeded = latestBuilds.every(
+    (b) => b.voting === false || Boolean(b.result && isPassingResult(b.result)),
+  );
   return allSucceeded ? 'success' : 'failure';
 }
 
@@ -251,18 +273,25 @@ async function resolveZuulCheckState(
   sha: string,
 ): Promise<ZuulCheckState> {
   const statuses: ChangeStatus[] = await zuul.getChangeStatus(tenant, prNumber, sha);
-  const checkStatuses = statuses.filter((s) => s.pipeline.trim().toLowerCase() === 'check');
+  const checkStatuses = statuses.filter((s) => {
+    const pipeline = s.pipeline.trim().toLowerCase();
+    return s.live && (pipeline === 'check' || pipeline === '');
+  });
 
   if (checkStatuses.length > 0) {
     const jobs = checkStatuses.flatMap((s) => s.jobs ?? []);
     if (jobs.length === 0) {
       return 'running';
     }
+    // Zuul only reports once every job has finished, so an unfinished non-voting job still counts
+    // as running. A failed non-voting job doesn't count.
     const hasPendingJob = jobs.some((j) => !j.result || j.result.trim().length === 0);
     if (hasPendingJob) {
       return 'running';
     }
-    const allSucceeded = jobs.every((j) => Boolean(j.result && isPassingResult(j.result)));
+    const allSucceeded = jobs.every(
+      (j) => j.voting === false || Boolean(j.result && isPassingResult(j.result)),
+    );
     return allSucceeded ? 'success' : 'failure';
   }
 
@@ -315,24 +344,26 @@ async function collectGateFactsInternal(
   const { owner, repo, number: prNumber } = coords;
   const project = `${owner}/${repo}`;
   const ref = `${project}#${prNumber}`;
-  const sha = pr.head.sha;
-  const baseBranch = pr.base.ref;
 
-  const freshPrPromise =
+  // The fresh PR decides which commit (and base branch) the facts describe.
+  const effectivePr =
     fetchFreshPr && typeof ghe.getPr === 'function'
-      ? ghe.getPr(owner, repo, prNumber).catch(() => pr)
-      : Promise.resolve(pr);
+      ? await ghe.getPr(owner, repo, prNumber).catch(() => pr)
+      : pr;
+  const sha = effectivePr.head.sha;
+  const baseBranch = effectivePr.base.ref;
 
-  const [freshPr, rollup, reviews, zuulCheck] = await Promise.all([
-    freshPrPromise,
+  const [rollup, reviews, zuulCheck, requiredContexts, mergeRules] = await Promise.all([
     ghe.getPrRollup(owner, repo, prNumber),
     ghe.listReviews(owner, repo, prNumber),
     resolveZuulCheckState(zuul, tenant, project, prNumber, sha),
+    ghe.getRequiredContexts(owner, repo, baseBranch),
+    ghe.getBranchMergeRules(owner, repo, baseBranch),
   ]);
 
-  const effectivePr = freshPr ?? pr;
   const { approvals, changesRequested } = summarizeReviews(reviews);
-  const mergeableState = effectivePr.mergeable_state ?? pr.mergeable_state;
+  let mergeableState = effectivePr.mergeable_state ?? pr.mergeable_state;
+  const requiredNames = new Set(requiredContexts ?? []);
 
   let draft: boolean;
   let labels: string[];
@@ -345,19 +376,25 @@ async function collectGateFactsInternal(
       ? rollup.labels.nodes.map((n) => n.name)
       : (effectivePr.labels ?? []).map((l) => l.name);
     reviewDecision = rollup.reviewDecision ?? undefined;
-    checks = mapRollupChecks(rollup);
+    checks = mapRollupChecks(rollup, requiredNames);
+    const rollupOid = rollupHeadCommit(rollup)?.oid;
+    if (rollupOid && rollupOid !== sha) {
+      checks.push({ name: 'Head commit changed while checking', state: 'pending', required: true });
+    }
+    if (rollup.mergeable === 'CONFLICTING') {
+      mergeableState = 'dirty';
+    }
   } else {
     draft = Boolean(effectivePr.draft);
     labels = (effectivePr.labels ?? []).map((l) => l.name);
     reviewDecision = undefined;
 
-    const [combinedStatus, checkRuns, requiredStatusChecks] = await Promise.all([
+    const [combinedStatus, checkRuns] = await Promise.all([
       ghe.listCommitStatuses(owner, repo, sha),
       ghe.listCheckRuns(owner, repo, sha),
-      ghe.getRequiredStatusChecks(owner, repo, baseBranch),
     ]);
 
-    checks = mapRestChecks(combinedStatus, checkRuns, requiredStatusChecks);
+    checks = mapRestChecks(combinedStatus, checkRuns, requiredNames);
   }
 
   const facts: PrGateFacts = {
@@ -369,6 +406,7 @@ async function collectGateFactsInternal(
     approvals,
     changesRequested,
     checks,
+    requiredChecksKnown: requiredContexts !== undefined,
     zuulCheck,
   };
 
@@ -377,6 +415,9 @@ async function collectGateFactsInternal(
   }
   if (reviewDecision !== undefined) {
     facts.reviewDecision = reviewDecision;
+  }
+  if (mergeRules !== undefined) {
+    facts.mergeRules = mergeRules;
   }
 
   return facts;
@@ -415,6 +456,23 @@ function extractValidDependsOnRefs(
   return result;
 }
 
+/** Facts that always block: used when an upstream PR can't be checked. */
+function blockingUpstreamFacts(ref: string, reason: string): PrGateFacts {
+  return {
+    ref,
+    draft: false,
+    merged: false,
+    state: 'open',
+    labels: [],
+    approvals: 0,
+    changesRequested: 0,
+    checks: [{ name: reason, state: 'error', required: true }],
+    requiredChecksKnown: false,
+    zuulCheck: 'none',
+    loadError: reason,
+  };
+}
+
 export async function collectUpstreamFacts(
   ghe: GheGateClient,
   zuul: ZuulGateClient,
@@ -441,7 +499,7 @@ export async function collectUpstreamFacts(
     const levelResults = await mapWithConcurrency(
       currentLevelRefs,
       concurrency,
-      async (ref): Promise<{ pr: PullRequest; facts: PrGateFacts } | undefined> => {
+      async (ref): Promise<{ pr?: PullRequest; facts: PrGateFacts } | undefined> => {
         try {
           const upstreamPr = await ghe.getPr(ref.owner, ref.repo, ref.number);
           if (upstreamPr.merged) {
@@ -450,22 +508,38 @@ export async function collectUpstreamFacts(
           const facts = await collectGateFactsInternal(ghe, zuul, tenant, upstreamPr, false);
           return { pr: upstreamPr, facts };
         } catch {
-          return undefined;
+          return {
+            facts: blockingUpstreamFacts(formatPrRef(ref), 'Could not read this pull request'),
+          };
         }
       },
     );
 
     const nextLevelRefs: { owner: string; repo: string; number: number }[] = [];
+    const tooDeepFacts: PrGateFacts[] = [];
     for (const entry of levelResults) {
       if (!entry) {
         continue;
       }
       allFacts.push(entry.facts);
+      if (!entry.pr) {
+        continue;
+      }
+      const childRefs = extractValidDependsOnRefs(entry.pr.body, seenKeys);
       if (depth < maxDepth) {
-        const childRefs = extractValidDependsOnRefs(entry.pr.body, seenKeys);
         nextLevelRefs.push(...childRefs);
+      } else {
+        for (const childRef of childRefs) {
+          tooDeepFacts.push(
+            blockingUpstreamFacts(
+              formatPrRef(childRef),
+              `Dependency chain deeper than ${maxDepth} levels`,
+            ),
+          );
+        }
       }
     }
+    allFacts.push(...tooDeepFacts);
 
     currentLevelRefs = nextLevelRefs;
     depth += 1;

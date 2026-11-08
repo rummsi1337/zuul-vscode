@@ -6,7 +6,13 @@ import {
   formatGateHeader,
   type GateTreeNode,
 } from '../services/gatePresentation';
-import { evaluateGate, type GateReport, type GateRules } from '../services/gateReadiness';
+import {
+  evaluateGate,
+  type GateReport,
+  type GateRules,
+  gateLoadFailureReport,
+  resolveGateRules,
+} from '../services/gateReadiness';
 import { KeyedAsyncCache } from '../services/keyedAsyncCache';
 import { type PrSnapshot } from '../services/prTracker';
 import { type Logger } from '../util/logger';
@@ -56,7 +62,17 @@ export class PrGateTreeDataProvider
     if (!snapshot || !rc) {
       return undefined;
     }
-    const key = `${rc.tenant}|${snapshot.pr.number}|${snapshot.pr.head.sha}|${snapshot.pr.updated_at ?? ''}`;
+    const rules = resolveGateRules(this.getRules(), rc.tenant);
+    const key = JSON.stringify([
+      rc.host,
+      rc.owner,
+      rc.repo,
+      rc.tenant,
+      snapshot.pr.number,
+      snapshot.pr.head.sha,
+      snapshot.pr.updated_at ?? '',
+      rules,
+    ]);
     try {
       return await this.cache.get(key, async () => {
         try {
@@ -64,7 +80,7 @@ export class PrGateTreeDataProvider
             collectGateFacts(rc.ghe, rc.zuul, rc.tenant, snapshot.pr),
             collectUpstreamFacts(rc.ghe, rc.zuul, rc.tenant, snapshot.pr),
           ]);
-          return evaluateGate(root, upstream, this.getRules());
+          return evaluateGate(root, upstream, rules);
         } catch (err) {
           this.logger.warn(
             `[Gate] Failed to collect gate facts: ${err instanceof Error ? err.message : String(err)}`,
@@ -72,8 +88,12 @@ export class PrGateTreeDataProvider
           throw err;
         }
       });
-    } catch {
-      return this.cache.peek(key);
+    } catch (err) {
+      // Never fall back to an older (possibly "Ready") report.
+      return gateLoadFailureReport(
+        `${snapshot.pr.base.repo.full_name}#${snapshot.pr.number}`,
+        err instanceof Error ? err.message : String(err),
+      );
     }
   }
 
