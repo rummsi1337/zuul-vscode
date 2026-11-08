@@ -21,6 +21,7 @@ import {
 } from '../services/dependsOnService';
 import { KeyedAsyncCache } from '../services/keyedAsyncCache';
 import { type PrSnapshot, type ZuulContextSource } from '../services/prTracker';
+import { NO_PR_MESSAGE } from '../services/triggerService';
 import { type Logger } from '../util/logger';
 
 export const DEPENDS_ON_REFRESH_TTL_MS = 60_000;
@@ -170,6 +171,7 @@ export class DependsOnTreeDataProvider
     const snapshot = this.tracker.snapshot;
     if (!currentCtx || !snapshot) {
       this.logger.warn('[DependsOn] Cannot remove Depends-On: no active pull request');
+      void vscode.window.showInformationMessage(NO_PR_MESSAGE);
       return false;
     }
 
@@ -180,6 +182,9 @@ export class DependsOnTreeDataProvider
           Boolean(r.owner && r.repo && r.number !== undefined),
       );
       if (refs.length === 0) {
+        void vscode.window.showInformationMessage(
+          'This pull request has no Depends-On lines to remove.',
+        );
         return false;
       }
       const picked = await vscode.window.showQuickPick(
@@ -381,7 +386,7 @@ export class DependsOnTreeDataProvider
 
       case 'out-of-sync-root': {
         const item = new vscode.TreeItem(
-          '$(warning) Out of sync with Zuul',
+          'Out of sync with Zuul',
           vscode.TreeItemCollapsibleState.Expanded,
         );
         item.iconPath = new vscode.ThemeIcon('warning');

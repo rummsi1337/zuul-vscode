@@ -30,9 +30,15 @@ describe('formatGateHeader', () => {
 
   it('counts blockers when not ready', () => {
     expect(formatGateHeader(report)).toEqual({
-      label: 'Not ready: 2 blocker(s)',
+      label: 'Not ready: 2 blockers',
       icon: 'circle-slash',
     });
+  });
+
+  it('uses the singular for one blocker', () => {
+    expect(formatGateHeader({ ...report, blockers: [report.blockers[0]] }).label).toBe(
+      'Not ready: 1 blocker',
+    );
   });
 });
 
@@ -69,5 +75,21 @@ describe('buildGateChildren', () => {
     expect(buildGateChildren({ kind: 'pr', pr: 'nope', isRoot: false, report }, report)).toEqual(
       [],
     );
+  });
+});
+
+describe('buildGateChildren urls', () => {
+  it('carries the item url on the pr node and none when absent', () => {
+    const withUrl: GateReport = {
+      ready: false,
+      items: [
+        { pr: 'org/a#1', url: 'https://ghe.example.com/org/a/pull/1', checks: [] },
+        { pr: 'org/b#2', checks: [] },
+      ],
+      blockers: [],
+    };
+    const nodes = buildGateChildren(undefined, withUrl);
+    expect(nodes[1]).toMatchObject({ url: 'https://ghe.example.com/org/a/pull/1' });
+    expect(nodes[2]).not.toHaveProperty('url');
   });
 });

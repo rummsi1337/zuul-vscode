@@ -8,6 +8,7 @@ export interface GateHeaderNode {
 export interface GatePrNode {
   readonly kind: 'pr';
   readonly pr: string;
+  readonly url?: string;
   readonly isRoot: boolean;
   readonly report: GateReport;
 }
@@ -26,7 +27,7 @@ export function formatGateHeader(report: GateReport): { label: string; icon: str
     return { label: 'Ready for gate', icon: 'pass-filled' };
   }
   const n = report.blockers.length;
-  return { label: `Not ready: ${n} blocker(s)`, icon: 'circle-slash' };
+  return { label: `Not ready: ${n} ${n === 1 ? 'blocker' : 'blockers'}`, icon: 'circle-slash' };
 }
 
 export function buildGateChildren(
@@ -36,7 +37,13 @@ export function buildGateChildren(
   if (!element) {
     const nodes: GateTreeNode[] = [{ kind: 'header', report }];
     report.items.forEach((item, index) => {
-      nodes.push({ kind: 'pr', pr: item.pr, isRoot: index === 0, report });
+      nodes.push({
+        kind: 'pr',
+        pr: item.pr,
+        ...(item.url ? { url: item.url } : {}),
+        isRoot: index === 0,
+        report,
+      });
     });
     return nodes;
   }

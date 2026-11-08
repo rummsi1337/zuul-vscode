@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 
-export type AuthMethodSetting = 'auto' | 'oauth' | 'gh-cli' | 'pat';
+export type AuthMethodSetting = 'auto' | 'gh-cli' | 'pat';
 
 export interface TriggerComment {
   label: string;
@@ -29,7 +29,7 @@ export interface ZuulSettings {
   gate: GateSettings;
 }
 
-const VALID_AUTH_METHODS: readonly AuthMethodSetting[] = ['auto', 'oauth', 'gh-cli', 'pat'];
+const VALID_AUTH_METHODS: readonly AuthMethodSetting[] = ['auto', 'gh-cli', 'pat'];
 
 const DEFAULT_TRIGGER_COMMENTS: readonly TriggerComment[] = [
   { label: 'Recheck', comment: 'recheck', icon: 'refresh' },
@@ -69,7 +69,7 @@ function readAuthMethod(value: unknown): AuthMethodSetting {
   if (typeof value === 'string' && (VALID_AUTH_METHODS as readonly string[]).includes(value)) {
     return value as AuthMethodSetting;
   }
-  return 'pat';
+  return 'auto';
 }
 
 function isTriggerComment(value: unknown): value is TriggerComment {

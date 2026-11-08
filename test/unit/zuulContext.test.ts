@@ -393,6 +393,43 @@ describe('ZuulContextService', () => {
     service.dispose();
   });
 
+  it('offers a Zuul token for a Zuul auth failure and a GitHub sign-in otherwise', async () => {
+    const { source } = createFakeGitSource(sampleGitCtx);
+    const auth: AuthLike = {
+      getToken: vi.fn(async () => 'ghe-token'),
+      reportUnauthorized: vi.fn(async () => undefined),
+    };
+    const service = new ZuulContextService({
+      gitContext: source,
+      auth,
+      logger: createFakeLogger(),
+      getSettings: () => ({ url: 'https://zuul.example.com', tenant: 'ddad' }),
+      createZuulClient: () =>
+        ({
+          listBuilds: vi.fn(async () => {
+            throw new HttpError(401, 'Unauthorized');
+          }),
+        }) as unknown as ResolvedContext['zuul'],
+      showErrorMessage: vi.fn(async () => undefined),
+      executeCommand: vi.fn(),
+    });
+
+    await service.ready;
+    const zuulError: unknown = await service.current!.zuul.listBuilds('ddad').catch((e) => e);
+
+    expect(zuulError).toBeInstanceOf(HttpError);
+    expect(service.signInFor(zuulError)).toEqual({
+      label: 'Set Zuul Token',
+      command: 'zuul.setTenantToken',
+    });
+    expect(service.signInFor(new HttpError(401, 'Unauthorized'))).toEqual({
+      label: SIGN_IN_ACTION,
+      command: SIGN_IN_COMMAND,
+    });
+
+    service.dispose();
+  });
+
   function createZuulAuthService(opts: {
     listBuilds: () => Promise<unknown>;
     candidates?: () => Promise<string[]>;

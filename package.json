@@ -111,7 +111,7 @@
         },
         {
           "command": "zuul.postTrigger",
-          "when": "view == zuul.gateReadiness",
+          "when": "view == zuul.gateReadiness && zuul.hasPr",
           "group": "navigation"
         },
         {
@@ -121,7 +121,7 @@
         },
         {
           "command": "zuul.addDependsOn",
-          "when": "view == zuul.dependencies",
+          "when": "view == zuul.dependencies && zuul.hasPr",
           "group": "navigation"
         },
         {
@@ -131,12 +131,12 @@
         },
         {
           "command": "zuul.postTrigger",
-          "when": "view == zuul.builds",
+          "when": "view == zuul.builds && zuul.hasPr",
           "group": "navigation"
         },
         {
           "command": "zuul.postCustomTrigger",
-          "when": "view == zuul.builds",
+          "when": "view == zuul.builds && zuul.hasPr",
           "group": "navigation"
         }
       ],
@@ -343,17 +343,21 @@
           "type": "string",
           "enum": [
             "auto",
-            "oauth",
             "gh-cli",
             "pat"
           ],
-          "default": "pat",
-          "markdownDescription": "Authentication method for GitHub Enterprise (`auto`, `oauth`, `gh-cli`, or `pat`)."
+          "markdownEnumDescriptions": [
+            "Try a stored personal access token first, then the GitHub CLI (`gh`).",
+            "Use the token from the GitHub CLI (`gh auth token`).",
+            "Use a personal access token stored with **Set GitHub Enterprise PAT**."
+          ],
+          "default": "auto",
+          "markdownDescription": "Authentication method for GitHub Enterprise. `auto` tries `pat`, then `gh-cli`. OAuth sign-in is not available yet."
         },
         "zuul.ghe.oauthClientId": {
           "type": "string",
           "default": "",
-          "markdownDescription": "OAuth App client ID for GitHub Enterprise Device Flow."
+          "markdownDescription": "Not used yet. OAuth App client ID for GitHub Enterprise Device Flow, reserved for a later release."
         },
         "zuul.triggerComments": {
           "type": "array",

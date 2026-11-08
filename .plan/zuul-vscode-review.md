@@ -530,9 +530,11 @@ the code, and the pre-commit checks run.
 
 - **Tier:** sonnet
 - **Risk:** low
-- **Status:** todo
+- **Status:** done
 - **Files:** `package.json`, `src/extension.ts`, `src/services/statusBarText.ts`, `triggerService.ts`,
-  `src/views/*`, `src/config/settings.ts`, tests
+  `src/views/*`, `src/config/settings.ts`, tests. Also `src/util/commandErrors.ts` (new, the error
+  wrapper), and `gateFacts.ts`, `gateReadiness.ts`, `gatePresentation.ts` so Gate rows link to the PR's
+  real `html_url`
 - **Do:**
   - Wrap command handlers: errors become `Could not post "recheck" on org/repo#12: <short reason>`. 401
     and non-rate-limit 403 add a Sign in action. Add `.catch` on `zuulContext.ready`.

@@ -177,6 +177,7 @@ export const window = {
   showWarningMessage: vi.fn(),
   showErrorMessage: vi.fn(),
   showInputBox: vi.fn(),
+  setStatusBarMessage: vi.fn(),
   showQuickPick: vi.fn(),
   createStatusBarItem: vi.fn((alignment?: StatusBarAlignment, priority?: number) => ({
     alignment,

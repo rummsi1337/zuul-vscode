@@ -10,7 +10,9 @@ import {
   CONFIRM_POST_ACTION,
   formatTriggerConfirmationMessage,
   HAS_PR_CONTEXT_KEY,
-  TIMEOUT_MESSAGE,
+  formatTimeoutMessage,
+  NO_PR_MESSAGE,
+  REFRESH_ACTION,
   TriggerService,
   type TriggerTrackerSource,
   WATCH_DURATION_MS,
@@ -219,6 +221,22 @@ describe('TriggerService', () => {
     service.dispose();
   });
 
+  it('tells the user when the repository of the pull request is unknown', async () => {
+    const snapshot: PrSnapshot = {
+      pr: makePr({ base: { ref: 'main', repo: { full_name: '' } } }),
+      statuses: [],
+      builds: [],
+      fetchedAt: 1_000_000,
+    };
+    const { ctx, tracker, postIssueComment } = createHarness(snapshot);
+    const service = new TriggerService(ctx, tracker, createFakeLogger(), Date.now);
+
+    expect(await service.post('recheck', { confirm: false })).toBe(false);
+    expect(postIssueComment).not.toHaveBeenCalled();
+    expect(window.showInformationMessage).toHaveBeenCalledWith(NO_PR_MESSAGE);
+    service.dispose();
+  });
+
   it('does not start waiting when the snapshot goes away while posting', async () => {
     const snapshot: PrSnapshot = { pr: makePr(), statuses: [], builds: [], fetchedAt: 1_000_000 };
     const { ctx, tracker, postIssueComment, emitSnapshot, watchFor } = createHarness(snapshot);
@@ -327,7 +345,14 @@ describe('TriggerService', () => {
     await vi.advanceTimersByTimeAsync(100);
     expect(service.waiting).toBe(false);
     expect(waitingEvents).toEqual([true, false]);
-    expect(window.showInformationMessage).toHaveBeenCalledWith(TIMEOUT_MESSAGE);
+    expect(window.showInformationMessage).toHaveBeenCalledWith(
+      formatTimeoutMessage('recheck'),
+      REFRESH_ACTION,
+    );
+    expect(formatTimeoutMessage('recheck')).toBe(
+      'Zuul has not reacted to "recheck" yet. It may still be queued.',
+    );
+    expect(window.setStatusBarMessage).toHaveBeenCalledWith('Posted "recheck" on #42', 4000);
 
     service.dispose();
   });
@@ -498,6 +523,7 @@ describe('TriggerService', () => {
     // Missing context returns false
     setContext(undefined);
     expect(await service.post('recheck')).toBe(false);
+    expect(window.showInformationMessage).toHaveBeenCalledWith(NO_PR_MESSAGE);
     expect(postIssueComment).toHaveBeenCalledTimes(2);
 
     service.dispose();
